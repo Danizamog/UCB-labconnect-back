@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: labconnect_postgres
+    environment:
+      POSTGRES_DB: labconnect
+      POSTGRES_USER: labconnect_user
+      POSTGRES_PASSWORD: labconnect_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U labconnect_user -d labconnect"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: labconnect_redis
+    ports:
+      - "6379:6379"
+
+  auth-service:
+    build:
+      context: ./backend/auth-service
+    container_name: labconnect_auth
+    env_file:
+      - ./backend/auth-service/.env
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  reservations-service:
+    build:
+      context: ./backend/reservations-service
+    container_name: labconnect_reservations
+    env_file:
+      - ./backend/reservations-service/.env
+    ports:
+      - "8005:8005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  inventory-service:
+    build:
+      context: ./backend/inventory-service
+    container_name: labconnect_inventory
+    env_file:
+      - ./backend/inventory-service/.env
+    ports:
+      - "8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
