@@ -5,10 +5,15 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
+from app.routers.availability import router as availability_router
+from app.routers.classes import router as classes_router
 
 AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://auth-service:8001")
 
 app = FastAPI(title="LabConnect API Gateway", version="1.0.0")
+
+app.include_router(availability_router)
+app.include_router(classes_router)
 
 
 def filter_response_headers(headers: Dict[str, str]) -> Dict[str, str]:
