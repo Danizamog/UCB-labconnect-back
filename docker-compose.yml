@@ -16,6 +16,13 @@ services:
     ports:
       - "8003:8003"
 
+  role-service:
+    build:
+      context: ./role-service
+    container_name: role-service
+    ports:
+      - "8004:8004"
+
   api-gateway:
     build:
       context: ./api-gateway
@@ -23,8 +30,10 @@ services:
     environment:
       - AUTH_SERVICE_URL=http://auth-service:8001
       - INVENTORY_SERVICE_URL=http://inventory-service:8003
+      - ROLE_SERVICE_URL=http://role-service:8004
     ports:
       - "8000:8000"
     depends_on:
       - auth-service
       - inventory-service
+      - role-service
