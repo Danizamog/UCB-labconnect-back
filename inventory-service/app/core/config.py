@@ -13,9 +13,9 @@ class Settings(BaseSettings):
     postgres_host: str = "postgres"
     postgres_port: int = 5432
 
-    database_url: str
+    database_url: str = "sqlite:///./inventory.db"
 
-    secret_key: str
+    secret_key: str = "super_secret_key_change_this"
     algorithm: str = "HS256"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

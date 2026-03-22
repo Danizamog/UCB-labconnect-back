@@ -18,8 +18,4 @@ class Asset(Base):
     serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
     laboratory_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="available", nullable=False)
-<<<<<<< HEAD
     created_at: Mapped[dt_datetime] = mapped_column(DateTime, default=dt_datetime.utcnow, nullable=False)
-=======
-    created_at: Mapped[dt_datetime] = mapped_column(DateTime, default=dt_datetime.utcnow, nullable=False)
->>>>>>> 2e29e41c59bdc86fa489f9a25e5afe20accf9f99
