@@ -6,7 +6,7 @@ class UserCreate(BaseModel):
     full_name: str
     email: EmailStr
     password: str
-    role: str = "user"
+    role: str = "student"
 
 
 class UserOut(BaseModel):
@@ -16,8 +16,40 @@ class UserOut(BaseModel):
     email: EmailStr
     role: str
     is_active: bool
+    phone: str | None = None
+    academic_page: str | None = None
+    faculty: str | None = None
+    career: str | None = None
+    student_code: str | None = None
+    campus: str | None = None
+    bio: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class UserProfileUpdate(BaseModel):
+    phone: str | None = None
+    academic_page: str | None = None
+    faculty: str | None = None
+    career: str | None = None
+    student_code: str | None = None
+    campus: str | None = None
+    bio: str | None = None
+
+
+class UserAdminUpdate(BaseModel):
+    full_name: str
+    email: EmailStr
+    role: str
+    is_active: bool
+    password: str | None = None
+    phone: str | None = None
+    academic_page: str | None = None
+    faculty: str | None = None
+    career: str | None = None
+    student_code: str | None = None
+    campus: str | None = None
+    bio: str | None = None
 
 
 class Token(BaseModel):

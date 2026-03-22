@@ -24,9 +24,12 @@ class PracticeRequest(Base):
     needs_support: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     support_topic: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    review_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False)
     created_at: Mapped[dt_datetime] = mapped_column(DateTime, default=dt_datetime.utcnow, nullable=False)
+    status_updated_at: Mapped[dt_datetime] = mapped_column(DateTime, default=dt_datetime.utcnow, nullable=False)
+    user_notification_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     laboratory = relationship("Laboratory")
     materials: Mapped[List["PracticeMaterial"]] = relationship(

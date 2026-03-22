@@ -17,5 +17,7 @@ class Asset(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
     laboratory_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    quantity_total: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    quantity_available: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="available", nullable=False)
     created_at: Mapped[dt_datetime] = mapped_column(DateTime, default=dt_datetime.utcnow, nullable=False)

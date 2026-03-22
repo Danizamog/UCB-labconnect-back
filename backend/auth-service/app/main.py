@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from sqlalchemy import inspect, text
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,12 +14,31 @@ from app.models.user import User
 from sqlalchemy.orm import Session
 
 
+def ensure_user_profile_schema(db: Session):
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("users")}
+    expected = {
+        "phone": "ALTER TABLE users ADD COLUMN phone VARCHAR(30)",
+        "academic_page": "ALTER TABLE users ADD COLUMN academic_page VARCHAR(255)",
+        "faculty": "ALTER TABLE users ADD COLUMN faculty VARCHAR(120)",
+        "career": "ALTER TABLE users ADD COLUMN career VARCHAR(120)",
+        "student_code": "ALTER TABLE users ADD COLUMN student_code VARCHAR(50)",
+        "campus": "ALTER TABLE users ADD COLUMN campus VARCHAR(120)",
+        "bio": "ALTER TABLE users ADD COLUMN bio VARCHAR(500)",
+    }
+    for column, statement in expected.items():
+        if column not in columns:
+            db.execute(text(statement))
+    db.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
 
     db = Session(bind=engine)
     try:
+        ensure_user_profile_schema(db)
         admin = db.query(User).filter(User.username == "admin").first()
         if not admin:
             db.add(
@@ -29,6 +49,7 @@ async def lifespan(app: FastAPI):
                     hashed_password=get_password_hash("admin123"),
                     role="admin",
                     is_active=True,
+                    campus="La Paz",
                 )
             )
             db.add(
@@ -37,11 +58,14 @@ async def lifespan(app: FastAPI):
                     full_name="Usuario Demo",
                     email="ariel@ucb.edu.bo",
                     hashed_password=get_password_hash("user123"),
-                    role="user",
+                    role="student",
                     is_active=True,
+                    campus="La Paz",
                 )
             )
             db.commit()
+        db.query(User).filter(User.role == "user").update({"role": "student"})
+        db.commit()
     finally:
         db.close()
 

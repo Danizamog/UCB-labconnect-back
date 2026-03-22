@@ -1,5 +1,6 @@
+from typing import List, Literal, Optional
+
 from pydantic import BaseModel
-from typing import List, Literal
 
 
 class DayReservationItemOut(BaseModel):
@@ -11,4 +12,6 @@ class DayReservationItemOut(BaseModel):
 class DayReservationsGroupOut(BaseModel):
     laboratory_id: int
     laboratory_name: str
+    area_id: Optional[int] = None
+    area_name: Optional[str] = None
     reservations: List[DayReservationItemOut]

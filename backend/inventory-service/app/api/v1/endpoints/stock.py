@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db, get_current_user_payload
@@ -13,12 +13,21 @@ from app.schemas.stock_item import (
 router = APIRouter(prefix="/stock-items", tags=["stock-items"])
 
 
+def ensure_manager(current_user: dict):
+    if current_user.get("role") not in {"admin", "lab_manager"}:
+        raise HTTPException(status_code=403, detail="Solo personal autorizado puede gestionar stock")
+
+
 @router.get("/", response_model=list[StockItemOut])
 def get_stock_items(
+    laboratory_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user_payload),
 ):
-    return db.query(StockItem).order_by(StockItem.id.desc()).all()
+    query = db.query(StockItem)
+    if laboratory_id is not None:
+        query = query.filter(StockItem.laboratory_id == laboratory_id)
+    return query.order_by(StockItem.id.desc()).all()
 
 
 @router.post("/", response_model=StockItemOut)
@@ -27,8 +36,11 @@ def create_stock_item(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user_payload),
 ):
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Solo el administrador puede registrar reactivos")
+    ensure_manager(current_user)
+    if payload.quantity_available < 0:
+        raise HTTPException(status_code=400, detail="La cantidad no puede ser negativa")
+    if payload.minimum_stock < 0:
+        raise HTTPException(status_code=400, detail="El stock minimo no puede ser negativo")
 
     item = StockItem(
         name=payload.name,
@@ -52,8 +64,11 @@ def update_stock_item(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user_payload),
 ):
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Solo el administrador puede editar reactivos")
+    ensure_manager(current_user)
+    if payload.quantity_available < 0:
+        raise HTTPException(status_code=400, detail="La cantidad no puede ser negativa")
+    if payload.minimum_stock < 0:
+        raise HTTPException(status_code=400, detail="El stock minimo no puede ser negativo")
 
     item = db.query(StockItem).filter(StockItem.id == item_id).first()
     if not item:
@@ -79,8 +94,9 @@ def update_stock_quantity(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user_payload),
 ):
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Solo el administrador puede actualizar stock")
+    ensure_manager(current_user)
+    if payload.quantity_available < 0:
+        raise HTTPException(status_code=400, detail="La cantidad no puede ser negativa")
 
     item = db.query(StockItem).filter(StockItem.id == item_id).first()
     if not item:

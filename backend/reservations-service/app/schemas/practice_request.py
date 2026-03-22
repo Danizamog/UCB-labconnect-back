@@ -7,6 +7,7 @@ from pydantic import BaseModel
 class PracticeMaterialItem(BaseModel):
     asset_id: int
     quantity: int
+    material_name: Optional[str] = None
 
 
 class PracticeRequestCreate(BaseModel):
@@ -41,8 +42,11 @@ class PracticeRequestOut(BaseModel):
     needs_support: bool
     support_topic: Optional[str] = None
     notes: Optional[str] = None
+    review_comment: Optional[str] = None
     status: str
     created_at: datetime
+    status_updated_at: datetime
+    user_notification_read: bool
     materials: List[PracticeMaterialOut]
 
     model_config = {"from_attributes": True}

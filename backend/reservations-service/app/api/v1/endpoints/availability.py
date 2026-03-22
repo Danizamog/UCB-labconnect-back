@@ -1,7 +1,8 @@
 import calendar
 from datetime import date, datetime
+
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.dependencies import get_db, get_current_user_payload
 from app.models.laboratory import Laboratory
@@ -11,6 +12,7 @@ from app.schemas.day_reservations import DayReservationItemOut, DayReservationsG
 
 router = APIRouter(prefix="/availability", tags=["availability"])
 
+
 @router.get("/calendar", response_model=list[LabCalendarOut])
 def get_labs_calendar(
     year: int = Query(..., ge=2024, le=2100),
@@ -19,7 +21,11 @@ def get_labs_calendar(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user_payload),
 ):
-    labs_query = db.query(Laboratory).filter(Laboratory.is_active == True)
+    labs_query = (
+        db.query(Laboratory)
+        .options(joinedload(Laboratory.area))
+        .filter(Laboratory.is_active == True)
+    )
 
     if lab_id is not None:
         labs_query = labs_query.filter(Laboratory.id == lab_id)
@@ -81,6 +87,8 @@ def get_labs_calendar(
             LabCalendarOut(
                 laboratory_id=lab.id,
                 laboratory_name=lab.name,
+                area_id=lab.area_id,
+                area_name=lab.area.name if lab.area else None,
                 year=year,
                 month=month,
                 days=days_out,
@@ -99,7 +107,12 @@ def get_day_reservations(
 ):
     target_date = datetime.strptime(date_value, "%Y-%m-%d").date()
 
-    labs_query = db.query(Laboratory).filter(Laboratory.is_active == True)
+    labs_query = (
+        db.query(Laboratory)
+        .options(joinedload(Laboratory.area))
+        .filter(Laboratory.is_active == True)
+    )
+
     if lab_id is not None:
         labs_query = labs_query.filter(Laboratory.id == lab_id)
 
@@ -124,6 +137,8 @@ def get_day_reservations(
             DayReservationsGroupOut(
                 laboratory_id=lab.id,
                 laboratory_name=lab.name,
+                area_id=lab.area_id,
+                area_name=lab.area.name if lab.area else None,
                 reservations=[
                     DayReservationItemOut(
                         start_time=r.start_time.strftime("%H:%M"),
