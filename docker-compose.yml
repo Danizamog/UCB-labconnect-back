@@ -1,7 +1,7 @@
 services:
   auth-service:
     build:
-      context: ./services/auth-service
+      context: ./auth-service
     container_name: auth-service
     environment:
       - SECRET_KEY=super-secret-change-me
@@ -9,13 +9,22 @@ services:
     ports:
       - "8001:8001"
 
+  inventory-service:
+    build:
+      context: ./inventory-service
+    container_name: inventory-service
+    ports:
+      - "8003:8003"
+
   api-gateway:
     build:
-      context: ./services/api-gateway
+      context: ./api-gateway
     container_name: api-gateway
     environment:
       - AUTH_SERVICE_URL=http://auth-service:8001
+      - INVENTORY_SERVICE_URL=http://inventory-service:8003
     ports:
       - "8000:8000"
     depends_on:
       - auth-service
+      - inventory-service

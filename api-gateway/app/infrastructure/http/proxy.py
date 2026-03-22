@@ -1,19 +1,8 @@
-import os
 from typing import Dict
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import Request
 from fastapi.responses import Response
-
-from app.routers.availability import router as availability_router
-from app.routers.classes import router as classes_router
-
-AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://auth-service:8001")
-
-app = FastAPI(title="LabConnect API Gateway", version="1.0.0")
-
-app.include_router(availability_router)
-app.include_router(classes_router)
 
 
 def filter_response_headers(headers: Dict[str, str]) -> Dict[str, str]:
@@ -31,17 +20,7 @@ def filter_response_headers(headers: Dict[str, str]) -> Dict[str, str]:
     return {key: value for key, value in headers.items() if key.lower() not in excluded}
 
 
-@app.get("/health")
-async def health() -> dict:
-    return {"status": "ok", "service": "api-gateway"}
-
-
-@app.api_route(
-    "/api/auth/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_auth(path: str, request: Request) -> Response:
-    target_url = f"{AUTH_SERVICE_URL}/{path}"
+async def forward_request(target_url: str, request: Request) -> Response:
     request_headers = dict(request.headers)
     request_headers.pop("host", None)
     request_body = await request.body()
