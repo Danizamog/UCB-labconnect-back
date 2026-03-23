@@ -1,5 +1,7 @@
 from pydantic import BaseModel
 
+from app.core.asset_states import AssetStatus
+
 
 class AssetCreate(BaseModel):
     name: str
@@ -7,7 +9,7 @@ class AssetCreate(BaseModel):
     description: str | None = None
     serial_number: str | None = None
     laboratory_id: int | None = None
-    status: str = "available"
+    status: AssetStatus = AssetStatus.AVAILABLE
 
 
 class AssetUpdate(AssetCreate):
@@ -15,7 +17,7 @@ class AssetUpdate(AssetCreate):
 
 
 class AssetStatusUpdate(BaseModel):
-    status: str
+    status: AssetStatus
 
 
 class AssetOut(BaseModel):
@@ -25,7 +27,7 @@ class AssetOut(BaseModel):
     description: str | None = None
     serial_number: str | None = None
     laboratory_id: int | None = None
-    status: str
+    status: AssetStatus
 
 
 class StockItemCreate(BaseModel):
