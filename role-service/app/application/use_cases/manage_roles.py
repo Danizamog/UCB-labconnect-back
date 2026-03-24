@@ -9,49 +9,47 @@ class ManageRolesUseCase:
     def list_roles(self) -> list[Role]:
         return self.repository.list_all()
 
-    def get_role(self, role_id: int) -> Role:
+    def get_role(self, role_id: str) -> Role:
         role = self.repository.get_by_id(role_id)
         if not role:
             raise LookupError("Rol no encontrado")
         return role
 
-    def create_role(self, name: str, description: str | None, permissions: list[str], is_active: bool) -> Role:
-        normalized_name = name.strip()
-        if not normalized_name:
+    def create_role(self, nombre: str, descripcion: str | None, permisos: list[str]) -> Role:
+        normalized_nombre = nombre.strip()
+        if not normalized_nombre:
             raise ValueError("El nombre del rol es obligatorio")
 
-        if self.repository.get_by_name(normalized_name):
+        if self.repository.get_by_nombre(normalized_nombre):
             raise ValueError("Ya existe un rol con ese nombre")
 
         role = Role(
-            id=0,
-            name=normalized_name,
-            description=description,
-            permissions=sorted(set(permission.strip() for permission in permissions if permission.strip())),
-            is_active=is_active,
+            id="",
+            nombre=normalized_nombre,
+            descripcion=descripcion,
+            permisos=sorted(set(permission.strip() for permission in permisos if permission.strip())),
         )
         return self.repository.create(role)
 
-    def update_role(self, role_id: int, name: str, description: str | None, permissions: list[str], is_active: bool) -> Role:
+    def update_role(self, role_id: str, nombre: str, descripcion: str | None, permisos: list[str]) -> Role:
         role = self.repository.get_by_id(role_id)
         if not role:
             raise LookupError("Rol no encontrado")
 
-        normalized_name = name.strip()
-        if not normalized_name:
+        normalized_nombre = nombre.strip()
+        if not normalized_nombre:
             raise ValueError("El nombre del rol es obligatorio")
 
-        role_with_same_name = self.repository.get_by_name(normalized_name)
+        role_with_same_name = self.repository.get_by_nombre(normalized_nombre)
         if role_with_same_name and role_with_same_name.id != role_id:
             raise ValueError("Ya existe un rol con ese nombre")
 
-        role.name = normalized_name
-        role.description = description
-        role.permissions = sorted(set(permission.strip() for permission in permissions if permission.strip()))
-        role.is_active = is_active
+        role.nombre = normalized_nombre
+        role.descripcion = descripcion
+        role.permisos = sorted(set(permission.strip() for permission in permisos if permission.strip()))
         return self.repository.update(role)
 
-    def delete_role(self, role_id: int) -> None:
+    def delete_role(self, role_id: str) -> None:
         if not self.repository.get_by_id(role_id):
             raise LookupError("Rol no encontrado")
         self.repository.delete(role_id)

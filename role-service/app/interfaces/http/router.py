@@ -12,7 +12,7 @@ def list_roles():
 
 
 @router.get("/{role_id}", response_model=RoleResponse)
-def get_role(role_id: int):
+def get_role(role_id: str):
     try:
         return manage_roles_use_case.get_role(role_id)
     except LookupError as exc:
@@ -23,24 +23,22 @@ def get_role(role_id: int):
 def create_role(payload: RoleCreateRequest):
     try:
         return manage_roles_use_case.create_role(
-            name=payload.name,
-            description=payload.description,
-            permissions=payload.permissions,
-            is_active=payload.is_active,
+            nombre=payload.nombre,
+            descripcion=payload.descripcion,
+            permisos=payload.permisos,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.put("/{role_id}", response_model=RoleResponse)
-def update_role(role_id: int, payload: RoleUpdateRequest):
+def update_role(role_id: str, payload: RoleUpdateRequest):
     try:
         return manage_roles_use_case.update_role(
             role_id=role_id,
-            name=payload.name,
-            description=payload.description,
-            permissions=payload.permissions,
-            is_active=payload.is_active,
+            nombre=payload.nombre,
+            descripcion=payload.descripcion,
+            permisos=payload.permisos,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -49,7 +47,7 @@ def update_role(role_id: int, payload: RoleUpdateRequest):
 
 
 @router.delete("/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_role(role_id: int):
+def delete_role(role_id: str):
     try:
         manage_roles_use_case.delete_role(role_id)
     except LookupError as exc:

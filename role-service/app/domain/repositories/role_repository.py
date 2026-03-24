@@ -7,10 +7,10 @@ class RoleRepository(Protocol):
     def list_all(self) -> list[Role]:
         ...
 
-    def get_by_id(self, role_id: int) -> Role | None:
+    def get_by_id(self, role_id: str) -> Role | None:
         ...
 
-    def get_by_name(self, name: str) -> Role | None:
+    def get_by_nombre(self, nombre: str) -> Role | None:
         ...
 
     def create(self, role: Role) -> Role:
@@ -19,5 +19,5 @@ class RoleRepository(Protocol):
     def update(self, role: Role) -> Role:
         ...
 
-    def delete(self, role_id: int) -> None:
+    def delete(self, role_id: str) -> None:
         ...
