@@ -124,11 +124,20 @@ class PocketBaseRoleRepository:
         page = 1
 
         while True:
-            payload = self._request(
-                "GET",
-                self._records_endpoint(),
-                params={"page": page, "perPage": 200, "sort": "nombre"},
-            )
+            try:
+                payload = self._request(
+                    "GET",
+                    self._records_endpoint(),
+                    params={"page": page, "perPage": 200, "sort": "name"},
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 400:
+                    raise
+                payload = self._request(
+                    "GET",
+                    self._records_endpoint(),
+                    params={"page": page, "perPage": 200, "sort": "nombre"},
+                )
             if not isinstance(payload, dict):
                 return roles
 
@@ -163,12 +172,19 @@ class PocketBaseRoleRepository:
             payload = self._request(
                 "GET",
                 self._records_endpoint(),
-                params={"page": 1, "perPage": 1, "filter": f'nombre="{escaped}" || name="{escaped}"'},
+                params={"page": 1, "perPage": 1, "filter": f'name="{escaped}"'},
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return None
-            raise
+            if exc.response.status_code == 400:
+                payload = self._request(
+                    "GET",
+                    self._records_endpoint(),
+                    params={"page": 1, "perPage": 1, "filter": f'nombre="{escaped}"'},
+                )
+            else:
+                raise
 
         if not isinstance(payload, dict):
             return None
@@ -179,31 +195,55 @@ class PocketBaseRoleRepository:
         return self._to_role(items[0])
 
     def create(self, role: Role) -> Role:
-        payload = self._request(
-            "POST",
-            self._records_endpoint(),
-            json={
-                "name": role.nombre,
-                "nombre": role.nombre,
-                "descripcion": role.descripcion,
-                "permisos": role.permisos,
-            },
-        )
+        try:
+            payload = self._request(
+                "POST",
+                self._records_endpoint(),
+                json={
+                    "name": role.nombre,
+                    "descripcion": role.descripcion,
+                    "permisos": role.permisos,
+                },
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 400:
+                raise
+            payload = self._request(
+                "POST",
+                self._records_endpoint(),
+                json={
+                    "nombre": role.nombre,
+                    "descripcion": role.descripcion,
+                    "permisos": role.permisos,
+                },
+            )
         if not isinstance(payload, dict):
             raise ValueError("PocketBase devolvió una respuesta inválida al crear el rol")
         return self._to_role(payload)
 
     def update(self, role: Role) -> Role:
-        payload = self._request(
-            "PATCH",
-            f"{self._records_endpoint()}/{role.id}",
-            json={
-                "name": role.nombre,
-                "nombre": role.nombre,
-                "descripcion": role.descripcion,
-                "permisos": role.permisos,
-            },
-        )
+        try:
+            payload = self._request(
+                "PATCH",
+                f"{self._records_endpoint()}/{role.id}",
+                json={
+                    "name": role.nombre,
+                    "descripcion": role.descripcion,
+                    "permisos": role.permisos,
+                },
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 400:
+                raise
+            payload = self._request(
+                "PATCH",
+                f"{self._records_endpoint()}/{role.id}",
+                json={
+                    "nombre": role.nombre,
+                    "descripcion": role.descripcion,
+                    "permisos": role.permisos,
+                },
+            )
         if not isinstance(payload, dict):
             raise ValueError("PocketBase devolvió una respuesta inválida al actualizar el rol")
         return self._to_role(payload)

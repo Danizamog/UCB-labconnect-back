@@ -39,7 +39,7 @@ async def proxy_roles(path: str, request: Request) -> Response:
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
 async def proxy_roles_root(request: Request) -> Response:
-    target_url = f"{settings.role_service_url}/v1/roles"
+    target_url = f"{settings.role_service_url}/v1/roles/"
     return await forward_request(target_url, request)
 
 
@@ -57,7 +57,7 @@ async def proxy_roles_legacy(path: str, request: Request) -> Response:
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
 async def proxy_roles_legacy_root(request: Request) -> Response:
-    target_url = f"{settings.role_service_url}/v1/roles"
+    target_url = f"{settings.role_service_url}/v1/roles/"
     return await forward_request(target_url, request)
 
 
