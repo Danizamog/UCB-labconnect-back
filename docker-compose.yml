@@ -12,6 +12,12 @@ services:
     build:
       context: ./inventory-service
     container_name: inventory-service
+    environment:
+      - SECRET_KEY=${SECRET_KEY}
+      - ALGORITHM=${JWT_ALGORITHM:-HS256}
+      - POCKETBASE_URL=${POCKETBASE_URL:-}
+      - POCKETBASE_IDENTITY=${POCKETBASE_AUTH_IDENTITY:-}
+      - POCKETBASE_PASSWORD=${POCKETBASE_AUTH_PASSWORD:-}
 
   role-service:
     build:

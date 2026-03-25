@@ -25,7 +25,7 @@ class AssetStatusUpdate(BaseModel):
 
 
 class AssetOut(BaseModel):
-    id: int
+    id: str
     name: str
     category: str
     description: Optional[str] = None
