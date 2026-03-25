@@ -1,3 +1,5 @@
+from typing import Any
+
 from app.domain.entities.role import Role
 from app.domain.repositories.role_repository import RoleRepository
 
@@ -53,3 +55,12 @@ class ManageRolesUseCase:
         if not self.repository.get_by_id(role_id):
             raise LookupError("Rol no encontrado")
         self.repository.delete(role_id)
+
+    def list_users_with_roles(self) -> list[dict[str, Any]]:
+        return self.repository.list_users_with_roles()
+
+    def assign_user_role(self, user_id: str, role_id: str | None) -> dict[str, Any]:
+        user = self.repository.assign_user_role(user_id=user_id, role_id=role_id)
+        if not user:
+            raise LookupError("Usuario no encontrado")
+        return user

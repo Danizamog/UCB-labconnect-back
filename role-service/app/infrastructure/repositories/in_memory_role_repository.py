@@ -1,5 +1,6 @@
 import secrets
 import string
+from typing import Any
 
 from app.domain.entities.role import Role
 
@@ -39,3 +40,9 @@ class InMemoryRoleRepository:
 
     def delete(self, role_id: str) -> None:
         self._roles.pop(role_id, None)
+
+    def list_users_with_roles(self) -> list[dict[str, Any]]:
+        return []
+
+    def assign_user_role(self, user_id: str, role_id: str | None) -> dict[str, Any] | None:
+        return None

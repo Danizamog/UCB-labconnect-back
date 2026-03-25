@@ -6,8 +6,12 @@ from app.infrastructure.repositories.pocketbase_role_repository import PocketBas
 if settings.pocketbase_url:
 	role_repository = PocketBaseRoleRepository(
 		base_url=settings.pocketbase_url,
-		collection=settings.pocketbase_collection,
+		collection=settings.pocketbase_role_collection,
+		users_collection=settings.pocketbase_users_collection,
 		auth_token=settings.pocketbase_auth_token,
+		auth_identity=settings.pocketbase_auth_identity,
+		auth_password=settings.pocketbase_auth_password,
+		auth_collection=settings.pocketbase_auth_collection,
 		timeout_seconds=settings.pocketbase_timeout_seconds,
 	)
 else:

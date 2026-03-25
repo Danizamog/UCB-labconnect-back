@@ -32,3 +32,48 @@ async def proxy_inventory(path: str, request: Request) -> Response:
 async def proxy_roles(path: str, request: Request) -> Response:
     target_url = f"{settings.role_service_url}/v1/roles/{path}"
     return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/roles",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_roles_root(request: Request) -> Response:
+    target_url = f"{settings.role_service_url}/v1/roles"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/roles/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_roles_legacy(path: str, request: Request) -> Response:
+    target_url = f"{settings.role_service_url}/v1/roles/{path}"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/roles",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_roles_legacy_root(request: Request) -> Response:
+    target_url = f"{settings.role_service_url}/v1/roles"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/users/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_users_legacy(path: str, request: Request) -> Response:
+    target_url = f"{settings.role_service_url}/v1/roles/users/{path}"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/users",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_users_legacy_root(request: Request) -> Response:
+    target_url = f"{settings.role_service_url}/v1/roles/users"
+    return await forward_request(target_url, request)

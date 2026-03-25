@@ -4,35 +4,38 @@ services:
       context: ./auth-service
     container_name: auth-service
     environment:
-      - SECRET_KEY=super-secret-change-me
-      - TOKEN_EXPIRE_MINUTES=60
-    ports:
-      - "8001:8001"
+      - SECRET_KEY=${SECRET_KEY}
+      - TOKEN_EXPIRE_MINUTES=${TOKEN_EXPIRE_MINUTES:-60}
+      - JWT_ALGORITHM=${JWT_ALGORITHM:-HS256}
 
   inventory-service:
     build:
       context: ./inventory-service
     container_name: inventory-service
-    ports:
-      - "8003:8003"
 
   role-service:
     build:
       context: ./role-service
     container_name: role-service
-    ports:
-      - "8004:8004"
-
+    environment:
+      - POCKETBASE_URL=${POCKETBASE_URL:-}
+      - POCKETBASE_ROLE_COLLECTION=${POCKETBASE_ROLE_COLLECTION:-role}
+      - POCKETBASE_USERS_COLLECTION=${POCKETBASE_USERS_COLLECTION:-users}
+      - POCKETBASE_AUTH_TOKEN=${POCKETBASE_AUTH_TOKEN:-}
+      - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY:-}
+      - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD:-}
+      - POCKETBASE_AUTH_COLLECTION=${POCKETBASE_AUTH_COLLECTION:-_superusers}
+      - POCKETBASE_TIMEOUT_SECONDS=${POCKETBASE_TIMEOUT_SECONDS:-10}
   api-gateway:
     build:
       context: ./api-gateway
     container_name: api-gateway
     environment:
-      - AUTH_SERVICE_URL=http://auth-service:8001
-      - INVENTORY_SERVICE_URL=http://inventory-service:8003
-      - ROLE_SERVICE_URL=http://role-service:8004
+      - AUTH_SERVICE_URL=${AUTH_SERVICE_URL:-http://auth-service:8001}
+      - INVENTORY_SERVICE_URL=${INVENTORY_SERVICE_URL:-http://inventory-service:8003}
+      - ROLE_SERVICE_URL=${ROLE_SERVICE_URL:-http://role-service:8004}
     ports:
-      - "8000:8000"
+      - "${API_GATEWAY_PORT:-8000}:8000" 
     depends_on:
       - auth-service
       - inventory-service
