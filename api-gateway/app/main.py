@@ -7,19 +7,20 @@ from app.interfaces.http.proxy_router import router as proxy_router
 
 app = FastAPI(title="LabConnect API Gateway", version="2.0.0")
 
+# Sumamos tu frontend de producción a lo que ya tenías configurado
+origins = settings.cors_allowed_origins + ["https://ucb-labconnect-front.pages.dev"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_allowed_origins,
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "service": "api-gateway"}
-
 
 app.include_router(local_router)
 app.include_router(proxy_router)
