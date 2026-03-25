@@ -1,8 +1,10 @@
 import os
 from fastapi import APIRouter, Depends, HTTPException
+import httpx
 
 from app.schemas.asset import AssetCreate, AssetOut, AssetStatusUpdate, AssetUpdate
 from app.infrastructure.repositories.pocketbase_asset_repository import PocketBaseAssetRepository
+from app.infrastructure.repositories.pocketbase_equipment_log_repository import PocketBaseEquipmentLogRepository
 from app.domain.entities.asset import Asset as AssetEntity
 
 router = APIRouter(prefix="/assets", tags=["assets"])
@@ -20,6 +22,19 @@ def get_asset_repository() -> PocketBaseAssetRepository:
         auth_identity=identity,
         auth_password=password,
         auth_collection="_superusers",
+    )
+
+
+def get_log_repository() -> PocketBaseEquipmentLogRepository:
+    """Obtiene instancia del repositorio de equipment logs con PocketBase."""
+    base_url = os.getenv("POCKETBASE_URL", "https://bd-labconnect.zamoranogamarra.online")
+    identity = os.getenv("POCKETBASE_IDENTITY", "daniel.zamorano@ucb.edu.bo")
+    password = os.getenv("POCKETBASE_PASSWORD", "daniel.zamorano")
+    
+    return PocketBaseEquipmentLogRepository(
+        pocketbase_url=base_url,
+        identity=identity,
+        password=password,
     )
 
 
@@ -112,10 +127,11 @@ def update_asset(
 
 
 @router.patch("/{asset_id}/status", response_model=AssetOut)
-def update_asset_status(
+async def update_asset_status(
     asset_id: str,
     payload: AssetStatusUpdate,
     repo: PocketBaseAssetRepository = Depends(get_asset_repository),
+    log_repo: PocketBaseEquipmentLogRepository = Depends(get_log_repository),
 ):
     allowed_status = {"available", "maintenance", "damaged"}
     if payload.status not in allowed_status:
@@ -125,8 +141,22 @@ def update_asset_status(
     if not existing_asset:
         raise HTTPException(status_code=404, detail="Equipo no encontrado")
 
+    previous_status = existing_asset.status
     existing_asset.status = payload.status
     updated_asset = repo.update(existing_asset)
+
+    # Save log of status change
+    try:
+        await log_repo.create_log(
+            equipment_id=asset_id,
+            user_id="admin",  # TODO: Extract from JWT token when available
+            previous_status=previous_status,
+            new_status=payload.status,
+            comment=getattr(payload, "comment", None),
+        )
+    except Exception as e:
+        print(f"Error saving equipment log: {e}")
+        # Don't fail the request if logging fails
 
     return AssetOut(
         id=updated_asset.id or "",
@@ -147,6 +177,26 @@ def delete_asset(
     existing_asset = repo.get_by_id(asset_id)
     if not existing_asset:
         raise HTTPException(status_code=404, detail="Equipo no encontrado")
+
+    repo.delete(asset_id)
+    return {"message": "Equipo eliminado exitosamente"}
+
+
+@router.get("/{asset_id}/logs", tags=["equipment-logs"])
+async def get_asset_logs(
+    asset_id: str,
+    log_repo: PocketBaseEquipmentLogRepository = Depends(get_log_repository),
+):
+    """Get all status change logs for a specific equipment."""
+    try:
+        logs = await log_repo.get_equipment_logs(asset_id)
+        return {
+            "equipment_id": asset_id,
+            "logs": logs,
+            "count": len(logs)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching logs: {str(e)}")
 
     repo.delete(asset_id)
     return {"message": "Equipo eliminado"}
