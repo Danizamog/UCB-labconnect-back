@@ -51,6 +51,7 @@ def get_assets(
             description=asset.description,
             serial_number=asset.serial_number,
             laboratory_id=asset.laboratory_id,
+            location=asset.location,
             status=asset.status,
         )
         for asset in assets
@@ -62,17 +63,26 @@ def create_asset(
     payload: AssetCreate,
     repo: PocketBaseAssetRepository = Depends(get_asset_repository),
 ):
+    # Validar campos obligatorios
+    if not payload.name or not str(payload.name).strip():
+        raise HTTPException(status_code=400, detail="El campo 'Nombre del Equipo' es obligatorio")
+    
+    if not payload.location or not str(payload.location).strip():
+        raise HTTPException(status_code=400, detail="El campo 'Ubicación' es obligatorio")
+    
+    # Validar estado
     allowed_status = {"available", "maintenance", "damaged"}
-    if payload.status not in allowed_status:
-        raise HTTPException(status_code=400, detail="Estado inválido")
+    if not payload.status or payload.status not in allowed_status:
+        raise HTTPException(status_code=400, detail="Estado inválido. Valores permitidos: available, maintenance, damaged")
 
     asset_entity = AssetEntity(
         id=None,
-        name=payload.name,
+        name=payload.name.strip(),
         category=payload.category,
         description=payload.description,
         serial_number=payload.serial_number,
         laboratory_id=payload.laboratory_id,
+        location=payload.location.strip(),
         status=payload.status,
     )
 
@@ -85,6 +95,7 @@ def create_asset(
         description=created_asset.description,
         serial_number=created_asset.serial_number,
         laboratory_id=created_asset.laboratory_id,
+        location=created_asset.location,
         status=created_asset.status,
     )
 
@@ -110,6 +121,7 @@ def update_asset(
         description=payload.description,
         serial_number=payload.serial_number,
         laboratory_id=payload.laboratory_id,
+        location=payload.location if payload.location is not None else existing_asset.location,
         status=payload.status,
     )
 
@@ -122,6 +134,7 @@ def update_asset(
         description=updated_asset.description,
         serial_number=updated_asset.serial_number,
         laboratory_id=updated_asset.laboratory_id,
+        location=updated_asset.location,
         status=updated_asset.status,
     )
 
@@ -140,6 +153,9 @@ async def update_asset_status(
     existing_asset = repo.get_by_id(asset_id)
     if not existing_asset:
         raise HTTPException(status_code=404, detail="Equipo no encontrado")
+
+    if not existing_asset.location or not str(existing_asset.location).strip():
+        existing_asset.location = "Sin ubicación"
 
     previous_status = existing_asset.status
     existing_asset.status = payload.status
@@ -165,6 +181,7 @@ async def update_asset_status(
         description=updated_asset.description,
         serial_number=updated_asset.serial_number,
         laboratory_id=updated_asset.laboratory_id,
+        location=updated_asset.location,
         status=updated_asset.status,
     )
 
@@ -197,6 +214,3 @@ async def get_asset_logs(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching logs: {str(e)}")
-
-    repo.delete(asset_id)
-    return {"message": "Equipo eliminado"}

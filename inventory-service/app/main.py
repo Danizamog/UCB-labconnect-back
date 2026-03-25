@@ -94,4 +94,71 @@ async def setup_equipment_logs_collection() -> dict:
     except Exception as e:
         return {"success": False, "message": str(e)}
 
+
+@app.post("/setup/add-location-field-to-assets")
+async def setup_assets_location_field() -> dict:
+    """Setup endpoint to ensure required fields exist in assets collection."""
+    try:
+        pocketbase_url = os.getenv("POCKETBASE_URL", "https://bd-labconnect.zamoranogamarra.online")
+        identity = os.getenv("POCKETBASE_IDENTITY", "daniel.zamorano@ucb.edu.bo")
+        password = os.getenv("POCKETBASE_PASSWORD", "daniel.zamorano")
+
+        async with httpx.AsyncClient() as client:
+            auth_response = await client.post(
+                f"{pocketbase_url}/api/collections/_superusers/auth-with-password",
+                json={"identity": identity, "password": password},
+            )
+            auth_response.raise_for_status()
+            token = auth_response.json()["token"]
+            headers = {"Authorization": f"Bearer {token}"}
+
+            collection_response = await client.get(
+                f"{pocketbase_url}/api/collections/assets",
+                headers=headers,
+            )
+            collection_response.raise_for_status()
+            collection = collection_response.json()
+
+            fields = collection.get("fields", [])
+            
+            # New fields to add
+            new_fields = [
+                {"name": "location", "type": "text", "required": True, "presentable": True, "max": 120},
+                {"name": "item_type", "type": "select", "required": True, "values": ["equipo", "herramienta", "reactivo"]},
+                {"name": "brand", "type": "text", "required": False, "max": 100},
+                {"name": "model", "type": "text", "required": False, "max": 100},
+                {"name": "quantity", "type": "number", "required": False},
+                {"name": "unit", "type": "select", "required": False, "values": ["ml", "L", "g", "kg", "piezas", "unidades"]},
+                {"name": "expiry_date", "type": "date", "required": False},
+                {"name": "provider", "type": "text", "required": False, "max": 150},
+                {"name": "concentration", "type": "text", "required": False, "max": 100},
+            ]
+            
+            # Check which fields exist and add missing ones
+            existing_field_names = {f.get("name") for f in fields}
+            fields_to_add = [f for f in new_fields if f["name"] not in existing_field_names]
+            
+            if not fields_to_add:
+                return {
+                    "success": True,
+                    "message": "All required fields already exist in assets collection",
+                }
+            
+            fields.extend(fields_to_add)
+
+            update_response = await client.patch(
+                f"{pocketbase_url}/api/collections/assets",
+                json={"fields": fields},
+                headers=headers,
+            )
+            update_response.raise_for_status()
+
+            return {
+                "success": True,
+                "message": f"Added {len(fields_to_add)} fields to assets collection successfully",
+                "added_fields": [f["name"] for f in fields_to_add],
+            }
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
 app.include_router(api_router)
