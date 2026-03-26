@@ -110,16 +110,7 @@ class PocketBaseAssetRepository:
             description=record.get("description"),
             serial_number=record.get("serial_number"),
             laboratory_id=record.get("laboratory_id"),
-            location=record.get("location"),
             status=record.get("status", "available"),
-            item_type=record.get("item_type", "equipo"),
-            brand=record.get("brand"),
-            model=record.get("model"),
-            quantity=record.get("quantity"),
-            unit=record.get("unit"),
-            expiry_date=record.get("expiry_date"),
-            provider=record.get("provider"),
-            concentration=record.get("concentration"),
         )
 
     def list_all(self) -> list[Asset]:
@@ -152,16 +143,7 @@ class PocketBaseAssetRepository:
             "description": asset.description,
             "serial_number": asset.serial_number,
             "laboratory_id": asset.laboratory_id,
-            "location": asset.location,
             "status": asset.status,
-            "item_type": asset.item_type,
-            "brand": asset.brand,
-            "model": asset.model,
-            "quantity": asset.quantity,
-            "unit": asset.unit,
-            "expiry_date": asset.expiry_date,
-            "provider": asset.provider,
-            "concentration": asset.concentration,
         }
 
         response_data = self._request(
@@ -202,25 +184,7 @@ class PocketBaseAssetRepository:
             "serial_number": asset.serial_number,
             "laboratory_id": asset.laboratory_id,
             "status": asset.status,
-            "item_type": asset.item_type,
         }
-
-        if asset.location is not None and str(asset.location).strip():
-            payload["location"] = str(asset.location).strip()
-        if asset.brand:
-            payload["brand"] = asset.brand
-        if asset.model:
-            payload["model"] = asset.model
-        if asset.quantity is not None:
-            payload["quantity"] = asset.quantity
-        if asset.unit:
-            payload["unit"] = asset.unit
-        if asset.expiry_date:
-            payload["expiry_date"] = asset.expiry_date
-        if asset.provider:
-            payload["provider"] = asset.provider
-        if asset.concentration:
-            payload["concentration"] = asset.concentration
 
         response_data = self._request(
             "PATCH",

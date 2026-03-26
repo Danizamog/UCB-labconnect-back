@@ -18,3 +18,4 @@ else:
 	role_repository = InMemoryRoleRepository()
 
 manage_roles_use_case = ManageRolesUseCase(repository=role_repository)
+manage_roles_use_case.ensure_default_roles()

@@ -4,6 +4,7 @@ from enum import Enum
 class AssetStatus(str, Enum):
     """Estados válidos para un equipo en el inventario"""
     AVAILABLE = "available"
+    LOANED = "loaned"
     MAINTENANCE = "maintenance"
     DAMAGED = "damaged"
 

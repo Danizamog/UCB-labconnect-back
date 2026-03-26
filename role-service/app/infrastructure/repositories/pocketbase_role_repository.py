@@ -24,6 +24,10 @@ class PocketBaseRoleRepository:
         self._auth_password = auth_password
         self._auth_collection = auth_collection
         self._auth_token = auth_token
+        self._client = httpx.Client(
+            timeout=httpx.Timeout(self._timeout, connect=min(self._timeout, 5.0)),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        )
 
     def _build_headers(self, headers: dict[str, str] | None = None) -> dict[str, str]:
         merged_headers = dict(headers or {})
@@ -53,7 +57,7 @@ class PocketBaseRoleRepository:
         last_exception: Exception | None = None
         for endpoint in auth_endpoints:
             try:
-                response = httpx.request("POST", endpoint, json=payload, timeout=self._timeout)
+                response = self._client.request("POST", endpoint, json=payload)
                 response.raise_for_status()
                 data = response.json() if response.content else {}
                 token = data.get("token") if isinstance(data, dict) else None
@@ -83,21 +87,19 @@ class PocketBaseRoleRepository:
         if not self._auth_token and self._has_credentials():
             self._authenticate()
 
-        response = httpx.request(
+        response = self._client.request(
             method,
             url,
             headers=self._build_headers(headers),
-            timeout=self._timeout,
             **kwargs,
         )
 
         if response.status_code == 401 and self._has_credentials():
             self._authenticate()
-            response = httpx.request(
+            response = self._client.request(
                 method,
                 url,
                 headers=self._build_headers(headers),
-                timeout=self._timeout,
                 **kwargs,
             )
 
@@ -325,3 +327,6 @@ class PocketBaseRoleRepository:
             return None
 
         return self._map_user_record(payload)
+
+    def close(self) -> None:
+        self._client.close()

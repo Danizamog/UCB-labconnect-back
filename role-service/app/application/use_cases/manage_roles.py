@@ -1,5 +1,10 @@
 from typing import Any
 
+from app.domain.permission_catalog import ASSIGNABLE_ROLE_NAMES
+from app.domain.permission_catalog import DEFAULT_ROLE_TEMPLATES
+from app.domain.permission_catalog import PERMISSION_CATALOG
+from app.domain.permission_catalog import is_assignable_role_name
+from app.domain.permission_catalog import normalize_permissions
 from app.domain.entities.role import Role
 from app.domain.repositories.role_repository import RoleRepository
 
@@ -10,6 +15,22 @@ class ManageRolesUseCase:
 
     def list_roles(self) -> list[Role]:
         return self.repository.list_all()
+
+    def list_permissions_catalog(self) -> list[dict[str, str]]:
+        return PERMISSION_CATALOG
+
+    def ensure_default_roles(self) -> None:
+        for template in DEFAULT_ROLE_TEMPLATES:
+            if self.repository.get_by_nombre(template["nombre"]):
+                continue
+            self.repository.create(
+                Role(
+                    id="",
+                    nombre=template["nombre"],
+                    descripcion=template["descripcion"],
+                    permisos=template["permisos"],
+                )
+            )
 
     def get_role(self, role_id: str) -> Role:
         role = self.repository.get_by_id(role_id)
@@ -29,7 +50,7 @@ class ManageRolesUseCase:
             id="",
             nombre=normalized_nombre,
             descripcion=descripcion,
-            permisos=sorted(set(permission.strip() for permission in permisos if permission.strip())),
+            permisos=normalize_permissions(permisos),
         )
         return self.repository.create(role)
 
@@ -48,7 +69,7 @@ class ManageRolesUseCase:
 
         role.nombre = normalized_nombre
         role.descripcion = descripcion
-        role.permisos = sorted(set(permission.strip() for permission in permisos if permission.strip()))
+        role.permisos = normalize_permissions(permisos)
         return self.repository.update(role)
 
     def delete_role(self, role_id: str) -> None:
@@ -60,6 +81,16 @@ class ManageRolesUseCase:
         return self.repository.list_users_with_roles()
 
     def assign_user_role(self, user_id: str, role_id: str | None) -> dict[str, Any]:
+        if role_id:
+            selected_role = self.repository.get_by_id(role_id)
+            if not selected_role:
+                raise LookupError("Rol no encontrado")
+            if not is_assignable_role_name(selected_role.nombre):
+                allowed = ", ".join(ASSIGNABLE_ROLE_NAMES)
+                raise ValueError(
+                    f"Solo se pueden asignar roles base del sistema: {allowed}"
+                )
+
         user = self.repository.assign_user_role(user_id=user_id, role_id=role_id)
         if not user:
             raise LookupError("Usuario no encontrado")

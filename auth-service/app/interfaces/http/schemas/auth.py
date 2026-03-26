@@ -11,6 +11,21 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class GoogleLoginRequest(BaseModel):
+    credential: str = Field(min_length=1)
+
+
+class InstitutionalLoginRequest(BaseModel):
+    credential: str = Field(min_length=1)
+
+
+class InstitutionalSSOConfigResponse(BaseModel):
+    enabled: bool
+    provider: str | None = None
+    client_id: str | None = None
+    button_label: str | None = None
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"

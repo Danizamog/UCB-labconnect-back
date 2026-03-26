@@ -1,24 +1,40 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
+from pathlib import Path
 
 
-class Settings(BaseSettings):
-    app_name: str = "LabConnect Inventory Service"
-    app_env: str = "development"
-    app_host: str = "0.0.0.0"
-    app_port: int = 8003
+def _load_env_file() -> None:
+    backend_root = Path(__file__).resolve().parents[3]
+    env_path = backend_root / ".env"
 
-    postgres_db: str = "labconnect"
-    postgres_user: str = "labconnect_user"
-    postgres_password: str = "labconnect_pass"
-    postgres_host: str = "postgres"
-    postgres_port: int = 5432
+    if not env_path.exists():
+        return
 
-    database_url: str = "sqlite:///./inventory.db"
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
 
-    secret_key: str = "super_secret_key_change_this"
-    algorithm: str = "HS256"
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_env_file()
+
+
+class Settings:
+    def __init__(self) -> None:
+        self.app_name = os.getenv("INVENTORY_APP_NAME", "LabConnect Inventory Service")
+        self.app_env = os.getenv("APP_ENV", "development")
+        self.app_host = os.getenv("INVENTORY_APP_HOST", "0.0.0.0")
+        self.app_port = int(os.getenv("INVENTORY_APP_PORT", "8003"))
+        self.database_url = os.getenv("INVENTORY_DATABASE_URL", "sqlite:///./inventory.db")
+        self.auth_service_url = os.getenv("AUTH_SERVICE_URL", "http://127.0.0.1:8101")
+        self.secret_key = os.getenv("SECRET_KEY", "change-this-secret")
+        self.algorithm = os.getenv("JWT_ALGORITHM", os.getenv("ALGORITHM", "HS256"))
 
 
 settings = Settings()

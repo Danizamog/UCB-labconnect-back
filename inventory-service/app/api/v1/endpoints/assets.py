@@ -1,216 +1,133 @@
-import os
 from fastapi import APIRouter, Depends, HTTPException
-import httpx
 
-from app.schemas.asset import AssetCreate, AssetOut, AssetStatusUpdate, AssetUpdate
-from app.infrastructure.repositories.pocketbase_asset_repository import PocketBaseAssetRepository
-from app.infrastructure.repositories.pocketbase_equipment_log_repository import PocketBaseEquipmentLogRepository
-from app.domain.entities.asset import Asset as AssetEntity
+from app.application.container import asset_use_cases
+from app.core.dependencies import ensure_any_permission, get_current_user_payload
+from app.schemas.asset import AssetCreate, AssetOut, AssetStatusLogOut, AssetStatusUpdate, AssetUpdate
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
 
-def get_asset_repository() -> PocketBaseAssetRepository:
-    """Obtiene instancia del repositorio de assets con PocketBase."""
-    base_url = os.getenv("POCKETBASE_URL", "https://bd-labconnect.zamoranogamarra.online")
-    identity = os.getenv("POCKETBASE_IDENTITY", "daniel.zamorano@ucb.edu.bo")
-    password = os.getenv("POCKETBASE_PASSWORD", "daniel.zamorano")
-    
-    return PocketBaseAssetRepository(
-        base_url=base_url,
-        collection="assets",
-        auth_identity=identity,
-        auth_password=password,
-        auth_collection="_superusers",
-    )
-
-
-def get_log_repository() -> PocketBaseEquipmentLogRepository:
-    """Obtiene instancia del repositorio de equipment logs con PocketBase."""
-    base_url = os.getenv("POCKETBASE_URL", "https://bd-labconnect.zamoranogamarra.online")
-    identity = os.getenv("POCKETBASE_IDENTITY", "daniel.zamorano@ucb.edu.bo")
-    password = os.getenv("POCKETBASE_PASSWORD", "daniel.zamorano")
-    
-    return PocketBaseEquipmentLogRepository(
-        pocketbase_url=base_url,
-        identity=identity,
-        password=password,
+def serialize_asset(asset) -> AssetOut:
+    return AssetOut.model_validate(
+        {
+            "id": str(asset.id),
+            "name": asset.name,
+            "category": asset.category,
+            "location": asset.location,
+            "description": asset.description,
+            "serial_number": asset.serial_number,
+            "laboratory_id": asset.laboratory_id,
+            "status": asset.status,
+            "status_updated_at": asset.status_updated_at,
+            "status_updated_by": asset.status_updated_by,
+        }
     )
 
 
 @router.get("/", response_model=list[AssetOut])
-def get_assets(
-    repo: PocketBaseAssetRepository = Depends(get_asset_repository),
-):
-    assets = repo.list_all()
-    return [
-        AssetOut(
-            id=asset.id or "",
-            name=asset.name,
-            category=asset.category,
-            description=asset.description,
-            serial_number=asset.serial_number,
-            laboratory_id=asset.laboratory_id,
-            location=asset.location,
-            status=asset.status,
-        )
-        for asset in assets
-    ]
+def get_assets():
+    return [serialize_asset(asset) for asset in asset_use_cases.list_assets()]
 
 
 @router.post("/", response_model=AssetOut)
 def create_asset(
     payload: AssetCreate,
-    repo: PocketBaseAssetRepository = Depends(get_asset_repository),
+    current_user: dict = Depends(get_current_user_payload),
 ):
-    # Validar campos obligatorios
-    if not payload.name or not str(payload.name).strip():
-        raise HTTPException(status_code=400, detail="El campo 'Nombre del Equipo' es obligatorio")
-    
-    if not payload.location or not str(payload.location).strip():
-        raise HTTPException(status_code=400, detail="El campo 'Ubicación' es obligatorio")
-    
-    # Validar estado
-    allowed_status = {"available", "maintenance", "damaged"}
-    if not payload.status or payload.status not in allowed_status:
-        raise HTTPException(status_code=400, detail="Estado inválido. Valores permitidos: available, maintenance, damaged")
+    ensure_any_permission(current_user, {"gestionar_inventario"}, "No autorizado para registrar equipos")
+    try:
+        asset = asset_use_cases.create_asset(
+            name=payload.name,
+            category=payload.category,
+            location=payload.location,
+            description=payload.description,
+            serial_number=payload.serial_number,
+            laboratory_id=payload.laboratory_id,
+            status=payload.status,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    asset_entity = AssetEntity(
-        id=None,
-        name=payload.name.strip(),
-        category=payload.category,
-        description=payload.description,
-        serial_number=payload.serial_number,
-        laboratory_id=payload.laboratory_id,
-        location=payload.location.strip(),
-        status=payload.status,
-    )
-
-    created_asset = repo.create(asset_entity)
-
-    return AssetOut(
-        id=created_asset.id or "",
-        name=created_asset.name,
-        category=created_asset.category,
-        description=created_asset.description,
-        serial_number=created_asset.serial_number,
-        laboratory_id=created_asset.laboratory_id,
-        location=created_asset.location,
-        status=created_asset.status,
-    )
+    return serialize_asset(asset)
 
 
 @router.put("/{asset_id}", response_model=AssetOut)
 def update_asset(
-    asset_id: str,
+    asset_id: int,
     payload: AssetUpdate,
-    repo: PocketBaseAssetRepository = Depends(get_asset_repository),
+    current_user: dict = Depends(get_current_user_payload),
 ):
-    allowed_status = {"available", "maintenance", "damaged"}
-    if payload.status not in allowed_status:
-        raise HTTPException(status_code=400, detail="Estado inválido")
+    ensure_any_permission(current_user, {"gestionar_inventario"}, "No autorizado para editar equipos")
+    try:
+        asset = asset_use_cases.update_asset(
+            asset_id=asset_id,
+            name=payload.name,
+            category=payload.category,
+            location=payload.location,
+            description=payload.description,
+            serial_number=payload.serial_number,
+            laboratory_id=payload.laboratory_id,
+            status=payload.status,
+            changed_by=current_user.get("username"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    existing_asset = repo.get_by_id(asset_id)
-    if not existing_asset:
-        raise HTTPException(status_code=404, detail="Equipo no encontrado")
-
-    asset_entity = AssetEntity(
-        id=asset_id,
-        name=payload.name,
-        category=payload.category,
-        description=payload.description,
-        serial_number=payload.serial_number,
-        laboratory_id=payload.laboratory_id,
-        location=payload.location if payload.location is not None else existing_asset.location,
-        status=payload.status,
-    )
-
-    updated_asset = repo.update(asset_entity)
-
-    return AssetOut(
-        id=updated_asset.id or "",
-        name=updated_asset.name,
-        category=updated_asset.category,
-        description=updated_asset.description,
-        serial_number=updated_asset.serial_number,
-        laboratory_id=updated_asset.laboratory_id,
-        location=updated_asset.location,
-        status=updated_asset.status,
-    )
+    return serialize_asset(asset)
 
 
 @router.patch("/{asset_id}/status", response_model=AssetOut)
-async def update_asset_status(
-    asset_id: str,
+def update_asset_status(
+    asset_id: int,
     payload: AssetStatusUpdate,
-    repo: PocketBaseAssetRepository = Depends(get_asset_repository),
-    log_repo: PocketBaseEquipmentLogRepository = Depends(get_log_repository),
+    current_user: dict = Depends(get_current_user_payload),
 ):
-    allowed_status = {"available", "maintenance", "damaged"}
-    if payload.status not in allowed_status:
-        raise HTTPException(status_code=400, detail="Estado inválido. Usa: available, maintenance o damaged")
-
-    existing_asset = repo.get_by_id(asset_id)
-    if not existing_asset:
-        raise HTTPException(status_code=404, detail="Equipo no encontrado")
-
-    if not existing_asset.location or not str(existing_asset.location).strip():
-        existing_asset.location = "Sin ubicación"
-
-    previous_status = existing_asset.status
-    existing_asset.status = payload.status
-    updated_asset = repo.update(existing_asset)
-
-    # Save log of status change
-    try:
-        await log_repo.create_log(
-            equipment_id=asset_id,
-            user_id="admin",  # TODO: Extract from JWT token when available
-            previous_status=previous_status,
-            new_status=payload.status,
-            comment=getattr(payload, "comment", None),
-        )
-    except Exception as e:
-        print(f"Error saving equipment log: {e}")
-        # Don't fail the request if logging fails
-
-    return AssetOut(
-        id=updated_asset.id or "",
-        name=updated_asset.name,
-        category=updated_asset.category,
-        description=updated_asset.description,
-        serial_number=updated_asset.serial_number,
-        laboratory_id=updated_asset.laboratory_id,
-        location=updated_asset.location,
-        status=updated_asset.status,
+    ensure_any_permission(
+        current_user,
+        {"gestionar_estado_equipos", "gestionar_mantenimiento"},
+        "No autorizado para actualizar el estado de equipos",
     )
+    try:
+        asset = asset_use_cases.update_asset_status(
+            asset_id=asset_id,
+            status=payload.status,
+            changed_by=current_user.get("username"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return serialize_asset(asset)
+
+
+@router.get("/{asset_id}/status-history", response_model=list[AssetStatusLogOut])
+def get_asset_status_history(
+    asset_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+):
+    ensure_any_permission(
+        current_user,
+        {"gestionar_estado_equipos", "gestionar_mantenimiento", "gestionar_inventario", "generar_reportes", "consultar_estadisticas"},
+        "No autorizado para ver el historial de estados del equipo",
+    )
+    try:
+        return asset_use_cases.list_asset_status_logs(asset_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.delete("/{asset_id}")
 def delete_asset(
-    asset_id: str,
-    repo: PocketBaseAssetRepository = Depends(get_asset_repository),
+    asset_id: int,
+    current_user: dict = Depends(get_current_user_payload),
 ):
-    existing_asset = repo.get_by_id(asset_id)
-    if not existing_asset:
-        raise HTTPException(status_code=404, detail="Equipo no encontrado")
-
-    repo.delete(asset_id)
-    return {"message": "Equipo eliminado exitosamente"}
-
-
-@router.get("/{asset_id}/logs", tags=["equipment-logs"])
-async def get_asset_logs(
-    asset_id: str,
-    log_repo: PocketBaseEquipmentLogRepository = Depends(get_log_repository),
-):
-    """Get all status change logs for a specific equipment."""
+    ensure_any_permission(current_user, {"gestionar_inventario"}, "No autorizado para eliminar equipos")
     try:
-        logs = await log_repo.get_equipment_logs(asset_id)
-        return {
-            "equipment_id": asset_id,
-            "logs": logs,
-            "count": len(logs)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching logs: {str(e)}")
+        asset_use_cases.delete_asset(asset_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return {"message": "Equipo eliminado"}
