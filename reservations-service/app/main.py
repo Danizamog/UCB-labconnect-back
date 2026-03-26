@@ -6,6 +6,10 @@ from app.core.config import settings
 from app.core.dependencies import auth_validation_client
 from app.db.bootstrap import initialize_reservations_database
 from app.infrastructure.inventory_client import inventory_service_client
+from app.infrastructure.pocketbase_sync import (
+    initialize_reservations_pocketbase_sync,
+    reservations_pocketbase_client,
+)
 import app.models.area  # noqa: F401
 import app.models.class_session  # noqa: F401
 import app.models.class_tutorial  # noqa: F401
@@ -33,12 +37,14 @@ async def health() -> dict:
 @app.on_event("startup")
 def on_startup() -> None:
     initialize_reservations_database()
+    initialize_reservations_pocketbase_sync()
 
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     auth_validation_client.close()
     inventory_service_client.close()
+    reservations_pocketbase_client.close()
 
 
 app.include_router(api_router)

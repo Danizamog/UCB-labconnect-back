@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.dependencies import ensure_any_permission, get_current_user_payload, get_db
+from app.infrastructure.pocketbase_sync import sync_reservations_to_pocketbase
 from app.models.class_session import ClassSession
 from app.models.class_tutorial import ClassTutorial
 from app.models.laboratory import Laboratory
@@ -196,6 +197,7 @@ def create_class_tutorial(
         .filter(ClassTutorial.id == item.id)
         .first()
     )
+    sync_reservations_to_pocketbase()
     publish_reservations_event(
         "class_tutorial.created",
         "class_tutorial",
@@ -276,6 +278,7 @@ def update_class_tutorial(
         .filter(ClassTutorial.id == item.id)
         .first()
     )
+    sync_reservations_to_pocketbase()
     publish_reservations_event(
         "class_tutorial.updated",
         "class_tutorial",
@@ -306,6 +309,7 @@ def delete_class_tutorial(
     session_type = item.session_type
     db.delete(item)
     db.commit()
+    sync_reservations_to_pocketbase()
     publish_reservations_event(
         "class_tutorial.deleted",
         "class_tutorial",

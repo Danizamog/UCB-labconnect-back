@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.application.container import asset_use_cases
 from app.core.dependencies import ensure_any_permission, get_current_user_payload
+from app.infrastructure.pocketbase_sync import sync_inventory_to_pocketbase
 from app.schemas.asset import AssetCreate, AssetOut, AssetStatusLogOut, AssetStatusUpdate, AssetUpdate
 
 router = APIRouter(prefix="/assets", tags=["assets"])
@@ -48,6 +49,7 @@ def create_asset(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    sync_inventory_to_pocketbase()
     return serialize_asset(asset)
 
 
@@ -75,6 +77,7 @@ def update_asset(
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    sync_inventory_to_pocketbase()
     return serialize_asset(asset)
 
 
@@ -100,6 +103,7 @@ def update_asset_status(
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    sync_inventory_to_pocketbase()
     return serialize_asset(asset)
 
 
@@ -130,4 +134,5 @@ def delete_asset(
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    sync_inventory_to_pocketbase()
     return {"message": "Equipo eliminado"}

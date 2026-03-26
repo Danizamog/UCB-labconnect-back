@@ -34,6 +34,30 @@ class Settings:
         self.auth_service_url = os.getenv("AUTH_SERVICE_URL", "http://127.0.0.1:8101")
         self.secret_key = os.getenv("SECRET_KEY", "change-this-secret")
         self.algorithm = os.getenv("JWT_ALGORITHM", os.getenv("ALGORITHM", "HS256"))
+        self.pocketbase_url = os.getenv("POCKETBASE_URL", "").rstrip("/")
+        self.pocketbase_auth_token = os.getenv("POCKETBASE_AUTH_TOKEN")
+        self.pocketbase_auth_identity = os.getenv("POCKETBASE_AUTH_IDENTITY")
+        self.pocketbase_auth_password = os.getenv("POCKETBASE_AUTH_PASSWORD")
+        self.pocketbase_auth_collection = os.getenv("POCKETBASE_AUTH_COLLECTION", "_superusers")
+        self.pocketbase_timeout_seconds = float(os.getenv("POCKETBASE_TIMEOUT_SECONDS", "10"))
+        self.pb_areas_collection = os.getenv("POCKETBASE_RESERVATIONS_AREAS_COLLECTION", "reservations_areas")
+        self.pb_labs_collection = os.getenv("POCKETBASE_RESERVATIONS_LABS_COLLECTION", "reservations_laboratories")
+        self.pb_class_sessions_collection = os.getenv(
+            "POCKETBASE_RESERVATIONS_CLASS_SESSIONS_COLLECTION",
+            "reservations_class_sessions",
+        )
+        self.pb_class_tutorials_collection = os.getenv(
+            "POCKETBASE_RESERVATIONS_CLASS_TUTORIALS_COLLECTION",
+            "reservations_class_tutorials",
+        )
+        self.pb_practice_requests_collection = os.getenv(
+            "POCKETBASE_RESERVATIONS_PRACTICE_REQUESTS_COLLECTION",
+            "reservations_practice_requests",
+        )
+        self.pb_practice_materials_collection = os.getenv(
+            "POCKETBASE_RESERVATIONS_PRACTICE_MATERIALS_COLLECTION",
+            "reservations_practice_materials",
+        )
         raw_origins = os.getenv(
             "CORS_ALLOWED_ORIGINS",
             "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",

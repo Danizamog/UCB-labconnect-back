@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.dependencies import ensure_any_permission, get_current_user_payload, get_db, get_optional_current_user_payload
+from app.infrastructure.pocketbase_sync import sync_reservations_to_pocketbase
 from app.models.area import Area
 from app.models.laboratory import Laboratory
 from app.schemas.laboratory import LaboratoryCreate, LaboratoryOut, LaboratoryUpdate
@@ -127,6 +128,7 @@ def create_lab(
         .filter(Laboratory.id == lab.id)
         .first()
     )
+    sync_reservations_to_pocketbase()
     return serialize_laboratory(lab)
 
 
@@ -177,6 +179,7 @@ def update_lab(
         .filter(Laboratory.id == lab.id)
         .first()
     )
+    sync_reservations_to_pocketbase()
     return serialize_laboratory(lab)
 
 
@@ -198,4 +201,5 @@ def delete_lab(
 
     db.delete(lab)
     db.commit()
+    sync_reservations_to_pocketbase()
     return {"message": "Laboratorio eliminado"}
