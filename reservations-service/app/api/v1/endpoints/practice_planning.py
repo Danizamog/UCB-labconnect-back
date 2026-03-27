@@ -14,6 +14,7 @@ from app.infrastructure.inventory_client import (
     release_material_from_practice,
     reserve_material_from_practice,
 )
+from app.infrastructure.pocketbase_sync import sync_reservations_to_pocketbase
 from app.models.laboratory import Laboratory
 from app.models.practice_material import PracticeMaterial
 from app.models.practice_request import PracticeRequest
@@ -366,6 +367,7 @@ def create_practice_planning(
         .filter(PracticeRequest.id == practice.id)
         .first()
     )
+    sync_reservations_to_pocketbase()
     publish_reservations_event(
         "practice_request.created",
         "practice_request",
@@ -447,6 +449,7 @@ def mark_notification_as_read(
 
     practice.user_notification_read = True
     db.commit()
+    sync_reservations_to_pocketbase()
     return {"ok": True}
 
 
@@ -532,6 +535,7 @@ def update_practice_status(
         .filter(PracticeRequest.id == practice_id)
         .first()
     )
+    sync_reservations_to_pocketbase()
     publish_reservations_event(
         "practice_request.updated",
         "practice_request",

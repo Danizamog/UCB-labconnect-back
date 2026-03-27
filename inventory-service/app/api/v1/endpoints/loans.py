@@ -8,6 +8,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import ensure_any_permission, get_current_user_payload, get_db
+from app.infrastructure.pocketbase_sync import sync_inventory_to_pocketbase
 from app.models.asset import Asset
 from app.models.loan_record import LoanRecord
 from app.models.stock_item import StockItem
@@ -280,6 +281,7 @@ def create_loan(
     db.add(record)
     db.commit()
     db.refresh(record)
+    sync_inventory_to_pocketbase()
     return serialize_loan(record, utcnow())
 
 
@@ -325,4 +327,5 @@ def return_loan(
 
     db.commit()
     db.refresh(record)
+    sync_inventory_to_pocketbase()
     return serialize_loan(record, record.returned_at)

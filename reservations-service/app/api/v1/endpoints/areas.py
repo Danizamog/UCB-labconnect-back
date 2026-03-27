@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import ensure_any_permission, get_current_user_payload, get_db
+from app.infrastructure.pocketbase_sync import sync_reservations_to_pocketbase
 from app.models.area import Area
 from app.models.laboratory import Laboratory
 from app.schemas.area import AreaCreate, AreaOut, AreaUpdate
@@ -77,6 +78,7 @@ def create_area(
     db.add(area)
     db.commit()
     db.refresh(area)
+    sync_reservations_to_pocketbase()
     return serialize_area(area)
 
 
@@ -111,6 +113,7 @@ def update_area(
 
     db.commit()
     db.refresh(area)
+    sync_reservations_to_pocketbase()
     return serialize_area(area)
 
 
@@ -139,4 +142,5 @@ def delete_area(
 
     db.delete(area)
     db.commit()
+    sync_reservations_to_pocketbase()
     return {"message": "Area eliminada"}

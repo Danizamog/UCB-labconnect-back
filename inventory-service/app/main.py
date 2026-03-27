@@ -4,6 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.dependencies import auth_validation_client
 from app.db.bootstrap import initialize_inventory_database
+from app.infrastructure.pocketbase_sync import (
+    initialize_inventory_pocketbase_sync,
+    inventory_pocketbase_client,
+)
 import app.models.asset  # noqa: F401
 import app.models.asset_status_log  # noqa: F401
 import app.models.loan_record  # noqa: F401
@@ -36,11 +40,13 @@ async def health() -> dict:
 @app.on_event("startup")
 def on_startup() -> None:
     initialize_inventory_database()
+    initialize_inventory_pocketbase_sync()
 
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     auth_validation_client.close()
+    inventory_pocketbase_client.close()
 
 
 app.include_router(api_router)
