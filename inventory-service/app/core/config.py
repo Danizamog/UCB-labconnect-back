@@ -27,6 +27,16 @@ _load_env_file()
 
 class Settings:
     def __init__(self) -> None:
+<<<<<<< HEAD
+        self.secret_key: str = os.getenv("SECRET_KEY", "change-me")
+        self.algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
+        self.auth_service_url: str = os.getenv("AUTH_SERVICE_URL", "http://127.0.0.1:8001")
+        self.pocketbase_url: str = os.getenv("POCKETBASE_URL", "").strip()
+        self.pocketbase_auth_identity: str = os.getenv("POCKETBASE_AUTH_IDENTITY", "").strip()
+        self.pocketbase_auth_password: str = os.getenv("POCKETBASE_AUTH_PASSWORD", "").strip()
+        self.pocketbase_auth_collection: str = os.getenv("POCKETBASE_AUTH_COLLECTION", "_superusers").strip() or "_superusers"
+        self.pocketbase_timeout_seconds: float = float(os.getenv("POCKETBASE_TIMEOUT_SECONDS", "10"))
+=======
         self.app_name = os.getenv("INVENTORY_APP_NAME", "LabConnect Inventory Service")
         self.app_env = os.getenv("APP_ENV", "development")
         self.app_host = os.getenv("INVENTORY_APP_HOST", "0.0.0.0")
@@ -35,6 +45,27 @@ class Settings:
         self.auth_service_url = os.getenv("AUTH_SERVICE_URL", "http://127.0.0.1:8101")
         self.secret_key = os.getenv("SECRET_KEY", "change-this-secret")
         self.algorithm = os.getenv("JWT_ALGORITHM", os.getenv("ALGORITHM", "HS256"))
+        self.pocketbase_url = os.getenv("POCKETBASE_URL", "").rstrip("/")
+        self.pocketbase_auth_token = os.getenv("POCKETBASE_AUTH_TOKEN")
+        self.pocketbase_auth_identity = os.getenv("POCKETBASE_AUTH_IDENTITY")
+        self.pocketbase_auth_password = os.getenv("POCKETBASE_AUTH_PASSWORD")
+        self.pocketbase_auth_collection = os.getenv("POCKETBASE_AUTH_COLLECTION", "_superusers")
+        self.pocketbase_timeout_seconds = float(os.getenv("POCKETBASE_TIMEOUT_SECONDS", "10"))
+        self.pb_assets_collection = os.getenv("POCKETBASE_INVENTORY_ASSETS_COLLECTION", "inventory_assets_v2")
+        self.pb_stock_items_collection = os.getenv("POCKETBASE_INVENTORY_STOCK_ITEMS_COLLECTION", "inventory_stock_items_v2")
+        self.pb_stock_movements_collection = os.getenv(
+            "POCKETBASE_INVENTORY_STOCK_MOVEMENTS_COLLECTION",
+            "inventory_stock_movements_v2",
+        )
+        self.pb_loan_records_collection = os.getenv(
+            "POCKETBASE_INVENTORY_LOAN_RECORDS_COLLECTION",
+            "inventory_loan_records_v2",
+        )
+        self.pb_asset_status_logs_collection = os.getenv(
+            "POCKETBASE_INVENTORY_ASSET_STATUS_LOGS_COLLECTION",
+            "inventory_asset_status_logs_v2",
+        )
+>>>>>>> 0fd8dd8e4fef7ab90058217a1e359fa5cfe45cbf
 
 
 settings = Settings()
