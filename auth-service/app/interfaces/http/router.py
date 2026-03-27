@@ -3,6 +3,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.application.container import (
     login_with_google_use_case,
+    login_user_use_case,
+    register_user_use_case,
     user_repository,
     validate_token_use_case,
 )
@@ -12,6 +14,8 @@ from app.interfaces.http.schemas.auth import (
     GoogleLoginRequest,
     InstitutionalLoginRequest,
     InstitutionalSSOConfigResponse,
+    LoginRequest,
+    RegisterRequest,
     TokenResponse,
 )
 from app.interfaces.http.schemas.user import (
@@ -21,7 +25,6 @@ from app.interfaces.http.schemas.user import (
 )
 
 INVALID_CREDENTIALS_MESSAGE = "Cuenta no reconocida"
-GOOGLE_ONLY_AUTH_MESSAGE = "Solo se permite el inicio de sesion con Google institucional"
 ALLOWED_PROFILE_TYPES = {"student", "teacher", "staff", "guest", "lab_manager"}
 PROFILE_MUTABLE_FIELDS = (
     "username",
@@ -198,19 +201,25 @@ def _ensure_profile_update_permissions(
 
 
 @auth_router.post("/register", status_code=status.HTTP_201_CREATED)
-def register() -> dict:
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail=GOOGLE_ONLY_AUTH_MESSAGE,
-    )
+def register(payload: RegisterRequest) -> dict:
+    try:
+        user = register_user_use_case.execute(payload.username, payload.password)
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = status.HTTP_401_UNAUTHORIZED if detail == INVALID_CREDENTIALS_MESSAGE else status.HTTP_409_CONFLICT
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    return {"message": "Usuario registrado", "username": user.username}
 
 
 @auth_router.post("/login", response_model=TokenResponse)
-def login() -> TokenResponse:
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail=GOOGLE_ONLY_AUTH_MESSAGE,
-    )
+def login(payload: LoginRequest) -> TokenResponse:
+    try:
+        token = login_user_use_case.execute(payload.username, payload.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+    return TokenResponse(access_token=token, expires_in=settings.token_expire_minutes * 60)
 
 
 @auth_router.get("/institutional/config", response_model=InstitutionalSSOConfigResponse)

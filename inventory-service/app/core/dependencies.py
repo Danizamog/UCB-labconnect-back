@@ -21,6 +21,20 @@ def get_db():
         db.close()
 
 
+def _is_trusted_internal_service(payload: dict, fallback_payload: dict) -> bool:
+    subject = str(payload.get("sub") or fallback_payload.get("username") or "").strip()
+    user_id = str(payload.get("user_id") or fallback_payload.get("user_id") or "").strip()
+    permissions = fallback_payload.get("permissions") or []
+    role = str(payload.get("role") or fallback_payload.get("role") or "").strip().lower()
+
+    return (
+        bool(subject)
+        and subject == user_id
+        and subject in settings.trusted_internal_services
+        and ("*" in permissions or role in {"admin", "service"})
+    )
+
+
 def get_current_user_payload(token: str = Depends(oauth2_scheme)) -> dict:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -49,6 +63,9 @@ def get_current_user_payload(token: str = Depends(oauth2_scheme)) -> dict:
         "role": role,
         "permissions": permissions,
     }
+
+    if _is_trusted_internal_service(payload, fallback_payload):
+        return fallback_payload
 
     auth_service_url = settings.auth_service_url.strip().rstrip("/")
     if not auth_service_url:

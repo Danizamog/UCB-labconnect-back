@@ -18,6 +18,36 @@ inventory_service_client = httpx.Client(
 )
 
 
+def _inventory_base_urls() -> list[str]:
+    candidates = [
+        settings.inventory_service_url.rstrip("/"),
+        "http://127.0.0.1:8103",
+        "http://localhost:8103",
+    ]
+    unique_candidates: list[str] = []
+    for candidate in candidates:
+        normalized = (candidate or "").strip().rstrip("/")
+        if normalized and normalized not in unique_candidates:
+            unique_candidates.append(normalized)
+    return unique_candidates
+
+
+def _request_inventory(method: str, path: str, **kwargs) -> httpx.Response:
+    last_exception: httpx.HTTPError | None = None
+
+    for base_url in _inventory_base_urls():
+        try:
+            return inventory_service_client.request(method, f"{base_url}{path}", **kwargs)
+        except httpx.HTTPError as exc:
+            last_exception = exc
+            continue
+
+    if last_exception is not None:
+        raise last_exception
+
+    raise InventoryServiceError("No se pudo conectar con inventory-service")
+
+
 def _build_service_headers() -> dict[str, str]:
     token = jwt.encode(
         {
@@ -34,9 +64,8 @@ def _build_service_headers() -> dict[str, str]:
 
 
 def list_material_catalog() -> list[dict]:
-    url = f"{settings.inventory_service_url}/v1/inventory/stock-items/"
     try:
-        response = inventory_service_client.get(url)
+        response = _request_inventory("GET", "/v1/inventory/stock-items/")
     except httpx.HTTPError as exc:
         raise InventoryServiceError("No se pudo consultar el catalogo de materiales") from exc
 
@@ -50,9 +79,8 @@ def list_material_catalog() -> list[dict]:
 
 
 def create_material_loan_from_practice(payload: dict) -> dict:
-    url = f"{settings.inventory_service_url}/v1/inventory/loans/"
     try:
-        response = inventory_service_client.post(url, json=payload, headers=_build_service_headers())
+        response = _request_inventory("POST", "/v1/inventory/loans/", json=payload, headers=_build_service_headers())
     except httpx.HTTPError as exc:
         raise InventoryServiceError("No se pudo registrar el seguimiento de materiales en inventario") from exc
 
@@ -67,13 +95,17 @@ def create_material_loan_from_practice(payload: dict) -> dict:
 
 
 def list_practice_material_loans(practice_request_id: int | None = None) -> list[dict]:
-    url = f"{settings.inventory_service_url}/v1/inventory/loans/"
     params = {"source_type": "practice_request"}
     if practice_request_id is not None:
         params["practice_request_id"] = str(practice_request_id)
 
     try:
-        response = inventory_service_client.get(url, params=params, headers=_build_service_headers())
+        response = _request_inventory(
+            "GET",
+            "/v1/inventory/loans/",
+            params=params,
+            headers=_build_service_headers(),
+        )
     except httpx.HTTPError as exc:
         raise InventoryServiceError("No se pudo consultar el seguimiento de materiales") from exc
 
@@ -88,10 +120,10 @@ def list_practice_material_loans(practice_request_id: int | None = None) -> list
 
 
 def close_material_loan(loan_id: int, return_condition: str, return_notes: str) -> dict:
-    url = f"{settings.inventory_service_url}/v1/inventory/loans/{loan_id}/return"
     try:
-        response = inventory_service_client.patch(
-            url,
+        response = _request_inventory(
+            "PATCH",
+            f"/v1/inventory/loans/{loan_id}/return",
             json={
                 "return_condition": return_condition,
                 "return_notes": return_notes,
@@ -117,7 +149,6 @@ def reserve_material_from_practice(payload: dict) -> dict:
     if stock_item_id is None:
         raise InventoryServiceError("No se pudo reservar el material solicitado")
 
-    url = f"{settings.inventory_service_url}/v1/inventory/stock-items/{stock_item_id}/movements"
     request_payload = {
         "movement_type": "reservation_hold",
         "quantity": payload.get("quantity"),
@@ -127,7 +158,12 @@ def reserve_material_from_practice(payload: dict) -> dict:
     }
 
     try:
-        response = inventory_service_client.post(url, json=request_payload, headers=_build_service_headers())
+        response = _request_inventory(
+            "POST",
+            f"/v1/inventory/stock-items/{stock_item_id}/movements",
+            json=request_payload,
+            headers=_build_service_headers(),
+        )
     except httpx.HTTPError as exc:
         raise InventoryServiceError("No se pudo reservar el stock de materiales") from exc
 
@@ -146,7 +182,6 @@ def release_material_from_practice(payload: dict) -> dict:
     if stock_item_id is None:
         raise InventoryServiceError("No se pudo liberar el stock de materiales")
 
-    url = f"{settings.inventory_service_url}/v1/inventory/stock-items/{stock_item_id}/movements"
     request_payload = {
         "movement_type": "reservation_release",
         "quantity": payload.get("quantity"),
@@ -156,7 +191,12 @@ def release_material_from_practice(payload: dict) -> dict:
     }
 
     try:
-        response = inventory_service_client.post(url, json=request_payload, headers=_build_service_headers())
+        response = _request_inventory(
+            "POST",
+            f"/v1/inventory/stock-items/{stock_item_id}/movements",
+            json=request_payload,
+            headers=_build_service_headers(),
+        )
     except httpx.HTTPError as exc:
         raise InventoryServiceError("No se pudo liberar el stock reservado") from exc
 

@@ -25,6 +25,10 @@ def _load_env_file() -> None:
 _load_env_file()
 
 
+def _parse_csv_env(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 class Settings:
     def __init__(self) -> None:
         self.app_name = os.getenv("INVENTORY_APP_NAME", "LabConnect Inventory Service")
@@ -54,6 +58,14 @@ class Settings:
         self.pb_asset_status_logs_collection = os.getenv(
             "POCKETBASE_INVENTORY_ASSET_STATUS_LOGS_COLLECTION",
             "inventory_asset_status_logs_v2",
+        )
+        self.trusted_internal_services = set(
+            _parse_csv_env(
+                os.getenv(
+                    "TRUSTED_INTERNAL_SERVICES",
+                    "reservations-service,inventory-service,role-service,auth-service,api-gateway",
+                )
+            )
         )
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import logging
+from threading import Lock, Thread
 from typing import Any
 
 from sqlalchemy import text
@@ -26,6 +27,9 @@ inventory_pocketbase_client = PocketBaseClient(
 )
 
 logger = logging.getLogger("inventory.pocketbase_sync")
+_sync_state_lock = Lock()
+_sync_running: set[str] = set()
+_sync_pending: set[str] = set()
 
 
 INVENTORY_COLLECTIONS: dict[str, list[dict[str, Any]]] = {
@@ -253,24 +257,93 @@ def _asset_status_log_records_from_db() -> list[dict[str, Any]]:
         ]
 
 
-def sync_inventory_to_pocketbase() -> None:
+def _replace_collection_snapshot(collection_name: str, records: list[dict[str, Any]]) -> None:
     if not inventory_pocketbase_client.enabled:
         return
 
     ensure_inventory_pocketbase_collections()
-    sync_plan = [
-        (settings.pb_assets_collection, _asset_records_from_db()),
-        (settings.pb_stock_items_collection, _stock_item_records_from_db()),
-        (settings.pb_stock_movements_collection, _stock_movement_records_from_db()),
-        (settings.pb_loan_records_collection, _loan_records_from_db()),
-        (settings.pb_asset_status_logs_collection, _asset_status_log_records_from_db()),
-    ]
+    try:
+        inventory_pocketbase_client.replace_collection_records(collection_name, records)
+    except Exception as exc:
+        logger.warning("No se pudo sincronizar la coleccion %s con PocketBase: %s", collection_name, exc)
 
-    for collection_name, records in sync_plan:
-        try:
-            inventory_pocketbase_client.replace_collection_records(collection_name, records)
-        except Exception as exc:
-            logger.warning("No se pudo sincronizar la coleccion %s con PocketBase: %s", collection_name, exc)
+
+def _run_named_sync(name: str, sync_action) -> None:
+    while True:
+        sync_action()
+        with _sync_state_lock:
+            if name in _sync_pending:
+                _sync_pending.discard(name)
+                continue
+            _sync_running.discard(name)
+            break
+
+
+def _schedule_named_sync(name: str, sync_action) -> None:
+    with _sync_state_lock:
+        if name in _sync_running:
+            _sync_pending.add(name)
+            return
+        _sync_running.add(name)
+
+    Thread(target=_run_named_sync, args=(name, sync_action), daemon=True).start()
+
+
+def sync_assets_to_pocketbase(schedule_async: bool = True) -> None:
+    sync_action = lambda: _replace_collection_snapshot(settings.pb_assets_collection, _asset_records_from_db())
+    if schedule_async:
+        _schedule_named_sync("assets", sync_action)
+        return
+    sync_action()
+
+
+def sync_stock_items_to_pocketbase(schedule_async: bool = True) -> None:
+    sync_action = lambda: _replace_collection_snapshot(settings.pb_stock_items_collection, _stock_item_records_from_db())
+    if schedule_async:
+        _schedule_named_sync("stock_items", sync_action)
+        return
+    sync_action()
+
+
+def sync_stock_movements_to_pocketbase(schedule_async: bool = True) -> None:
+    sync_action = lambda: _replace_collection_snapshot(
+        settings.pb_stock_movements_collection,
+        _stock_movement_records_from_db(),
+    )
+    if schedule_async:
+        _schedule_named_sync("stock_movements", sync_action)
+        return
+    sync_action()
+
+
+def sync_loans_to_pocketbase(schedule_async: bool = True) -> None:
+    sync_action = lambda: _replace_collection_snapshot(settings.pb_loan_records_collection, _loan_records_from_db())
+    if schedule_async:
+        _schedule_named_sync("loans", sync_action)
+        return
+    sync_action()
+
+
+def sync_asset_status_logs_to_pocketbase(schedule_async: bool = True) -> None:
+    sync_action = lambda: _replace_collection_snapshot(
+        settings.pb_asset_status_logs_collection,
+        _asset_status_log_records_from_db(),
+    )
+    if schedule_async:
+        _schedule_named_sync("asset_status_logs", sync_action)
+        return
+    sync_action()
+
+
+def sync_inventory_to_pocketbase(schedule_async: bool = True) -> None:
+    if not inventory_pocketbase_client.enabled:
+        return
+
+    sync_assets_to_pocketbase(schedule_async=schedule_async)
+    sync_stock_items_to_pocketbase(schedule_async=schedule_async)
+    sync_stock_movements_to_pocketbase(schedule_async=schedule_async)
+    sync_loans_to_pocketbase(schedule_async=schedule_async)
+    sync_asset_status_logs_to_pocketbase(schedule_async=schedule_async)
 
 
 def _inventory_has_remote_data() -> bool:
@@ -452,6 +525,6 @@ def initialize_inventory_pocketbase_sync() -> None:
         if _inventory_has_remote_data() and _inventory_remote_total_records() >= _inventory_local_total_records():
             import_inventory_from_pocketbase()
         else:
-            sync_inventory_to_pocketbase()
+            sync_inventory_to_pocketbase(schedule_async=False)
     except Exception as exc:
         logger.warning("PocketBase no pudo inicializar inventario; se continua con el cache local: %s", exc)

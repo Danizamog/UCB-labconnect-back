@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import ensure_any_permission, get_db, get_current_user_payload
-from app.infrastructure.pocketbase_sync import sync_inventory_to_pocketbase
+from app.infrastructure.pocketbase_sync import sync_stock_items_to_pocketbase, sync_stock_movements_to_pocketbase
 from app.models.stock_movement import StockMovement
 from app.models.stock_item import StockItem
 from app.schemas.stock_item import (
@@ -98,7 +98,8 @@ def create_stock_item(
         db.commit()
         db.refresh(item)
 
-    sync_inventory_to_pocketbase()
+    sync_stock_items_to_pocketbase()
+    sync_stock_movements_to_pocketbase()
     return item
 
 
@@ -144,7 +145,8 @@ def update_stock_item(
 
     db.commit()
     db.refresh(item)
-    sync_inventory_to_pocketbase()
+    sync_stock_items_to_pocketbase()
+    sync_stock_movements_to_pocketbase()
     return item
 
 
@@ -183,7 +185,8 @@ def update_stock_quantity(
 
     db.commit()
     db.refresh(item)
-    sync_inventory_to_pocketbase()
+    sync_stock_items_to_pocketbase()
+    sync_stock_movements_to_pocketbase()
     return item
 
 
@@ -245,7 +248,8 @@ def create_stock_movement(
     db.commit()
     db.refresh(item)
     db.refresh(movement)
-    sync_inventory_to_pocketbase()
+    sync_stock_items_to_pocketbase()
+    sync_stock_movements_to_pocketbase()
     return serialize_movement(movement, item.name)
 
 
@@ -267,5 +271,6 @@ def delete_stock_item(
 
     db.delete(item)
     db.commit()
-    sync_inventory_to_pocketbase()
+    sync_stock_items_to_pocketbase()
+    sync_stock_movements_to_pocketbase()
     return {"message": "Material eliminado"}

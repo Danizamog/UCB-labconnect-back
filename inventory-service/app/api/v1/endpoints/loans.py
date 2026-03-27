@@ -8,7 +8,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import ensure_any_permission, get_current_user_payload, get_db
-from app.infrastructure.pocketbase_sync import sync_inventory_to_pocketbase
+from app.infrastructure.pocketbase_sync import sync_assets_to_pocketbase, sync_loans_to_pocketbase, sync_stock_items_to_pocketbase, sync_stock_movements_to_pocketbase
 from app.models.asset import Asset
 from app.models.loan_record import LoanRecord
 from app.models.stock_item import StockItem
@@ -47,6 +47,10 @@ def get_display_status(loan: LoanRecord, now: datetime | None = None) -> str:
 
 
 def serialize_loan(loan: LoanRecord, now: datetime | None = None) -> LoanRecordOut:
+    normalized_return_condition = loan.return_condition.strip() if isinstance(loan.return_condition, str) else loan.return_condition
+    if not normalized_return_condition:
+        normalized_return_condition = None
+
     return LoanRecordOut(
         id=loan.id,
         loan_type=loan.loan_type,
@@ -64,7 +68,7 @@ def serialize_loan(loan: LoanRecord, now: datetime | None = None) -> LoanRecordO
         quantity=loan.quantity,
         status=get_display_status(loan, now),
         raw_status=loan.status,
-        return_condition=loan.return_condition,
+        return_condition=normalized_return_condition,
         notes=loan.notes,
         return_notes=loan.return_notes,
         incident_notes=loan.incident_notes,
@@ -281,7 +285,13 @@ def create_loan(
     db.add(record)
     db.commit()
     db.refresh(record)
-    sync_inventory_to_pocketbase()
+    sync_loans_to_pocketbase()
+    if payload.loan_type == "asset":
+        sync_assets_to_pocketbase()
+    else:
+        sync_stock_items_to_pocketbase()
+        if payload.affect_stock:
+            sync_stock_movements_to_pocketbase()
     return serialize_loan(record, utcnow())
 
 
@@ -327,5 +337,10 @@ def return_loan(
 
     db.commit()
     db.refresh(record)
-    sync_inventory_to_pocketbase()
+    sync_loans_to_pocketbase()
+    if record.loan_type == "asset":
+        sync_assets_to_pocketbase()
+    else:
+        sync_stock_items_to_pocketbase()
+        sync_stock_movements_to_pocketbase()
     return serialize_loan(record, record.returned_at)

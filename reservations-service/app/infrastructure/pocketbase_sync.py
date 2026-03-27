@@ -285,25 +285,51 @@ def _practice_material_records_from_db() -> list[dict[str, Any]]:
         ]
 
 
-def sync_reservations_to_pocketbase() -> None:
+def _replace_collection_snapshot(collection_name: str, records: list[dict[str, Any]]) -> None:
     if not reservations_pocketbase_client.enabled:
         return
 
     ensure_reservations_pocketbase_collections()
-    sync_plan = [
-        (settings.pb_areas_collection, _area_records_from_db()),
-        (settings.pb_labs_collection, _lab_records_from_db()),
-        (settings.pb_class_sessions_collection, _class_session_records_from_db()),
-        (settings.pb_class_tutorials_collection, _class_tutorial_records_from_db()),
-        (settings.pb_practice_requests_collection, _practice_request_records_from_db()),
-        (settings.pb_practice_materials_collection, _practice_material_records_from_db()),
-    ]
+    try:
+        reservations_pocketbase_client.replace_collection_records(collection_name, records)
+    except Exception as exc:
+        logger.warning("No se pudo sincronizar la coleccion %s con PocketBase: %s", collection_name, exc)
 
-    for collection_name, records in sync_plan:
-        try:
-            reservations_pocketbase_client.replace_collection_records(collection_name, records)
-        except Exception as exc:
-            logger.warning("No se pudo sincronizar la coleccion %s con PocketBase: %s", collection_name, exc)
+
+def sync_areas_to_pocketbase() -> None:
+    _replace_collection_snapshot(settings.pb_areas_collection, _area_records_from_db())
+
+
+def sync_labs_to_pocketbase() -> None:
+    _replace_collection_snapshot(settings.pb_labs_collection, _lab_records_from_db())
+
+
+def sync_class_sessions_to_pocketbase() -> None:
+    _replace_collection_snapshot(settings.pb_class_sessions_collection, _class_session_records_from_db())
+
+
+def sync_class_tutorials_to_pocketbase() -> None:
+    _replace_collection_snapshot(settings.pb_class_tutorials_collection, _class_tutorial_records_from_db())
+
+
+def sync_practice_requests_to_pocketbase() -> None:
+    _replace_collection_snapshot(settings.pb_practice_requests_collection, _practice_request_records_from_db())
+
+
+def sync_practice_materials_to_pocketbase() -> None:
+    _replace_collection_snapshot(settings.pb_practice_materials_collection, _practice_material_records_from_db())
+
+
+def sync_reservations_to_pocketbase() -> None:
+    if not reservations_pocketbase_client.enabled:
+        return
+
+    sync_areas_to_pocketbase()
+    sync_labs_to_pocketbase()
+    sync_class_sessions_to_pocketbase()
+    sync_class_tutorials_to_pocketbase()
+    sync_practice_requests_to_pocketbase()
+    sync_practice_materials_to_pocketbase()
 
 
 def _reservations_has_remote_data() -> bool:
