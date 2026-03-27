@@ -3,6 +3,11 @@ services:
     build:
       context: ./auth-service
     container_name: auth-service
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       - SECRET_KEY=${SECRET_KEY}
       - TOKEN_EXPIRE_MINUTES=${TOKEN_EXPIRE_MINUTES:-60}
@@ -34,8 +39,15 @@ services:
     build:
       context: ./role-service
     container_name: role-service
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       - AUTH_SERVICE_URL=${AUTH_SERVICE_URL:-http://auth-service:8001}
+      - SECRET_KEY=${SECRET_KEY}
+      - ALGORITHM=${JWT_ALGORITHM:-HS256}
       - POCKETBASE_URL=${POCKETBASE_URL:-}
       - POCKETBASE_ROLE_COLLECTION=${POCKETBASE_ROLE_COLLECTION:-role}
       - POCKETBASE_USERS_COLLECTION=${POCKETBASE_USERS_COLLECTION:-users}
@@ -59,6 +71,11 @@ services:
     build:
       context: ./api-gateway
     container_name: api-gateway
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       - AUTH_SERVICE_URL=${AUTH_SERVICE_URL:-http://auth-service:8001}
       - INVENTORY_SERVICE_URL=${INVENTORY_SERVICE_URL:-http://inventory-service:8003}
