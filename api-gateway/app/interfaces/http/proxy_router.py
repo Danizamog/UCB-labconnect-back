@@ -84,6 +84,25 @@ async def proxy_inventory_path(path: str, request: Request) -> Response:
     return await forward_request(target_url, request)
 
 
+# Inventory Service v1 compatibility (infrastructureService)
+@router.api_route(
+    "/api/v1/inventory/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_inventory_v1_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.inventory_service_url}/v1/{path}"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/inventory",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_inventory_v1_root(request: Request) -> Response:
+    target_url = f"{settings.inventory_service_url}/v1/"
+    return await forward_request(target_url, request)
+
+
 # Inventory Service - Areas (infrastructureService, reservationsApi)
 @router.api_route(
     "/api/v1/areas/{path:path}",
