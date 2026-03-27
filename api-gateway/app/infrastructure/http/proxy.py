@@ -31,13 +31,21 @@ async def forward_request(target_url: str, request: Request) -> Response:
     request_headers.pop("host", None)
     request_body = await request.body()
 
-    upstream_response = await _proxy_client.request(
-        method=request.method,
-        url=target_url,
-        params=request.query_params,
-        headers=request_headers,
-        content=request_body,
-    )
+    try:
+        upstream_response = await _proxy_client.request(
+            method=request.method,
+            url=target_url,
+            params=request.query_params,
+            headers=request_headers,
+            content=request_body,
+            follow_redirects=True,
+        )
+    except httpx.RequestError:
+        return Response(
+            content=b'{"detail":"Servicio no disponible"}',
+            status_code=503,
+            media_type="application/json",
+        )
 
     return Response(
         content=upstream_response.content,

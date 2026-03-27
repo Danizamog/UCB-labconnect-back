@@ -7,6 +7,7 @@ from app.infrastructure.http.proxy import forward_request
 router = APIRouter()
 
 
+# Auth Service
 @router.api_route(
     "/api/auth/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -16,74 +17,12 @@ async def proxy_auth(path: str, request: Request) -> Response:
     return await forward_request(target_url, request)
 
 
-@router.api_route(
-    "/api/inventory/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_inventory(path: str, request: Request) -> Response:
-    target_url = f"{settings.inventory_service_url}/v1/inventory/{path}"
-    return await forward_request(target_url, request)
-
-
-@router.api_route(
-    "/api/availability/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_availability(path: str, request: Request) -> Response:
-    target_url = f"{settings.reservations_service_url}/v1/availability/{path}"
-    return await forward_request(target_url, request)
-
-
-@router.api_route(
-    "/api/availability",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_availability_root(request: Request) -> Response:
-    target_url = f"{settings.reservations_service_url}/v1/availability"
-    return await forward_request(target_url, request)
-
-
-@router.api_route(
-    "/api/classes/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_classes(path: str, request: Request) -> Response:
-    target_url = f"{settings.reservations_service_url}/v1/classes/{path}"
-    return await forward_request(target_url, request)
-
-
-@router.api_route(
-    "/api/classes",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_classes_root(request: Request) -> Response:
-    target_url = f"{settings.reservations_service_url}/v1/classes"
-    return await forward_request(target_url, request)
-
-
-@router.api_route(
-    "/api/class-tutorials/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_class_tutorials(path: str, request: Request) -> Response:
-    target_url = f"{settings.reservations_service_url}/v1/class-tutorials/{path}"
-    return await forward_request(target_url, request)
-
-
-@router.api_route(
-    "/api/class-tutorials",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_class_tutorials_root(request: Request) -> Response:
-    target_url = f"{settings.reservations_service_url}/v1/class-tutorials/"
-    return await forward_request(target_url, request)
-
-
+# Users - Auth Service (profileService)
 @router.api_route(
     "/api/users/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
-async def proxy_users(path: str, request: Request) -> Response:
+async def proxy_users_path(path: str, request: Request) -> Response:
     target_url = f"{settings.auth_service_url}/v1/users/{path}"
     return await forward_request(target_url, request)
 
@@ -97,47 +36,12 @@ async def proxy_users_root(request: Request) -> Response:
     return await forward_request(target_url, request)
 
 
-@router.api_route(
-    "/api/roles/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_roles(path: str, request: Request) -> Response:
-    target_url = f"{settings.role_service_url}/v1/roles/{path}"
-    return await forward_request(target_url, request)
-
-
-@router.api_route(
-    "/api/roles",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_roles_root(request: Request) -> Response:
-    target_url = f"{settings.role_service_url}/v1/roles/"
-    return await forward_request(target_url, request)
-
-
-@router.api_route(
-    "/api/v1/roles/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_roles_legacy(path: str, request: Request) -> Response:
-    target_url = f"{settings.role_service_url}/v1/roles/{path}"
-    return await forward_request(target_url, request)
-
-
-@router.api_route(
-    "/api/v1/roles",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_roles_legacy_root(request: Request) -> Response:
-    target_url = f"{settings.role_service_url}/v1/roles/"
-    return await forward_request(target_url, request)
-
-
+# Users v1 - Role Service (rolesService)
 @router.api_route(
     "/api/v1/users/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
-async def proxy_users_legacy(path: str, request: Request) -> Response:
+async def proxy_users_v1_path(path: str, request: Request) -> Response:
     target_url = f"{settings.role_service_url}/v1/roles/users/{path}"
     return await forward_request(target_url, request)
 
@@ -146,17 +50,66 @@ async def proxy_users_legacy(path: str, request: Request) -> Response:
     "/api/v1/users",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
-async def proxy_users_legacy_root(request: Request) -> Response:
+async def proxy_users_v1_root(request: Request) -> Response:
     target_url = f"{settings.role_service_url}/v1/roles/users"
     return await forward_request(target_url, request)
 
 
+# Roles - Role Service (rolesService)
+@router.api_route(
+    "/api/v1/roles/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_roles_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.role_service_url}/v1/roles/{path}"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/roles",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_roles_root(request: Request) -> Response:
+    target_url = f"{settings.role_service_url}/v1/roles/"
+    return await forward_request(target_url, request)
+
+
+# Inventory Service - Assets & Stock items (infrastructureService, reservationsApi)
+@router.api_route(
+    "/api/inventory/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_inventory_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.inventory_service_url}/v1/{path}"
+    return await forward_request(target_url, request)
+
+
+# Inventory Service v1 compatibility (infrastructureService)
+@router.api_route(
+    "/api/v1/inventory/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_inventory_v1_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.inventory_service_url}/v1/{path}"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/inventory",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_inventory_v1_root(request: Request) -> Response:
+    target_url = f"{settings.inventory_service_url}/v1/"
+    return await forward_request(target_url, request)
+
+
+# Inventory Service - Areas (infrastructureService, reservationsApi)
 @router.api_route(
     "/api/v1/areas/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
-async def proxy_areas(path: str, request: Request) -> Response:
-    target_url = f"{settings.reservations_service_url}/v1/areas/{path}"
+async def proxy_areas_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.inventory_service_url}/v1/areas/{path}"
     return await forward_request(target_url, request)
 
 
@@ -165,16 +118,17 @@ async def proxy_areas(path: str, request: Request) -> Response:
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
 async def proxy_areas_root(request: Request) -> Response:
-    target_url = f"{settings.reservations_service_url}/v1/areas/"
+    target_url = f"{settings.inventory_service_url}/v1/areas"
     return await forward_request(target_url, request)
 
 
+# Inventory Service - Labs (infrastructureService, reservationsApi)
 @router.api_route(
     "/api/v1/labs/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
-async def proxy_labs(path: str, request: Request) -> Response:
-    target_url = f"{settings.reservations_service_url}/v1/labs/{path}"
+async def proxy_labs_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.inventory_service_url}/v1/laboratories/{path}"
     return await forward_request(target_url, request)
 
 
@@ -183,32 +137,83 @@ async def proxy_labs(path: str, request: Request) -> Response:
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
 async def proxy_labs_root(request: Request) -> Response:
-    target_url = f"{settings.reservations_service_url}/v1/labs/"
+    target_url = f"{settings.inventory_service_url}/v1/laboratories"
     return await forward_request(target_url, request)
 
 
-@router.api_route(
-    "/api/v1/practice-planning/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_practice_planning(path: str, request: Request) -> Response:
-    target_url = f"{settings.reservations_service_url}/v1/practice-planning/{path}"
-    return await forward_request(target_url, request)
-
-
-@router.api_route(
-    "/api/v1/practice-planning",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_practice_planning_root(request: Request) -> Response:
-    target_url = f"{settings.reservations_service_url}/v1/practice-planning/"
-    return await forward_request(target_url, request)
-
-
+# Reservation Service - Reservations
 @router.api_route(
     "/api/v1/reservations/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
-async def proxy_reservations(path: str, request: Request) -> Response:
-    target_url = f"{settings.reservations_service_url}/v1/{path}"
+async def proxy_reservations_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/reservations/{path}"
     return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/reservations",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_reservations_root(request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/reservations"
+    return await forward_request(target_url, request)
+
+
+# Reservation Service - Lab schedules
+@router.api_route(
+    "/api/v1/lab-schedules/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_lab_schedules_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/lab-schedules/{path}"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/lab-schedules",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_lab_schedules_root(request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/lab-schedules"
+    return await forward_request(target_url, request)
+
+
+# Reservation Service - Lab blocks
+@router.api_route(
+    "/api/v1/lab-blocks/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_lab_blocks_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/lab-blocks/{path}"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/lab-blocks",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_lab_blocks_root(request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/lab-blocks"
+    return await forward_request(target_url, request)
+
+
+# Reservation Service - Availability
+@router.api_route(
+    "/api/v1/availability/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_availability_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/availability/{path}"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/availability",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_availability_root(request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/availability"
+    return await forward_request(target_url, request)
+
+

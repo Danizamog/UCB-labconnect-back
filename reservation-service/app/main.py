@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.dependencies import auth_validation_client
 
-app = FastAPI(title="LabConnect Inventory Service", version="1.0.0")
+app = FastAPI(title="LabConnect Reservation Service", version="1.0.0")
 
 origins = [
     "http://localhost:5173",
@@ -24,7 +24,7 @@ app.add_middleware(
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "service": "inventory-service"}
+    return {"status": "ok", "service": "reservation-service"}
 
 
 @app.on_event("shutdown")
