@@ -107,10 +107,27 @@ class PocketBaseClient:
         existing = self.get_collection(collection_name)
         if existing:
             collection_id = existing.get("id") or collection_name
+            existing_fields = existing.get("fields") if isinstance(existing.get("fields"), list) else []
+            existing_fields_by_name = {
+                field.get("name"): field
+                for field in existing_fields
+                if isinstance(field, dict) and field.get("name")
+            }
+            merged_fields: list[dict[str, Any]] = []
+            for field in fields:
+                field_name = field.get("name")
+                existing_field = existing_fields_by_name.get(field_name)
+                merged_field = dict(field)
+                if isinstance(existing_field, dict):
+                    if existing_field.get("id"):
+                        merged_field["id"] = existing_field["id"]
+                    if "system" in existing_field:
+                        merged_field["system"] = existing_field["system"]
+                merged_fields.append(merged_field)
             self._request(
                 "PATCH",
                 f"{self._base_url}/api/collections/{collection_id}",
-                json={"fields": fields},
+                json={"fields": merged_fields},
             )
             return
 
@@ -152,9 +169,48 @@ class PocketBaseClient:
         for record in self.list_records(collection_name, sort=None):
             record_id = record.get("id")
             if isinstance(record_id, str) and record_id:
-                self._request("DELETE", f"{self._base_url}/api/collections/{collection_name}/records/{record_id}")
+                try:
+                    self._request("DELETE", f"{self._base_url}/api/collections/{collection_name}/records/{record_id}")
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 404:
+                        raise
 
     def replace_collection_records(self, collection_name: str, records: list[dict[str, Any]]) -> None:
-        self.clear_collection_records(collection_name)
+        existing_records = self.list_records(collection_name, sort=None)
+        existing_by_source_id: dict[str, dict[str, Any]] = {}
+        for record in existing_records:
+            source_id = record.get("source_id")
+            if source_id is None:
+                continue
+            existing_by_source_id[str(source_id)] = record
+
+        desired_source_ids = set()
         for payload in records:
-            self._request("POST", f"{self._base_url}/api/collections/{collection_name}/records", json=payload)
+            source_id = payload.get("source_id")
+            if source_id is None:
+                self._request("POST", f"{self._base_url}/api/collections/{collection_name}/records", json=payload)
+                continue
+
+            normalized_source_id = str(source_id)
+            desired_source_ids.add(normalized_source_id)
+            existing = existing_by_source_id.get(normalized_source_id)
+
+            if existing and existing.get("id"):
+                self._request(
+                    "PATCH",
+                    f"{self._base_url}/api/collections/{collection_name}/records/{existing['id']}",
+                    json=payload,
+                )
+            else:
+                self._request("POST", f"{self._base_url}/api/collections/{collection_name}/records", json=payload)
+
+        for record in existing_records:
+            source_id = record.get("source_id")
+            if source_id is None or str(source_id) not in desired_source_ids:
+                record_id = record.get("id")
+                if isinstance(record_id, str) and record_id:
+                    try:
+                        self._request("DELETE", f"{self._base_url}/api/collections/{collection_name}/records/{record_id}")
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code != 404:
+                            raise
