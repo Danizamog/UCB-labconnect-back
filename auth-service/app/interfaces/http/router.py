@@ -2,9 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.application.container import (
-    login_with_google_use_case,
     login_user_use_case,
-    register_user_use_case,
+    login_with_google_use_case,
     user_repository,
     validate_token_use_case,
 )
@@ -15,7 +14,6 @@ from app.interfaces.http.schemas.auth import (
     InstitutionalLoginRequest,
     InstitutionalSSOConfigResponse,
     LoginRequest,
-    RegisterRequest,
     TokenResponse,
 )
 from app.interfaces.http.schemas.user import (
@@ -201,15 +199,11 @@ def _ensure_profile_update_permissions(
 
 
 @auth_router.post("/register", status_code=status.HTTP_201_CREATED)
-def register(payload: RegisterRequest) -> dict:
-    try:
-        user = register_user_use_case.execute(payload.username, payload.password)
-    except ValueError as exc:
-        detail = str(exc)
-        status_code = status.HTTP_401_UNAUTHORIZED if detail == INVALID_CREDENTIALS_MESSAGE else status.HTTP_409_CONFLICT
-        raise HTTPException(status_code=status_code, detail=detail) from exc
-
-    return {"message": "Usuario registrado", "username": user.username}
+def register() -> dict:
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="El registro directo no esta habilitado en este entorno",
+    )
 
 
 @auth_router.post("/login", response_model=TokenResponse)

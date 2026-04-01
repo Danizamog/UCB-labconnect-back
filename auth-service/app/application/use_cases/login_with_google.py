@@ -9,6 +9,19 @@ from app.infrastructure.security.token_provider import create_access_token
 ACCOUNT_NOT_RECOGNIZED_MESSAGE = "Cuenta no reconocida"
 
 
+def _is_in_allowed_domain(email: str, configured_domain: str) -> bool:
+    normalized_email = email.strip().lower()
+    if "@" not in normalized_email:
+        return False
+
+    email_domain = normalized_email.split("@", 1)[1]
+    normalized_domain = configured_domain.strip().lower().lstrip("@")
+    if not normalized_domain:
+        return False
+
+    return email_domain == normalized_domain
+
+
 class LoginWithGoogle:
     def __init__(
         self,
@@ -22,7 +35,7 @@ class LoginWithGoogle:
         google_user = self.verifier.verify(credential)
         username = google_user["email"]
 
-        if not username.endswith(settings.institutional_email_domain):
+        if not _is_in_allowed_domain(username, settings.institutional_email_domain):
             raise ValueError(ACCOUNT_NOT_RECOGNIZED_MESSAGE)
 
         user = self.repository.get_by_username(username)

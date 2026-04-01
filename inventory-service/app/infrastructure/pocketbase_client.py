@@ -121,14 +121,23 @@ class PocketBaseClient:
         }
         self._request("POST", f"{self._base_url}/api/collections", json=payload)
 
-    def list_records(self, collection_name: str, *, sort: str | None = "source_id") -> list[dict[str, Any]]:
+    def list_records(
+        self,
+        collection_name: str,
+        *,
+        sort: str | None = "source_id",
+        filter: str | None = None,
+        per_page: int = 200,
+    ) -> list[dict[str, Any]]:
         page = 1
         records: list[dict[str, Any]] = []
 
         while True:
-            params: dict[str, Any] = {"page": page, "perPage": 200}
+            params: dict[str, Any] = {"page": page, "perPage": per_page}
             if sort:
                 params["sort"] = sort
+            if filter:
+                params["filter"] = filter
             payload = self._request(
                 "GET",
                 f"{self._base_url}/api/collections/{collection_name}/records",
@@ -147,6 +156,35 @@ class PocketBaseClient:
             page += 1
 
         return records
+
+    def get_record(self, collection_name: str, record_id: str) -> dict[str, Any] | None:
+        try:
+            payload = self._request("GET", f"{self._base_url}/api/collections/{collection_name}/records/{record_id}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        return payload if isinstance(payload, dict) else None
+
+    def create_record(self, collection_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self._request(
+            "POST",
+            f"{self._base_url}/api/collections/{collection_name}/records",
+            json=payload,
+        )
+        if not isinstance(result, dict):
+            raise ValueError("PocketBase devolvio una respuesta invalida al crear el registro")
+        return result
+
+    def update_record(self, collection_name: str, record_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self._request(
+            "PATCH",
+            f"{self._base_url}/api/collections/{collection_name}/records/{record_id}",
+            json=payload,
+        )
+        if not isinstance(result, dict):
+            raise ValueError("PocketBase devolvio una respuesta invalida al actualizar el registro")
+        return result
 
     def clear_collection_records(self, collection_name: str) -> None:
         for record in self.list_records(collection_name, sort=None):
