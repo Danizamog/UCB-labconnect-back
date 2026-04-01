@@ -1,11 +1,13 @@
 import math
 import re
+from calendar import monthrange
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
-from app.application.container import lab_access_session_repo, lab_reservation_repo, user_penalty_repo
-from app.core.datetime_utils import parse_datetime
+from app.application.container import lab_access_session_repo, lab_reservation_repo, tutorial_session_repo, user_penalty_repo
+from app.application.container import lab_block_repo, lab_schedule_repo
+from app.core.datetime_utils import combine_date_time, iter_time_ranges, now_local_naive, parse_datetime
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
 from app.realtime.manager import realtime_manager
@@ -38,6 +40,135 @@ _SUPPORTED_SORT_FIELDS = {
     "updated",
     "date",
 }
+
+
+def _max_allowed_reservation_date(base_day):
+    next_month = base_day.month + 1
+    year = base_day.year
+    if next_month > 12:
+        next_month = 1
+        year += 1
+
+    day = min(base_day.day, monthrange(year, next_month)[1])
+    return base_day.replace(year=year, month=next_month, day=day)
+
+
+def _has_schedule_overlap(start_at: datetime, end_at: datetime, other_start_raw: str, other_end_raw: str) -> bool:
+    other_start = parse_datetime(other_start_raw)
+    other_end = parse_datetime(other_end_raw)
+    return start_at < other_end and other_start < end_at
+
+
+def _resolve_schedule_window(laboratory_id: str, reservation_day) -> tuple[datetime, datetime, int]:
+    weekday = reservation_day.weekday()
+    schedules = [
+        item for item in lab_schedule_repo.list_all()
+        if item.laboratory_id == laboratory_id and item.weekday == weekday and item.is_active
+    ]
+
+    schedule = schedules[0] if schedules else None
+    if schedule:
+        day_start = combine_date_time(reservation_day, schedule.open_time)
+        day_end = combine_date_time(reservation_day, schedule.close_time)
+        slot_minutes = schedule.slot_minutes or 60
+    else:
+        day_start = combine_date_time(reservation_day, "08:00")
+        day_end = combine_date_time(reservation_day, "20:00")
+        slot_minutes = 60
+
+    return day_start, day_end, slot_minutes
+
+
+def _validate_reservation_time_rules(
+    *,
+    laboratory_id: str,
+    start_at_raw: str,
+    end_at_raw: str,
+    skip_reservation_id: str | None = None,
+) -> None:
+    start_at = parse_datetime(start_at_raw)
+    end_at = parse_datetime(end_at_raw)
+    now = now_local_naive()
+
+    if end_at <= start_at:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La hora de fin debe ser mayor a la hora de inicio",
+        )
+
+    if start_at.date() != end_at.date():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La reserva debe mantenerse dentro del mismo dia",
+        )
+
+    if start_at <= now:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No puedes registrar ni reprogramar reservas en horarios ya pasados o iniciados",
+        )
+
+    max_allowed_day = _max_allowed_reservation_date(now.date())
+    if start_at.date() > max_allowed_day:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Solo puedes registrar o mover reservas dentro del plazo maximo de un mes",
+        )
+
+    day_start, day_end, slot_minutes = _resolve_schedule_window(laboratory_id, start_at.date())
+    if start_at < day_start or end_at > day_end:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El horario seleccionado esta fuera del horario habilitado del laboratorio",
+        )
+
+    slot_ranges = iter_time_ranges(day_start, day_end, slot_minutes)
+    matches_any_slot = any(start_at == slot_start and end_at == slot_end for slot_start, slot_end in slot_ranges)
+    if not matches_any_slot:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Debes seleccionar un bloque horario valido del laboratorio. "
+                f"Los bloques vigentes para ese dia son de {slot_minutes} minutos."
+            ),
+        )
+
+    for block in lab_block_repo.list_all():
+        if block.laboratory_id != laboratory_id or not block.is_active:
+            continue
+        if not block.start_at.startswith(start_at.date().isoformat()):
+            continue
+        if _has_schedule_overlap(start_at, end_at, block.start_at, block.end_at):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="El bloque seleccionado no esta disponible porque el laboratorio se encuentra bloqueado o en mantenimiento",
+            )
+
+    for reservation in lab_reservation_repo.list_all():
+        if reservation.laboratory_id != laboratory_id or not reservation.is_active:
+            continue
+        if skip_reservation_id and reservation.id == skip_reservation_id:
+            continue
+        if reservation.status in {"rejected", "cancelled", "completed", "absent"}:
+            continue
+        if not reservation.start_at.startswith(start_at.date().isoformat()):
+            continue
+        if _has_schedule_overlap(start_at, end_at, reservation.start_at, reservation.end_at):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Ese bloque ya no esta disponible porque existe otra reserva activa en el mismo horario",
+            )
+
+    for tutorial_session in tutorial_session_repo.list_public():
+        if tutorial_session.laboratory_id != laboratory_id:
+            continue
+        if not tutorial_session.start_at.startswith(start_at.date().isoformat()):
+            continue
+        if _has_schedule_overlap(start_at, end_at, tutorial_session.start_at, tutorial_session.end_at):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Ese bloque ya no esta disponible porque existe una tutoria publicada en el mismo horario",
+            )
 
 
 def _serialize_reservation(reservation: LabReservationResponse) -> LabReservationResponse:
@@ -168,7 +299,7 @@ def _ensure_user_can_change_reservation(
         return
 
     start_at = parse_datetime(reservation.start_at)
-    now = datetime.utcnow()
+    now = now_local_naive()
     remaining_seconds = (start_at - now).total_seconds()
 
     if remaining_seconds <= 0:
@@ -461,6 +592,12 @@ async def create_reservation(body: LabReservationCreate, current_user: dict = De
             ),
         )
 
+    _validate_reservation_time_rules(
+        laboratory_id=body.laboratory_id,
+        start_at_raw=body.start_at,
+        end_at_raw=body.end_at,
+    )
+
     try:
         created = lab_reservation_repo.create(body, current_user=current_user)
     except ValueError as exc:
@@ -576,6 +713,13 @@ async def update_reservation(
                 "cancel_reason": "",
             }
         )
+
+    _validate_reservation_time_rules(
+        laboratory_id=str(payload.laboratory_id or existing_reservation.laboratory_id),
+        start_at_raw=str(payload.start_at or existing_reservation.start_at),
+        end_at_raw=str(payload.end_at or existing_reservation.end_at),
+        skip_reservation_id=reservation_id,
+    )
 
     try:
         updated = lab_reservation_repo.update(reservation_id, payload)
@@ -758,7 +902,7 @@ async def mark_reservation_absent(
     if lab_access_session_repo.get_open_by_reservation(reservation_id):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="La reserva ya registro entrada y no puede marcarse como ausente")
 
-    now = datetime.utcnow()
+    now = now_local_naive()
     if (now - parse_datetime(reservation.start_at)).total_seconds() < _ABSENT_GRACE_PERIOD_SECONDS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

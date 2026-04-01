@@ -13,6 +13,7 @@ class TutorialEnrollmentResponse(BaseModel):
 class TutorialSessionCreate(BaseModel):
     topic: str
     description: str = ""
+    laboratory_id: str = ""
     location: str = ""
     session_date: str
     start_time: str
@@ -31,6 +32,7 @@ class TutorialSessionResponse(BaseModel):
     tutor_email: str = ""
     topic: str
     description: str
+    laboratory_id: str = ""
     location: str
     session_date: str
     start_time: str

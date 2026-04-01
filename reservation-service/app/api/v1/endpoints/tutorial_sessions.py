@@ -54,6 +54,25 @@ def list_my_tutorial_sessions(current_user: dict = Depends(get_current_user)) ->
     return tutorial_session_repo.list_for_tutor(current_user.get("user_id") or "")
 
 
+@router.get("/{session_id}", response_model=TutorialSessionResponse)
+def get_tutorial_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    session = tutorial_session_repo.get_by_id(session_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
+
+    is_admin = current_user.get("role") == "admin"
+    can_manage = "gestionar_tutorias" in set(current_user.get("permissions") or [])
+    is_owner = session.tutor_id == (current_user.get("user_id") or "")
+
+    if not session.is_published and not (is_admin or can_manage or is_owner):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta tutoria")
+
+    return session
+
+
 @router.post("", response_model=TutorialSessionResponse, status_code=status.HTTP_201_CREATED)
 async def create_tutorial_session(
     body: TutorialSessionCreate,

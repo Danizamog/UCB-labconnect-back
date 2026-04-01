@@ -30,6 +30,7 @@ class Settings:
         self.app_name = os.getenv("RESERVATION_APP_NAME", "LabConnect Reservation Service")
         self.app_host = os.getenv("RESERVATION_APP_HOST", "0.0.0.0")
         self.app_port = int(os.getenv("RESERVATION_APP_PORT", "8005"))
+        self.app_timezone = os.getenv("APP_TIMEZONE", "America/La_Paz").strip() or "America/La_Paz"
         self.auth_service_url = os.getenv("AUTH_SERVICE_URL", "http://127.0.0.1:8101")
         self.secret_key = os.getenv("SECRET_KEY", "change-this-secret")
         self.algorithm = os.getenv("JWT_ALGORITHM", os.getenv("ALGORITHM", "HS256"))

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from calendar import monthrange
 from datetime import UTC, datetime
 from threading import Lock
 from uuid import uuid4
 
-from app.core.datetime_utils import combine_date_time, parse_datetime
+from app.core.datetime_utils import combine_date_time, now_local_naive, parse_datetime
 from app.infrastructure.repositories.lab_reservation_repository import LabReservationRepository
 from app.schemas.tutorial_session import (
     TutorialEnrollmentResponse,
@@ -29,6 +30,17 @@ def _has_overlap(start_a: str, end_a: str, start_b: str, end_b: str) -> bool:
     return a_start < b_end and b_start < a_end
 
 
+def _max_allowed_session_date(base_day):
+    next_month = base_day.month + 1
+    year = base_day.year
+    if next_month > 12:
+        next_month = 1
+        year += 1
+
+    day = min(base_day.day, monthrange(year, next_month)[1])
+    return base_day.replace(year=year, month=next_month, day=day)
+
+
 class TutorialSessionRepository:
     def __init__(self, reservation_repo: LabReservationRepository) -> None:
         self._reservation_repo = reservation_repo
@@ -36,16 +48,41 @@ class TutorialSessionRepository:
         self._lock = Lock()
 
     def _build_session(self, session_id: str, body: TutorialSessionCreate) -> TutorialSessionResponse:
-        if not str(body.topic or "").strip():
-            raise ValueError("Debes ingresar el tema de la tutoria")
+        topic = str(body.topic or "").strip()
+        description = str(body.description or "").strip()
+        location = str(body.location or "").strip()
+        max_students = int(body.max_students or 0)
 
-        if int(body.max_students or 0) <= 0:
-            raise ValueError("La capacidad maxima debe ser mayor a 0")
+        if len(topic) < 5:
+            raise ValueError("Debes ingresar un tema claro de al menos 5 caracteres")
+
+        if not location:
+            raise ValueError("Debes seleccionar el laboratorio donde se realizara la tutoria")
+
+        if max_students <= 0 or max_students > 50:
+            raise ValueError("La capacidad maxima debe estar entre 1 y 50 estudiantes")
 
         start_dt = combine_date_time(datetime.fromisoformat(body.session_date).date(), body.start_time)
         end_dt = combine_date_time(datetime.fromisoformat(body.session_date).date(), body.end_time)
         if end_dt <= start_dt:
             raise ValueError("La hora de fin debe ser posterior a la hora de inicio")
+
+        if start_dt.minute != 0 or end_dt.minute != 0:
+            raise ValueError("Las tutorias deben publicarse usando bloques horarios exactos")
+
+        if (end_dt - start_dt).total_seconds() % 3600 != 0:
+            raise ValueError("La duracion de la tutoria debe respetar bloques completos de una hora")
+
+        now = now_local_naive()
+        if start_dt <= now:
+            raise ValueError("No puedes publicar tutorias en horarios pasados o que ya comenzaron")
+
+        max_allowed_day = _max_allowed_session_date(now.date())
+        if start_dt.date() > max_allowed_day:
+            raise ValueError("Solo puedes publicar tutorias con un maximo de un mes de anticipacion")
+
+        if len(description) > 400:
+            raise ValueError("La descripcion no puede superar los 400 caracteres")
 
         created_at = _iso_now()
         return TutorialSessionResponse(
@@ -53,15 +90,16 @@ class TutorialSessionRepository:
             tutor_id=str(body.tutor_id or "").strip(),
             tutor_name=str(body.tutor_name or "").strip() or "Tutor",
             tutor_email=str(body.tutor_email or "").strip(),
-            topic=str(body.topic or "").strip(),
-            description=str(body.description or "").strip(),
-            location=str(body.location or "").strip(),
+            topic=topic,
+            description=description,
+            laboratory_id=str(body.laboratory_id or "").strip(),
+            location=location,
             session_date=str(body.session_date),
             start_time=str(body.start_time),
             end_time=str(body.end_time),
             start_at=_format_iso_utc(start_dt),
             end_at=_format_iso_utc(end_dt),
-            max_students=int(body.max_students),
+            max_students=max_students,
             is_published=True if body.is_published is None else bool(body.is_published),
             enrolled_students=[],
             created=created_at,
@@ -76,6 +114,13 @@ class TutorialSessionRepository:
         for session in self.list_all(include_past=True):
             if skip_id and session.id == skip_id:
                 continue
+            if session.laboratory_id == candidate.laboratory_id and _has_overlap(
+                candidate.start_at,
+                candidate.end_at,
+                session.start_at,
+                session.end_at,
+            ):
+                raise ValueError("Ya existe otra tutoria publicada en ese laboratorio y horario")
             if session.tutor_id != tutor_id:
                 continue
             if _has_overlap(candidate.start_at, candidate.end_at, session.start_at, session.end_at):
@@ -95,7 +140,7 @@ class TutorialSessionRepository:
         with self._lock:
             sessions = list(self._sessions.values())
 
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = now_local_naive()
         filtered = []
         for session in sessions:
             if not include_past and parse_datetime(session.end_at) < now:
@@ -147,7 +192,7 @@ class TutorialSessionRepository:
                 raise ValueError("Ya estas inscrito en esta tutoria")
             if session.seats_left <= 0:
                 raise ValueError("La tutoria ya no tiene cupos disponibles")
-            if parse_datetime(session.start_at) <= datetime.now(UTC).replace(tzinfo=None):
+            if parse_datetime(session.start_at) <= now_local_naive():
                 raise ValueError("La tutoria ya comenzo o finalizo")
 
             next_enrollments = [

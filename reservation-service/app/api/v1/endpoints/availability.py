@@ -1,13 +1,25 @@
+from calendar import monthrange
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.application.container import lab_block_repo, lab_reservation_repo, lab_schedule_repo
-from app.core.datetime_utils import combine_date_time, format_time, iter_time_ranges, parse_datetime
+from app.application.container import lab_block_repo, lab_reservation_repo, lab_schedule_repo, tutorial_session_repo
+from app.core.datetime_utils import combine_date_time, format_time, iter_time_ranges, now_local_naive, parse_datetime
 from app.core.dependencies import get_current_user
 from app.schemas.availability import AvailabilitySlot, LabAvailabilityResponse
 
 router = APIRouter(prefix="/availability", tags=["availability"])
+
+
+def _max_allowed_reservation_date(base_day):
+    next_month = base_day.month + 1
+    year = base_day.year
+    if next_month > 12:
+        next_month = 1
+        year += 1
+
+    day = min(base_day.day, monthrange(year, next_month)[1])
+    return base_day.replace(year=year, month=next_month, day=day)
 
 
 def _has_overlap(slot_start: datetime, slot_end: datetime, event_start_raw: str, event_end_raw: str) -> bool:
@@ -26,6 +38,14 @@ def get_lab_availability(
         current_date = datetime.strptime(day, "%Y-%m-%d").date()
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="day debe tener formato YYYY-MM-DD") from exc
+
+    current_local_time = now_local_naive()
+    max_allowed_day = _max_allowed_reservation_date(current_local_time.date())
+    if current_date > max_allowed_day:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Solo puedes consultar disponibilidad dentro del plazo maximo de un mes",
+        )
 
     weekday = current_date.weekday()
     schedules = [
@@ -53,6 +73,12 @@ def get_lab_availability(
         and item.start_at.startswith(day)
     ]
 
+    tutorial_sessions = [
+        item for item in tutorial_session_repo.list_public()
+        if item.laboratory_id == laboratory_id
+        and item.start_at.startswith(day)
+    ]
+
     blocks = [
         item for item in lab_block_repo.list_all()
         if item.laboratory_id == laboratory_id
@@ -67,13 +93,14 @@ def get_lab_availability(
         source_id = ""
         source_status = ""
 
-        for block in blocks:
-            if _has_overlap(start_dt, end_dt, block.start_at, block.end_at):
-                state = "blocked"
-                source = "lab_block"
-                source_id = block.id
-                source_status = block.block_type
-                break
+        if state == "available":
+            for block in blocks:
+                if _has_overlap(start_dt, end_dt, block.start_at, block.end_at):
+                    state = "blocked"
+                    source = "lab_block"
+                    source_id = block.id
+                    source_status = block.block_type
+                    break
 
         if state == "available":
             for reservation in reservations:
@@ -83,6 +110,24 @@ def get_lab_availability(
                     source_id = reservation.id
                     source_status = reservation.status
                     break
+
+        if state == "available":
+            for session in tutorial_sessions:
+                if _has_overlap(start_dt, end_dt, session.start_at, session.end_at):
+                    state = "occupied"
+                    source = "tutorial_session"
+                    source_id = session.id
+                    source_status = "published"
+                    break
+
+        if state == "available" and (
+            current_date < current_local_time.date() or (
+                current_date == current_local_time.date() and start_dt <= current_local_time
+            )
+        ):
+            state = "blocked"
+            source = "system"
+            source_status = "past"
 
         slots.append(
             AvailabilitySlot(
