@@ -1,6 +1,16 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from app.core.config import settings
+
+
+def _app_timezone() -> ZoneInfo | timezone:
+    try:
+        return ZoneInfo(settings.app_timezone)
+    except ZoneInfoNotFoundError:
+        return timezone.utc
 
 
 def parse_datetime(value: str) -> datetime:
@@ -17,11 +27,18 @@ def parse_datetime(value: str) -> datetime:
     except ValueError as exc:
         raise ValueError(f"Fecha/hora invalida: {value}") from exc
 
-    # Normalize to naive UTC to avoid aware/naive comparison errors.
+    # PocketBase persists date fields with timezone markers, but the project
+    # treats reservation schedules as wall-clock local times entered by users.
+    # Preserve the original clock values instead of converting them across
+    # timezones so UI, availability, and business rules stay aligned.
     if parsed.tzinfo is not None:
-        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed.replace(tzinfo=None)
 
     return parsed
+
+
+def now_local_naive() -> datetime:
+    return datetime.now(_app_timezone()).replace(tzinfo=None)
 
 
 def combine_date_time(day: date, hhmm: str) -> datetime:

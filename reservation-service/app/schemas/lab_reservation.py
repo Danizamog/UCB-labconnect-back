@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-RESERVATION_STATUSES = {"pending", "approved", "rejected", "cancelled"}
+RESERVATION_STATUSES = {"pending", "approved", "rejected", "cancelled", "in_progress", "completed", "absent"}
 
 
 class LabReservationCreate(BaseModel):
@@ -59,3 +59,65 @@ class LabReservationResponse(BaseModel):
     is_active: bool
     created: str
     updated: str
+    requested_by_name: str = ""
+    requested_by_email: str = ""
+    station_label: str = ""
+    check_in_at: str = ""
+    check_out_at: str = ""
+    is_walk_in: bool = False
+
+
+class PaginatedLabReservationResponse(BaseModel):
+    items: list[LabReservationResponse]
+    pageNumber: int
+    pageSize: int
+    totalElements: int
+    totalPages: int
+    sortBy: str
+    sortType: str
+    where: str = ""
+
+
+class ReservationAccessUpdate(BaseModel):
+    station_label: str = ""
+    occupant_name: str = ""
+    occupant_email: str = ""
+    notes: str = ""
+
+
+class WalkInReservationCreate(BaseModel):
+    laboratory_id: str
+    area_id: str = ""
+    requested_by: str
+    occupant_name: str
+    occupant_email: str = ""
+    purpose: str = ""
+    start_at: str
+    end_at: str
+    station_label: str = ""
+    notes: str = ""
+
+
+class OccupancySessionResponse(BaseModel):
+    reservation_id: str
+    laboratory_id: str
+    requested_by: str
+    requested_by_name: str = ""
+    requested_by_email: str = ""
+    station_label: str = ""
+    check_in_at: str
+    start_at: str
+    end_at: str
+    is_walk_in: bool = False
+    purpose: str = ""
+
+
+class OccupancyLabSummary(BaseModel):
+    laboratory_id: str
+    occupancy_count: int
+
+
+class OccupancyDashboardResponse(BaseModel):
+    current_occupancy: int
+    active_sessions: list[OccupancySessionResponse]
+    lab_breakdown: list[OccupancyLabSummary]
