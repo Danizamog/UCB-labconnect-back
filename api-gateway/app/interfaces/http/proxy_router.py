@@ -217,3 +217,22 @@ async def proxy_availability_root(request: Request) -> Response:
     return await forward_request(target_url, request)
 
 
+# Supply Reservation Service - Supply reservations
+@router.api_route(
+    "/api/v1/supply-reservations/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_supply_reservations_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.supply_reservation_service_url}/v1/supply-reservations/{path}"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/supply-reservations",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_supply_reservations_root(request: Request) -> Response:
+    target_url = f"{settings.supply_reservation_service_url}/v1/supply-reservations"
+    return await forward_request(target_url, request)
+
+
