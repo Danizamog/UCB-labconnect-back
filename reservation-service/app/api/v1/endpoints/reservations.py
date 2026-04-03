@@ -2,7 +2,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.application.container import lab_reservation_repo
+from app.application.container import lab_reservation_repo, user_penalty_repo
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.realtime.manager import realtime_manager
 from app.schemas.lab_reservation import (
@@ -59,6 +59,16 @@ def get_reservation(reservation_id: str, current_user: dict = Depends(get_curren
 
 @router.post("", response_model=LabReservationResponse, status_code=status.HTTP_201_CREATED)
 async def create_reservation(body: LabReservationCreate, current_user: dict = Depends(get_current_user)) -> LabReservationResponse:
+    active_penalty = user_penalty_repo.get_active_for_user(str(current_user.get("user_id") or "").strip())
+    if active_penalty is not None:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=(
+                "Tu cuenta tiene una penalizacion activa y no puede crear nuevas reservas. "
+                f"Motivo: {active_penalty.reason}. Vigente hasta {active_penalty.ends_at}"
+            ),
+        )
+
     try:
         created = lab_reservation_repo.create(body, current_user=current_user)
     except ValueError as exc:
