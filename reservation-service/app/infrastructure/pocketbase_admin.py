@@ -106,6 +106,38 @@ class PocketBaseAdminClient:
             json={"name": collection_name, "type": "base", "fields": fields},
         )
 
+    def ensure_collection_fields(self, collection_name: str, fields_to_add: list[dict[str, Any]]) -> None:
+        existing = self.get_collection(collection_name)
+        if not existing:
+            self.ensure_collection(collection_name, fields_to_add)
+            return
+
+        existing_fields = existing.get("fields", [])
+        if not isinstance(existing_fields, list):
+            existing_fields = []
+
+        existing_names = {
+            str(field.get("name") or "").strip()
+            for field in existing_fields
+            if isinstance(field, dict)
+        }
+
+        merged_fields = list(existing_fields)
+        changed = False
+        for field in fields_to_add:
+            name = str(field.get("name") or "").strip()
+            if not name or name in existing_names:
+                continue
+            merged_fields.append(field)
+            existing_names.add(name)
+            changed = True
+
+        if not changed:
+            return
+
+        collection_id = existing.get("id") or collection_name
+        self._request("PATCH", f"{self._base_url}/api/collections/{collection_id}", json={"fields": merged_fields})
+
     def list_records(
         self,
         collection_name: str,

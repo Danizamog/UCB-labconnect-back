@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.application.container import lab_reservation_repo
 from app.api.v1.router import api_router
 from app.core.dependencies import auth_validation_client
 from app.reminders.scheduler import reservation_reminder_scheduler
@@ -30,6 +31,7 @@ async def health() -> dict:
 
 @app.on_event("startup")
 async def on_startup() -> None:
+    lab_reservation_repo.sanitize_legacy_records()
     reservation_reminder_scheduler.start()
 
 

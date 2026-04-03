@@ -50,12 +50,16 @@ services:
     container_name: reservation-service
     ports:
       - "8005:8005"
+    volumes:
+      - ./reservation-service/data:/app/data
     environment:
       - AUTH_SERVICE_URL=http://auth-service:8001
       - SECRET_KEY=${SECRET_KEY}
       - POCKETBASE_URL=${POCKETBASE_URL}
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
       - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
+      - POCKETBASE_USERS_COLLECTION=${POCKETBASE_USERS_COLLECTION:-users}
+      - TUTORIAL_SESSIONS_STORAGE_PATH=/app/data/tutorial_sessions.json
   
   api-gateway:
     build:
