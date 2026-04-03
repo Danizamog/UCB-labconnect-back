@@ -8,8 +8,8 @@ from app.penalties.store import penalty_store
 
 _pb_client = PocketBaseClient()
 
-lab_reservation_repo = LabReservationRepository(_pb_client)
 lab_schedule_repo = LabScheduleRepository(_pb_client)
+lab_reservation_repo = LabReservationRepository(_pb_client, lab_schedule_repo)
 lab_block_repo = LabBlockRepository(_pb_client)
 tutorial_session_repo = TutorialSessionRepository(lab_reservation_repo)
 user_penalty_repo = penalty_store

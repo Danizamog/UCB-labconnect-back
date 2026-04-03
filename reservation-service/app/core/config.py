@@ -31,6 +31,7 @@ class Settings:
         self.app_host = os.getenv("RESERVATION_APP_HOST", "0.0.0.0")
         self.app_port = int(os.getenv("RESERVATION_APP_PORT", "8005"))
         self.app_timezone = os.getenv("APP_TIMEZONE", "America/La_Paz").strip() or "America/La_Paz"
+        backend_root = Path(__file__).resolve().parents[3]
         self.auth_service_url = os.getenv("AUTH_SERVICE_URL", "http://127.0.0.1:8101")
         self.secret_key = os.getenv("SECRET_KEY", "change-this-secret")
         self.algorithm = os.getenv("JWT_ALGORITHM", os.getenv("ALGORITHM", "HS256"))
@@ -39,12 +40,20 @@ class Settings:
         self.pocketbase_auth_password = os.getenv("POCKETBASE_AUTH_PASSWORD")
         self.pocketbase_auth_collection = os.getenv("POCKETBASE_AUTH_COLLECTION", "_superusers")
         self.pocketbase_timeout_seconds = float(os.getenv("POCKETBASE_TIMEOUT_SECONDS", "10"))
+        self.pb_users_collection = os.getenv("POCKETBASE_USERS_COLLECTION", "users").strip() or "users"
         self.pb_lab_reservation_collection = os.getenv("POCKETBASE_LAB_RESERVATION_COLLECTION", "lab_reservation")
         self.pb_lab_schedule_collection = os.getenv("POCKETBASE_LAB_SCHEDULE_COLLECTION", "lab_schedule")
         self.pb_lab_block_collection = os.getenv("POCKETBASE_LAB_BLOCK_COLLECTION", "lab_block")
         self.pb_lab_access_sessions_collection = os.getenv(
             "POCKETBASE_LAB_ACCESS_SESSIONS_COLLECTION",
             "lab_access_sessions_v2",
+        )
+        self.tutorial_sessions_storage_path = (
+            os.getenv(
+                "TUTORIAL_SESSIONS_STORAGE_PATH",
+                str(backend_root / "data" / "tutorial_sessions.json"),
+            ).strip()
+            or str(backend_root / "data" / "tutorial_sessions.json")
         )
         self.smtp_host = os.getenv("SMTP_HOST", "").strip()
         self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
