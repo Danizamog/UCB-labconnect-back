@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-RESERVATION_STATUSES = {"pending", "approved", "rejected", "cancelled"}
+RESERVATION_STATUSES = {"pending", "approved", "rejected", "cancelled", "in_progress", "completed", "absent"}
 
 
 class LabReservationCreate(BaseModel):

@@ -3,6 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.application.container import lab_reservation_repo
+from app.core.datetime_utils import parse_datetime
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.realtime.manager import realtime_manager
 from app.schemas.lab_reservation import (
@@ -13,6 +14,7 @@ from app.schemas.lab_reservation import (
 )
 
 router = APIRouter(prefix="/reservations", tags=["reservations"])
+_ABSENT_GRACE_PERIOD_SECONDS = 15 * 60
 
 
 @router.get("", response_model=list[LabReservationResponse])
@@ -121,6 +123,12 @@ async def update_reservation_status(
         "No tienes permisos para actualizar estados de reserva",
     )
 
+    if body.status not in {"approved", "rejected", "cancelled", "in_progress", "completed", "absent"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Estado no permitido para actualizacion manual",
+        )
+
     payload = LabReservationUpdate(
         status=body.status,
         cancel_reason=body.cancel_reason,
@@ -133,6 +141,125 @@ async def update_reservation_status(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "lab_reservation",
+            "action": "update",
+            "record": updated.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return updated
+
+
+@router.patch("/{reservation_id}/check-in", response_model=LabReservationResponse)
+async def mark_reservation_check_in(
+    reservation_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> LabReservationResponse:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
+        "No tienes permisos para registrar ingresos",
+    )
+
+    reservation = lab_reservation_repo.get_by_id(reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+    if reservation.status not in {"approved", "in_progress"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Solo puedes marcar en curso reservas aprobadas",
+        )
+    if reservation.status == "in_progress":
+        return reservation
+
+    updated = lab_reservation_repo.update(reservation_id, LabReservationUpdate(status="in_progress"))
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "lab_reservation",
+            "action": "update",
+            "record": updated.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return updated
+
+
+@router.patch("/{reservation_id}/check-out", response_model=LabReservationResponse)
+async def mark_reservation_check_out(
+    reservation_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> LabReservationResponse:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
+        "No tienes permisos para registrar salidas",
+    )
+
+    reservation = lab_reservation_repo.get_by_id(reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+    if reservation.status not in {"in_progress", "completed"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Solo puedes completar reservas en curso",
+        )
+    if reservation.status == "completed":
+        return reservation
+
+    updated = lab_reservation_repo.update(reservation_id, LabReservationUpdate(status="completed"))
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "lab_reservation",
+            "action": "update",
+            "record": updated.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return updated
+
+
+@router.patch("/{reservation_id}/absent", response_model=LabReservationResponse)
+async def mark_reservation_absent(
+    reservation_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> LabReservationResponse:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
+        "No tienes permisos para marcar ausencias",
+    )
+
+    reservation = lab_reservation_repo.get_by_id(reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+    if reservation.status not in {"approved", "absent"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Solo las reservas aprobadas pueden marcarse como ausentes",
+        )
+    if reservation.status == "absent":
+        return reservation
+
+    now = datetime.utcnow()
+    start_at = parse_datetime(reservation.start_at)
+    if (now - start_at).total_seconds() < _ABSENT_GRACE_PERIOD_SECONDS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Solo puedes marcar ausente cuando hayan pasado al menos 15 minutos del inicio",
+        )
+
+    updated = lab_reservation_repo.update(reservation_id, LabReservationUpdate(status="absent"))
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 

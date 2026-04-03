@@ -37,6 +37,28 @@ def _has_overlap(start_a: str, end_a: str, start_b: str, end_b: str) -> bool:
     return a_start < b_end and b_start < a_end
 
 
+def _extract_http_error_detail(exc: httpx.HTTPStatusError) -> str:
+    try:
+        payload = exc.response.json()
+    except ValueError:
+        payload = None
+
+    if isinstance(payload, dict):
+        detail = payload.get("message") or payload.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+
+        data = payload.get("data")
+        if isinstance(data, dict):
+            for field_name, field_data in data.items():
+                if isinstance(field_data, dict):
+                    msg = field_data.get("message")
+                    if isinstance(msg, str) and msg.strip():
+                        return f"{field_name}: {msg.strip()}"
+
+    return f"PocketBase rechazo la operacion (HTTP {exc.response.status_code})"
+
+
 class LabReservationRepository:
     def __init__(self, client: PocketBaseClient) -> None:
         self._client = client
@@ -82,7 +104,7 @@ class LabReservationRepository:
                 continue
             if skip_id and item.id == skip_id:
                 continue
-            if item.status in {"rejected", "cancelled"}:
+            if item.status in {"rejected", "cancelled", "completed", "absent"}:
                 continue
             if _has_overlap(start_at, end_at, item.start_at, item.end_at):
                 raise ValueError("Existe una reserva activa que se cruza con ese horario")
@@ -105,7 +127,10 @@ class LabReservationRepository:
 
         self._validate_no_overlap(payload["laboratory_id"], payload["start_at"], payload["end_at"])
 
-        data = self._client.request("POST", self._base, payload=payload)
+        try:
+            data = self._client.request("POST", self._base, payload=payload)
+        except httpx.HTTPStatusError as exc:
+            raise ValueError(_extract_http_error_detail(exc)) from exc
         if not isinstance(data, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al crear reserva")
         return _to_response(data)
@@ -129,10 +154,13 @@ class LabReservationRepository:
 
         if any(field in payload for field in {"laboratory_id", "start_at", "end_at", "status"}):
             status_to_check = payload.get("status", existing.status)
-            if status_to_check not in {"rejected", "cancelled"}:
+            if status_to_check not in {"rejected", "cancelled", "completed", "absent"}:
                 self._validate_no_overlap(next_laboratory, next_start, next_end, skip_id=reservation_id)
 
-        data = self._client.request("PATCH", f"{self._base}/{reservation_id}", payload=payload)
+        try:
+            data = self._client.request("PATCH", f"{self._base}/{reservation_id}", payload=payload)
+        except httpx.HTTPStatusError as exc:
+            raise ValueError(_extract_http_error_detail(exc)) from exc
         if not isinstance(data, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al actualizar reserva")
         return _to_response(data)

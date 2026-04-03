@@ -48,7 +48,7 @@ def get_lab_availability(
     reservations = [
         item for item in lab_reservation_repo.list_all()
         if item.laboratory_id == laboratory_id
-        and item.status not in {"rejected", "cancelled"}
+        and item.status not in {"rejected", "cancelled", "completed", "absent"}
         and item.is_active
         and item.start_at.startswith(day)
     ]
