@@ -88,7 +88,7 @@ async def create_tutorial_session(
         update={
             "tutor_id": body.tutor_id or current_user.get("user_id") or "",
             "tutor_name": body.tutor_name or current_user.get("name") or current_user.get("username") or "Tutor",
-            "tutor_email": body.tutor_email or "",
+            "tutor_email": body.tutor_email or current_user.get("email") or "",
         }
     )
 

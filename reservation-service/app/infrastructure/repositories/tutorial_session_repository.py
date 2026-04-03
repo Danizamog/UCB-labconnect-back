@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 from calendar import monthrange
 from datetime import UTC, datetime
+from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
+from pydantic import ValidationError
+
+from app.core.config import settings
 from app.core.datetime_utils import combine_date_time, now_local_naive, parse_datetime
 from app.infrastructure.repositories.lab_reservation_repository import LabReservationRepository
 from app.schemas.tutorial_session import (
@@ -46,6 +51,45 @@ class TutorialSessionRepository:
         self._reservation_repo = reservation_repo
         self._sessions: dict[str, TutorialSessionResponse] = {}
         self._lock = Lock()
+        self._storage_path = Path(settings.tutorial_sessions_storage_path).expanduser()
+        self._storage_path.parent.mkdir(parents=True, exist_ok=True)
+        self._load_from_disk()
+
+    def _load_from_disk(self) -> None:
+        if not self._storage_path.exists():
+            return
+
+        try:
+            raw_payload = json.loads(self._storage_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+
+        if not isinstance(raw_payload, list):
+            return
+
+        loaded: dict[str, TutorialSessionResponse] = {}
+        for item in raw_payload:
+            if not isinstance(item, dict):
+                continue
+            try:
+                session = TutorialSessionResponse.model_validate(item)
+            except ValidationError:
+                continue
+            loaded[session.id] = session
+
+        with self._lock:
+            self._sessions = loaded
+
+    def _save_to_disk(self) -> None:
+        with self._lock:
+            payload = [session.model_dump() for session in self._sessions.values()]
+
+        temp_path = self._storage_path.with_suffix(f"{self._storage_path.suffix}.tmp")
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temp_path.replace(self._storage_path)
 
     def _build_session(self, session_id: str, body: TutorialSessionCreate) -> TutorialSessionResponse:
         topic = str(body.topic or "").strip()
@@ -166,6 +210,7 @@ class TutorialSessionRepository:
         with self._lock:
             self._sessions[session.id] = session
 
+        self._save_to_disk()
         return session
 
     def enroll(
@@ -206,7 +251,9 @@ class TutorialSessionRepository:
             ]
             updated = session.model_copy(update={"enrolled_students": next_enrollments, "updated": _iso_now()})
             self._sessions[session_id] = updated
-            return updated
+
+        self._save_to_disk()
+        return updated
 
     def delete(self, session_id: str) -> tuple[TutorialSessionResponse, list[TutorialEnrollmentResponse]] | None:
         with self._lock:
@@ -215,4 +262,5 @@ class TutorialSessionRepository:
         if session is None:
             return None
 
+        self._save_to_disk()
         return session, list(session.enrolled_students)
