@@ -15,6 +15,12 @@ from app.schemas.lab_reservation import (
 
 router = APIRouter(prefix="/reservations", tags=["reservations"])
 _ABSENT_GRACE_PERIOD_SECONDS = 15 * 60
+_MANAGEMENT_PERMISSIONS = {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"}
+
+
+def _can_manage_reservations(current_user: dict) -> bool:
+    permissions = set(current_user.get("permissions") or [])
+    return current_user.get("role") == "admin" or "*" in permissions or bool(permissions.intersection(_MANAGEMENT_PERMISSIONS))
 
 
 @router.get("", response_model=list[LabReservationResponse])
@@ -26,7 +32,7 @@ def list_reservations(
 ) -> list[LabReservationResponse]:
     data = lab_reservation_repo.list_all()
 
-    if current_user.get("role") != "admin":
+    if not _can_manage_reservations(current_user):
         requester = current_user.get("user_id") or ""
         data = [item for item in data if item.requested_by == requester]
 
@@ -177,7 +183,11 @@ async def mark_reservation_check_in(
     if reservation.status == "in_progress":
         return reservation
 
-    updated = lab_reservation_repo.update(reservation_id, LabReservationUpdate(status="in_progress"))
+    try:
+        updated = lab_reservation_repo.update(reservation_id, LabReservationUpdate(status="in_progress"))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
@@ -214,7 +224,11 @@ async def mark_reservation_check_out(
     if reservation.status == "completed":
         return reservation
 
-    updated = lab_reservation_repo.update(reservation_id, LabReservationUpdate(status="completed"))
+    try:
+        updated = lab_reservation_repo.update(reservation_id, LabReservationUpdate(status="completed"))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
@@ -259,7 +273,11 @@ async def mark_reservation_absent(
             detail="Solo puedes marcar ausente cuando hayan pasado al menos 15 minutos del inicio",
         )
 
-    updated = lab_reservation_repo.update(reservation_id, LabReservationUpdate(status="absent"))
+    try:
+        updated = lab_reservation_repo.update(reservation_id, LabReservationUpdate(status="absent"))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
