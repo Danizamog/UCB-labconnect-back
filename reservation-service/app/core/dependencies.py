@@ -31,6 +31,8 @@ def _decode_token_payload(token: str) -> dict:
         "username": str(subject),
         "role": str(payload.get("role") or "user"),
         "permissions": permissions,
+        "user_id": str(payload.get("user_id") or ""),
+        "name": str(payload.get("name") or subject),
     }
 
 
@@ -78,6 +80,8 @@ def _resolve_live_payload(token: str, fallback_payload: dict) -> dict:
         "username": str(body.get("subject") or body.get("sub") or fallback_payload["username"]),
         "role": str(body.get("role") or fallback_payload.get("role") or "user"),
         "permissions": [str(p).strip() for p in live_permissions if str(p).strip()],
+        "user_id": str(body.get("user_id") or fallback_payload.get("user_id") or ""),
+        "name": str(body.get("name") or fallback_payload.get("name") or fallback_payload["username"]),
     }
 
 
