@@ -9,7 +9,7 @@ class LoginUser:
 
     def execute(self, username: str, password: str) -> str:
         normalized_username = username.lower().strip()
-        if not normalized_username.endswith(settings.institutional_email_domain):
+        if not normalized_username:
             raise ValueError("Cuenta no reconocida")
 
         user = self.repository.authenticate(normalized_username, password)

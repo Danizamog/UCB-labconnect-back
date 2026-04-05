@@ -217,3 +217,58 @@ async def proxy_availability_root(request: Request) -> Response:
     return await forward_request(target_url, request)
 
 
+# Reservation Service - Tutorial sessions
+@router.api_route(
+    "/api/v1/tutorial-sessions/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_tutorial_sessions_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/tutorial-sessions/{path}"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/tutorial-sessions",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_tutorial_sessions_root(request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/tutorial-sessions"
+    return await forward_request(target_url, request)
+
+
+# Reservation Service - Notifications
+@router.api_route(
+    "/api/v1/notifications/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_notifications_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/notifications/{path}"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/notifications",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_notifications_root(request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/notifications"
+    return await forward_request(target_url, request)
+
+
+# Reservation Service - Penalties
+@router.api_route(
+    "/api/v1/penalties/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_penalties_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/penalties/{path}"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/penalties",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_penalties_root(request: Request) -> Response:
+    target_url = f"{settings.reservations_service_url}/v1/penalties"
+    return await forward_request(target_url, request)

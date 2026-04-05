@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.application.container import (
+    login_user_use_case,
     login_with_google_use_case,
     user_repository,
     validate_token_use_case,
@@ -12,6 +13,7 @@ from app.interfaces.http.schemas.auth import (
     GoogleLoginRequest,
     InstitutionalLoginRequest,
     InstitutionalSSOConfigResponse,
+    LoginRequest,
     TokenResponse,
 )
 from app.interfaces.http.schemas.user import (
@@ -21,7 +23,6 @@ from app.interfaces.http.schemas.user import (
 )
 
 INVALID_CREDENTIALS_MESSAGE = "Cuenta no reconocida"
-GOOGLE_ONLY_AUTH_MESSAGE = "Solo se permite el inicio de sesion con Google institucional"
 ALLOWED_PROFILE_TYPES = {"student", "teacher", "staff", "guest", "lab_manager"}
 PROFILE_MUTABLE_FIELDS = (
     "username",
@@ -128,6 +129,7 @@ def _build_live_session_payload(payload: dict) -> dict:
         "user_id": user.id,
         "role": role,
         "name": user.name,
+        "email": user.username,
         "permissions": permissions,
         "picture": payload.get("picture"),
         "auth_provider": payload.get("auth_provider"),
@@ -201,16 +203,18 @@ def _ensure_profile_update_permissions(
 def register() -> dict:
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail=GOOGLE_ONLY_AUTH_MESSAGE,
+        detail="El registro directo no esta habilitado en este entorno",
     )
 
 
 @auth_router.post("/login", response_model=TokenResponse)
-def login() -> TokenResponse:
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail=GOOGLE_ONLY_AUTH_MESSAGE,
-    )
+def login(payload: LoginRequest) -> TokenResponse:
+    try:
+        token = login_user_use_case.execute(payload.username, payload.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+    return TokenResponse(access_token=token, expires_in=settings.token_expire_minutes * 60)
 
 
 @auth_router.get("/institutional/config", response_model=InstitutionalSSOConfigResponse)
