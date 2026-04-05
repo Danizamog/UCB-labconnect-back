@@ -50,25 +50,16 @@ services:
     container_name: reservation-service
     ports:
       - "8005:8005"
+    volumes:
+      - ./reservation-service/data:/app/data
     environment:
       - AUTH_SERVICE_URL=http://auth-service:8001
       - SECRET_KEY=${SECRET_KEY}
       - POCKETBASE_URL=${POCKETBASE_URL}
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
       - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
-
-  supply-reservation-service:
-    build:
-      context: ./supply-reservation-service
-    container_name: supply-reservation-service
-    ports:
-      - "8006:8006"
-    environment:
-      - AUTH_SERVICE_URL=http://auth-service:8001
-      - SECRET_KEY=${SECRET_KEY}
-      - POCKETBASE_URL=${POCKETBASE_URL}
-      - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
-      - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
+      - POCKETBASE_USERS_COLLECTION=${POCKETBASE_USERS_COLLECTION:-users}
+      - TUTORIAL_SESSIONS_STORAGE_PATH=/app/data/tutorial_sessions.json
   
   api-gateway:
     build:
@@ -84,7 +75,6 @@ services:
       - INVENTORY_SERVICE_URL=http://inventory-service:8003
       - ROLE_SERVICE_URL=http://role-service:8004
       - RESERVATIONS_SERVICE_URL=http://reservation-service:8005
-      - SUPPLY_RESERVATION_SERVICE_URL=http://supply-reservation-service:8006
     ports:
       - "${API_GATEWAY_PORT:-8000}:8000"
     depends_on:
@@ -92,4 +82,3 @@ services:
       - inventory-service
       - role-service
       - reservation-service
-      - supply-reservation-service

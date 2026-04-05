@@ -8,9 +8,9 @@ router = APIRouter(tags=["realtime"])
 @router.websocket("/ws/reservations")
 async def reservations_ws(websocket: WebSocket) -> None:
     await realtime_manager.connect(websocket)
-    await websocket.send_json({"type": "connected", "topic": "reservations"})
 
     try:
+        await websocket.send_json({"type": "connected", "topic": "reservations"})
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:

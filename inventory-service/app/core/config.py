@@ -55,6 +55,10 @@ class Settings:
             "POCKETBASE_INVENTORY_ASSET_STATUS_LOGS_COLLECTION",
             "inventory_asset_status_logs_v2",
         )
+        self.pb_asset_maintenance_tickets_collection = os.getenv(
+            "POCKETBASE_INVENTORY_ASSET_MAINTENANCE_TICKETS_COLLECTION",
+            "inventory_asset_maintenance_tickets_v2",
+        )
 
 
 settings = Settings()

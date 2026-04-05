@@ -5,19 +5,18 @@ from typing import Any
 import httpx
 
 
-class PocketBaseClient:
+class PocketBaseAdminClient:
     def __init__(
         self,
         *,
         base_url: str,
-        auth_token: str | None = None,
         auth_identity: str | None = None,
         auth_password: str | None = None,
         auth_collection: str = "_superusers",
         timeout_seconds: float = 10,
     ) -> None:
         self._base_url = base_url.rstrip("/")
-        self._auth_token = auth_token
+        self._auth_token: str | None = None
         self._auth_identity = auth_identity
         self._auth_password = auth_password
         self._auth_collection = auth_collection
@@ -30,21 +29,13 @@ class PocketBaseClient:
     def enabled(self) -> bool:
         return bool(self._base_url)
 
-    def close(self) -> None:
-        self._client.close()
-
     def _has_credentials(self) -> bool:
         return bool(self._auth_identity and self._auth_password)
 
-    def _auth_endpoint(self) -> str:
-        return f"{self._base_url}/api/collections/{self._auth_collection}/auth-with-password"
-
-    def _headers(self, extra_headers: dict[str, str] | None = None) -> dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self._auth_token:
             headers["Authorization"] = f"Bearer {self._auth_token}"
-        if extra_headers:
-            headers.update(extra_headers)
         return headers
 
     def _authenticate(self) -> None:
@@ -52,7 +43,7 @@ class PocketBaseClient:
             return
 
         payload = {"identity": self._auth_identity, "password": self._auth_password}
-        endpoints = [self._auth_endpoint()]
+        endpoints = [f"{self._base_url}/api/collections/{self._auth_collection}/auth-with-password"]
         if self._auth_collection in {"_superusers", "admins"}:
             endpoints.append(f"{self._base_url}/api/admins/auth-with-password")
 
@@ -83,11 +74,10 @@ class PocketBaseClient:
         if not self._auth_token and self._has_credentials():
             self._authenticate()
 
-        extra_headers = kwargs.pop("headers", None)
-        response = self._client.request(method, url, headers=self._headers(extra_headers), **kwargs)
+        response = self._client.request(method, url, headers=self._headers(), **kwargs)
         if response.status_code == 401 and self._has_credentials():
             self._authenticate()
-            response = self._client.request(method, url, headers=self._headers(extra_headers), **kwargs)
+            response = self._client.request(method, url, headers=self._headers(), **kwargs)
 
         response.raise_for_status()
         if not response.content:
@@ -107,54 +97,73 @@ class PocketBaseClient:
         existing = self.get_collection(collection_name)
         if existing:
             collection_id = existing.get("id") or collection_name
-            self._request(
-                "PATCH",
-                f"{self._base_url}/api/collections/{collection_id}",
-                json={"fields": fields},
-            )
+            self._request("PATCH", f"{self._base_url}/api/collections/{collection_id}", json={"fields": fields})
             return
 
-        payload = {
-            "name": collection_name,
-            "type": "base",
-            "fields": fields,
+        self._request(
+            "POST",
+            f"{self._base_url}/api/collections",
+            json={"name": collection_name, "type": "base", "fields": fields},
+        )
+
+    def ensure_collection_fields(self, collection_name: str, fields_to_add: list[dict[str, Any]]) -> None:
+        existing = self.get_collection(collection_name)
+        if not existing:
+            self.ensure_collection(collection_name, fields_to_add)
+            return
+
+        existing_fields = existing.get("fields", [])
+        if not isinstance(existing_fields, list):
+            existing_fields = []
+
+        existing_names = {
+            str(field.get("name") or "").strip()
+            for field in existing_fields
+            if isinstance(field, dict)
         }
-        self._request("POST", f"{self._base_url}/api/collections", json=payload)
+
+        merged_fields = list(existing_fields)
+        changed = False
+        for field in fields_to_add:
+            name = str(field.get("name") or "").strip()
+            if not name or name in existing_names:
+                continue
+            merged_fields.append(field)
+            existing_names.add(name)
+            changed = True
+
+        if not changed:
+            return
+
+        collection_id = existing.get("id") or collection_name
+        self._request("PATCH", f"{self._base_url}/api/collections/{collection_id}", json={"fields": merged_fields})
 
     def list_records(
         self,
         collection_name: str,
         *,
-        sort: str | None = "source_id",
+        sort: str | None = "-created",
         filter: str | None = None,
         per_page: int = 200,
     ) -> list[dict[str, Any]]:
         page = 1
         records: list[dict[str, Any]] = []
-
         while True:
             params: dict[str, Any] = {"page": page, "perPage": per_page}
             if sort:
                 params["sort"] = sort
             if filter:
                 params["filter"] = filter
-            payload = self._request(
-                "GET",
-                f"{self._base_url}/api/collections/{collection_name}/records",
-                params=params,
-            )
+            payload = self._request("GET", f"{self._base_url}/api/collections/{collection_name}/records", params=params)
             if not isinstance(payload, dict):
                 break
-
             items = payload.get("items", [])
             if not isinstance(items, list):
                 break
-
             records.extend(item for item in items if isinstance(item, dict))
             if page >= int(payload.get("totalPages", 1)):
                 break
             page += 1
-
         return records
 
     def get_record(self, collection_name: str, record_id: str) -> dict[str, Any] | None:
@@ -167,32 +176,13 @@ class PocketBaseClient:
         return payload if isinstance(payload, dict) else None
 
     def create_record(self, collection_name: str, payload: dict[str, Any]) -> dict[str, Any]:
-        result = self._request(
-            "POST",
-            f"{self._base_url}/api/collections/{collection_name}/records",
-            json=payload,
-        )
+        result = self._request("POST", f"{self._base_url}/api/collections/{collection_name}/records", json=payload)
         if not isinstance(result, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al crear el registro")
         return result
 
     def update_record(self, collection_name: str, record_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        result = self._request(
-            "PATCH",
-            f"{self._base_url}/api/collections/{collection_name}/records/{record_id}",
-            json=payload,
-        )
+        result = self._request("PATCH", f"{self._base_url}/api/collections/{collection_name}/records/{record_id}", json=payload)
         if not isinstance(result, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al actualizar el registro")
         return result
-
-    def clear_collection_records(self, collection_name: str) -> None:
-        for record in self.list_records(collection_name, sort=None):
-            record_id = record.get("id")
-            if isinstance(record_id, str) and record_id:
-                self._request("DELETE", f"{self._base_url}/api/collections/{collection_name}/records/{record_id}")
-
-    def replace_collection_records(self, collection_name: str, records: list[dict[str, Any]]) -> None:
-        self.clear_collection_records(collection_name)
-        for payload in records:
-            self._request("POST", f"{self._base_url}/api/collections/{collection_name}/records", json=payload)

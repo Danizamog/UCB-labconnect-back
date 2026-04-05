@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.application.container import lab_reservation_repo
 from app.api.v1.router import api_router
 from app.core.dependencies import auth_validation_client
+from app.reminders.scheduler import reservation_reminder_scheduler
 
 app = FastAPI(title="LabConnect Reservation Service", version="1.0.0")
 
@@ -27,8 +29,15 @@ async def health() -> dict:
     return {"status": "ok", "service": "reservation-service"}
 
 
+@app.on_event("startup")
+async def on_startup() -> None:
+    lab_reservation_repo.sanitize_legacy_records()
+    reservation_reminder_scheduler.start()
+
+
 @app.on_event("shutdown")
-def on_shutdown() -> None:
+async def on_shutdown() -> None:
+    await reservation_reminder_scheduler.stop()
     auth_validation_client.close()
 
 
