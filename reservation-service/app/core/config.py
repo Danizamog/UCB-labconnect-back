@@ -31,6 +31,7 @@ class Settings:
         self.app_host = os.getenv("RESERVATION_APP_HOST", "0.0.0.0")
         self.app_port = int(os.getenv("RESERVATION_APP_PORT", "8005"))
         self.auth_service_url = os.getenv("AUTH_SERVICE_URL", "http://127.0.0.1:8101")
+        self.inventory_service_url = os.getenv("INVENTORY_SERVICE_URL", "http://127.0.0.1:8003")
         self.secret_key = os.getenv("SECRET_KEY", "change-this-secret")
         self.algorithm = os.getenv("JWT_ALGORITHM", os.getenv("ALGORITHM", "HS256"))
         self.pocketbase_url = os.getenv("POCKETBASE_URL", "").rstrip("/")

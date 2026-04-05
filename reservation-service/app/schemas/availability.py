@@ -17,3 +17,14 @@ class LabAvailabilityResponse(BaseModel):
     date: str
     slot_minutes: int
     slots: list[AvailabilitySlot]
+
+
+class LabOccupancyResponse(BaseModel):
+    laboratory_id: str
+    laboratory_name: str
+    area_id: str = ""
+    capacity: int
+    current_occupancy: int
+    available_slots: int
+    occupancy_percentage: float
+    status: str

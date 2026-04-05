@@ -52,6 +52,7 @@ services:
       - "8005:8005"
     environment:
       - AUTH_SERVICE_URL=http://auth-service:8001
+      - INVENTORY_SERVICE_URL=http://inventory-service:8003
       - SECRET_KEY=${SECRET_KEY}
       - POCKETBASE_URL=${POCKETBASE_URL}
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
