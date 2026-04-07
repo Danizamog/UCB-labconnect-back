@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+
+from app.application.container import tutorial_session_repo
+from app.core.dependencies import ensure_any_permission, get_current_user
+from app.notifications.store import notification_store
+from app.realtime.manager import realtime_manager
+from app.schemas.tutorial_session import TutorialSessionCreate, TutorialSessionResponse
+
+router = APIRouter(prefix="/tutorial-sessions", tags=["tutorial-sessions"])
+
+
+async def _broadcast_tutorial_notification(
+    *,
+    recipient_user_id: str,
+    title: str,
+    message: str,
+    payload: dict,
+) -> None:
+    notification = notification_store.create(
+        recipient_user_id=recipient_user_id,
+        notification_type="tutorial_session_cancelled",
+        title=title,
+        message=message,
+        payload=payload,
+    )
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "user_notification",
+            "action": "create",
+            "recipients": [recipient_user_id],
+            "record": notification.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+
+
+@router.get("", response_model=list[TutorialSessionResponse])
+def list_public_tutorial_sessions(_: dict = Depends(get_current_user)) -> list[TutorialSessionResponse]:
+    return tutorial_session_repo.list_public()
+
+
+@router.get("/mine", response_model=list[TutorialSessionResponse])
+def list_my_tutorial_sessions(current_user: dict = Depends(get_current_user)) -> list[TutorialSessionResponse]:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_tutorias"},
+        "No tienes permisos para gestionar tutorias",
+    )
+    return tutorial_session_repo.list_for_tutor(current_user.get("user_id") or "")
+
+
+@router.get("/{session_id}", response_model=TutorialSessionResponse)
+def get_tutorial_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    session = tutorial_session_repo.get_by_id(session_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
+
+    is_admin = current_user.get("role") == "admin"
+    can_manage = "gestionar_tutorias" in set(current_user.get("permissions") or [])
+    is_owner = session.tutor_id == (current_user.get("user_id") or "")
+
+    if not session.is_published and not (is_admin or can_manage or is_owner):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta tutoria")
+
+    return session
+
+
+@router.post("", response_model=TutorialSessionResponse, status_code=status.HTTP_201_CREATED)
+async def create_tutorial_session(
+    body: TutorialSessionCreate,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_tutorias"},
+        "No tienes permisos para publicar tutorias",
+    )
+
+    payload = body.model_copy(
+        update={
+            "tutor_id": body.tutor_id or current_user.get("user_id") or "",
+            "tutor_name": body.tutor_name or current_user.get("name") or current_user.get("username") or "Tutor",
+            "tutor_email": body.tutor_email or "",
+        }
+    )
+
+    try:
+        created = tutorial_session_repo.create(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "create",
+            "record": created.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return created
+
+
+@router.post("/{session_id}/enroll", response_model=TutorialSessionResponse)
+async def enroll_in_tutorial_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    try:
+        updated = tutorial_session_repo.enroll(
+            session_id,
+            student_id=current_user.get("user_id") or "",
+            student_name=current_user.get("name") or current_user.get("username") or "Estudiante",
+            student_email=current_user.get("email") or "",
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "update",
+            "record": updated.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return updated
+
+
+@router.delete("/{session_id}", response_class=Response)
+async def delete_tutorial_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> None:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_tutorias"},
+        "No tienes permisos para eliminar tutorias",
+    )
+
+    existing = tutorial_session_repo.get_by_id(session_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
+
+    is_admin = current_user.get("role") == "admin"
+    if not is_admin and existing.tutor_id != (current_user.get("user_id") or ""):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No puedes eliminar una tutoria de otro tutor")
+
+    deleted_result = tutorial_session_repo.delete(session_id)
+    if deleted_result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
+
+    deleted_session, enrollments = deleted_result
+    for enrollment in enrollments:
+        await _broadcast_tutorial_notification(
+            recipient_user_id=enrollment.student_id,
+            title="Tutoria Cancelada",
+            message=(
+                f"La tutoria '{deleted_session.topic}' fue cancelada por el tutor. "
+                "Tu inscripcion quedo anulada automaticamente."
+            ),
+            payload={
+                "tutorial_session_id": deleted_session.id,
+                "topic": deleted_session.topic,
+                "tutor_name": deleted_session.tutor_name,
+                "session_date": deleted_session.session_date,
+                "start_time": deleted_session.start_time,
+                "end_time": deleted_session.end_time,
+                "location": deleted_session.location,
+                "target_path": "/app/tutorias",
+            },
+        )
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "delete",
+            "record": {"id": session_id},
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
