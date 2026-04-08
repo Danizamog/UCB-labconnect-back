@@ -1,0 +1,29 @@
+[
+  {
+    "id": "f1add036-619e-445f-823f-f1acda76c8a7",
+    "tutor_id": "ejww93m7w21aztj",
+    "tutor_name": "Administrador",
+    "tutor_email": "admin@ucb.edu.bo",
+    "topic": "Pre Main Review",
+    "description": "Validacion final antes de merge a main",
+    "laboratory_id": "jn2vmv0ds1hndzk",
+    "location": "Laboratorio de Fisica",
+    "session_date": "2026-04-08",
+    "start_time": "19:00",
+    "end_time": "20:00",
+    "start_at": "2026-04-08T19:00:00Z",
+    "end_at": "2026-04-08T20:00:00Z",
+    "max_students": 5,
+    "is_published": true,
+    "enrolled_students": [
+      {
+        "student_id": "3gyzwrw9yophi7r",
+        "student_name": "Rudy Gabriel Chambi Chambi",
+        "student_email": "rudy.chambi@ucb.edu.bo",
+        "created_at": "2026-04-08T12:31:38.261187Z"
+      }
+    ],
+    "created": "2026-04-03T22:15:30.118537Z",
+    "updated": "2026-04-08T12:31:38.261223Z"
+  }
+]
