@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.application.container import lab_block_repo
 from app.core.dependencies import ensure_any_permission, get_current_user
@@ -65,7 +65,7 @@ async def update_block(block_id: str, body: LabBlockUpdate, current_user: dict =
     return updated
 
 
-@router.delete("/{block_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{block_id}", response_class=Response)
 async def delete_block(block_id: str, current_user: dict = Depends(get_current_user)) -> None:
     ensure_any_permission(
         current_user,
@@ -84,3 +84,4 @@ async def delete_block(block_id: str, current_user: dict = Depends(get_current_u
             "at": datetime.utcnow().isoformat(),
         }
     )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
