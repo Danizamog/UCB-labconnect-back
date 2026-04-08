@@ -6,6 +6,14 @@ from app.schemas.laboratory import LaboratoryCreate, LaboratoryResponse, Laborat
 _COLLECTION = "laboratory"
 
 
+def _normalize_string_list(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return []
+
+
 def _to_response(record: dict) -> LaboratoryResponse:
     expand = record.get("expand") or {}
     area_name: str | None = None
@@ -23,6 +31,9 @@ def _to_response(record: dict) -> LaboratoryResponse:
         is_active=bool(record.get("is_active", True)),
         area_id=record.get("area_id", ""),
         area_name=area_name,
+        allowed_roles=_normalize_string_list(record.get("allowed_roles")),
+        allowed_user_ids=_normalize_string_list(record.get("allowed_user_ids")),
+        required_permissions=_normalize_string_list(record.get("required_permissions")),
         created=record.get("created", ""),
         updated=record.get("updated", ""),
     )
