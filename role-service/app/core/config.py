@@ -50,6 +50,9 @@ class Settings:
         self.pocketbase_auth_password = os.getenv("POCKETBASE_AUTH_PASSWORD")
         self.pocketbase_auth_collection = os.getenv("POCKETBASE_AUTH_COLLECTION", "_superusers")
         self.pocketbase_timeout_seconds = float(os.getenv("POCKETBASE_TIMEOUT_SECONDS", "10"))
+        self.data_mode = os.getenv("DATA_MODE", "hybrid").strip().lower() or "hybrid"
+        self.postgres_url = os.getenv("POSTGRES_URL", "").strip()
+        self.local_data_namespace = os.getenv("LOCAL_DATA_NAMESPACE", "labconnect").strip() or "labconnect"
 
 
 settings = Settings()
