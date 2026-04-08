@@ -20,7 +20,7 @@ services:
       context: ./inventory-service
     container_name: inventory-service
     ports:
-      - "8003:8003"
+      - "0"
     environment:
       - AUTH_SERVICE_URL=http://auth-service:8001
       - SECRET_KEY=${SECRET_KEY}
