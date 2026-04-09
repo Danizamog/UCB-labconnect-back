@@ -29,6 +29,7 @@ router = APIRouter(prefix="/reservations", tags=["reservations"])
 _USER_RESERVATION_MODIFICATION_WINDOW_SECONDS = 2 * 60 * 60
 _ABSENT_GRACE_PERIOD_SECONDS = 15 * 60
 _MANAGEMENT_PERMISSIONS = {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"}
+_FINAL_RESERVATION_STATUSES = {"rejected", "cancelled", "completed", "absent"}
 _WHERE_PATTERN = re.compile(r"^(?P<field>[a-zA-Z_][a-zA-Z0-9_]*)(?P<operator>>=|<=|!=|=|~|>|<)(?P<value>.+)$")
 _SUPPORTED_SORT_FIELDS = {
     "start_at",
@@ -317,6 +318,19 @@ def _ensure_user_can_change_reservation(
             detail="No puedes modificar una reserva cuando faltan menos de 2 horas para su inicio",
         )
 
+    if operation == "modify" and int(reservation.user_modification_count or 0) >= 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Solo puedes modificar una reserva una vez",
+        )
+
+
+def _resolve_laboratory_name(laboratory_id: str) -> str:
+    record = laboratory_access_repo.get_by_id(laboratory_id)
+    if not isinstance(record, dict):
+        return ""
+    return str(record.get("name") or record.get("laboratory_name") or record.get("label") or "").strip()
+
 
 def _build_schedule_change_payload(
     previous: LabReservationResponse,
@@ -355,6 +369,8 @@ def _build_schedule_change_payload(
         "new_end_at": updated.end_at,
         "old_laboratory_id": previous.laboratory_id,
         "new_laboratory_id": updated.laboratory_id,
+        "old_laboratory_name": _resolve_laboratory_name(previous.laboratory_id),
+        "new_laboratory_name": _resolve_laboratory_name(updated.laboratory_id),
         "status": updated.status,
         "actor_user_id": str(current_user.get("user_id") or ""),
         "actor_name": str(current_user.get("name") or current_user.get("username") or "Sistema"),
@@ -713,14 +729,19 @@ async def update_reservation(
     _ensure_user_can_change_reservation(existing_reservation, current_user=current_user, operation="modify")
 
     change_fields = {field for field in {"laboratory_id", "area_id", "start_at", "end_at"} if getattr(body, field) is not None}
+    has_meaningful_schedule_change = any(
+        [
+            body.laboratory_id is not None and body.laboratory_id != existing_reservation.laboratory_id,
+            body.area_id is not None and body.area_id != existing_reservation.area_id,
+            body.start_at is not None and body.start_at != existing_reservation.start_at,
+            body.end_at is not None and body.end_at != existing_reservation.end_at,
+        ]
+    )
     payload = body
-    if not can_manage and existing_reservation.status == "approved" and change_fields:
+    if not can_manage and has_meaningful_schedule_change:
         payload = body.model_copy(
             update={
-                "status": "pending",
-                "approved_by": "",
-                "approved_at": "",
-                "cancel_reason": "",
+                "user_modification_count": int(existing_reservation.user_modification_count or 0) + 1,
             }
         )
 
@@ -767,6 +788,12 @@ async def update_reservation_status(
     existing_reservation = lab_reservation_repo.get_by_id(reservation_id)
     if existing_reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+
+    if existing_reservation.status in _FINAL_RESERVATION_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No puedes cambiar el estado de una reserva finalizada",
+        )
 
     if body.status == "rejected" and not str(body.cancel_reason or "").strip():
         raise HTTPException(

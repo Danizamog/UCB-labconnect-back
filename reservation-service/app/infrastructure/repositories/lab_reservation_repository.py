@@ -32,6 +32,7 @@ def _to_response(record: dict) -> LabReservationResponse:
         check_in_at=record.get("check_in_at", ""),
         check_out_at=record.get("check_out_at", ""),
         is_walk_in=bool(record.get("is_walk_in", False)),
+        user_modification_count=int(record.get("user_modification_count") or 0),
     )
 
 
@@ -103,6 +104,7 @@ class LabReservationRepository:
         payload["status"] = "pending"
 
         payload["is_active"] = True if payload.get("is_active") is None else bool(payload.get("is_active"))
+        payload["user_modification_count"] = int(payload.get("user_modification_count") or 0)
         payload["requested_by"] = payload.get("requested_by") or (current_user or {}).get("user_id") or ""
         if current_user:
             payload["requested_by_name"] = str(current_user.get("name") or current_user.get("username") or "").strip()
