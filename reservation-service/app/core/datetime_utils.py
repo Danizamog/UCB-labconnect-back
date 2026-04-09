@@ -37,6 +37,26 @@ def parse_datetime(value: str) -> datetime:
     return parsed
 
 
+def parse_timestamp_to_local_naive(value: str) -> datetime:
+    normalized = (value or "").strip()
+    if not normalized:
+        raise ValueError("Fecha/hora requerida")
+
+    normalized = normalized.replace(" ", "T")
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(f"Fecha/hora invalida: {value}") from exc
+
+    if parsed.tzinfo is None:
+        return parsed
+
+    return parsed.astimezone(_app_timezone()).replace(tzinfo=None)
+
+
 def now_local_naive() -> datetime:
     return datetime.now(_app_timezone()).replace(tzinfo=None)
 

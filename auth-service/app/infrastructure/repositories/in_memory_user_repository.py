@@ -48,11 +48,3 @@ class InMemoryUserRepository:
         if not user or not user.hashed_password or not verify_password(password, user.hashed_password):
             return None
         return user
-
-    def delete(self, user_id: str) -> bool:
-        normalized_id = user_id.strip()
-        for username, user in list(self._data.items()):
-            if user.id == normalized_id:
-                del self._data[username]
-                return True
-        return False

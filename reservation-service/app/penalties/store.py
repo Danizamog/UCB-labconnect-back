@@ -4,10 +4,7 @@ from datetime import UTC, datetime
 from threading import Lock
 from uuid import uuid4
 
-from pydantic import ValidationError
-
 from app.core.datetime_utils import parse_datetime
-from app.infrastructure.local_store import LocalJsonStore
 from app.schemas.penalty import PenaltyCreate, PenaltyResponse
 
 
@@ -41,22 +38,6 @@ class PenaltyStore:
     def __init__(self) -> None:
         self._items: list[PenaltyResponse] = []
         self._lock = Lock()
-        self._local_store = LocalJsonStore("user_penalty")
-        self._load_from_local_store()
-
-    def _load_from_local_store(self) -> None:
-        loaded: list[PenaltyResponse] = []
-        for raw_record in self._local_store.list():
-            try:
-                loaded.append(PenaltyResponse.model_validate(raw_record))
-            except ValidationError:
-                continue
-
-        with self._lock:
-            self._items = loaded
-
-    def _persist(self, record: PenaltyResponse, *, operation: str = "update") -> None:
-        self._local_store.upsert(record.id, record.model_dump(), operation=operation)
 
     def _hydrate(self, record: PenaltyResponse) -> PenaltyResponse:
         status, is_active = _build_status(record)
@@ -86,13 +67,6 @@ class PenaltyStore:
                 return item
         return None
 
-    def get_blocking_for_user(self, user_id: str) -> PenaltyResponse | None:
-        normalized_user_id = str(user_id or "").strip()
-        for item in self.list_for_user(normalized_user_id):
-            if item.status in {"active", "scheduled"}:
-                return item
-        return None
-
     def create(self, body: PenaltyCreate, *, current_user: dict, email_sent: bool = False) -> PenaltyResponse:
         starts_at = _normalize_iso(body.starts_at)
         ends_at = _normalize_iso(body.ends_at)
@@ -110,13 +84,7 @@ class PenaltyStore:
             user_email=str(body.user_email or "").strip().lower(),
             reason=str(body.reason or "").strip(),
             evidence_type=body.evidence_type,
-            evidence_ticket_id=str(body.evidence_ticket_id or "").strip(),
             evidence_report_id=str(body.evidence_report_id or "").strip(),
-            incident_scope=body.incident_scope,
-            incident_laboratory_id=str(body.incident_laboratory_id or "").strip(),
-            incident_date=str(body.incident_date or "").strip(),
-            incident_start_time=str(body.incident_start_time or "").strip(),
-            incident_end_time=str(body.incident_end_time or "").strip(),
             asset_id=str(body.asset_id or "").strip(),
             related_reservation_id=str(body.related_reservation_id or "").strip(),
             starts_at=starts_at,
@@ -139,7 +107,6 @@ class PenaltyStore:
         with self._lock:
             self._items.append(hydrated)
 
-        self._persist(hydrated, operation="create")
         return hydrated
 
     def update_email_delivery(self, penalty_id: str, *, email_sent: bool) -> PenaltyResponse | None:
@@ -156,7 +123,6 @@ class PenaltyStore:
                     )
                 )
                 self._items[index] = updated
-                self._persist(updated)
                 return updated
         return None
 
@@ -182,7 +148,6 @@ class PenaltyStore:
                     )
                 )
                 self._items[index] = updated
-                self._persist(updated)
                 return updated
 
         return None

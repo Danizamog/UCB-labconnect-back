@@ -5,7 +5,6 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 PenaltyEvidenceType = Literal["damage_report", "maintenance_report"]
-PenaltyIncidentScope = Literal["asset", "laboratory"]
 
 
 class PenaltyCreate(BaseModel):
@@ -14,13 +13,7 @@ class PenaltyCreate(BaseModel):
     user_email: str
     reason: str
     evidence_type: PenaltyEvidenceType = "damage_report"
-    evidence_ticket_id: str = ""
     evidence_report_id: str = ""
-    incident_scope: PenaltyIncidentScope = "asset"
-    incident_laboratory_id: str = ""
-    incident_date: str = ""
-    incident_start_time: str = ""
-    incident_end_time: str = ""
     asset_id: str = ""
     related_reservation_id: str = ""
     starts_at: str | None = None
@@ -39,13 +32,7 @@ class PenaltyResponse(BaseModel):
     user_email: str
     reason: str
     evidence_type: PenaltyEvidenceType
-    evidence_ticket_id: str = ""
     evidence_report_id: str
-    incident_scope: PenaltyIncidentScope = "asset"
-    incident_laboratory_id: str = ""
-    incident_date: str = ""
-    incident_start_time: str = ""
-    incident_end_time: str = ""
     asset_id: str
     related_reservation_id: str
     starts_at: str
@@ -71,3 +58,4 @@ class PenaltyLiftResponse(BaseModel):
 
 class PenaltyListResponse(BaseModel):
     items: list[PenaltyResponse] = Field(default_factory=list)
+

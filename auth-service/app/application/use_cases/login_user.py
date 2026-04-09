@@ -4,18 +4,8 @@ from app.infrastructure.security.token_provider import create_access_token
 
 
 class LoginUser:
-    def __init__(self, repository: UserRepository, shadow_repository: UserRepository | None = None):
+    def __init__(self, repository: UserRepository):
         self.repository = repository
-        self.shadow_repository = shadow_repository
-
-    def _warm_shadow_credentials(self, user, password: str) -> None:
-        if self.shadow_repository is None or self.shadow_repository is self.repository:
-            return
-
-        try:
-            self.shadow_repository.save_with_password(user, password)
-        except Exception:
-            return
 
     def execute(self, username: str, password: str) -> str:
         normalized_username = username.lower().strip()
@@ -27,8 +17,6 @@ class LoginUser:
             raise ValueError("Cuenta no reconocida")
         if not user.is_active:
             raise ValueError("Cuenta no reconocida")
-
-        self._warm_shadow_credentials(user, password)
 
         is_default_admin = normalized_username == settings.default_admin_username.strip().lower()
         use_default_admin_fallback = is_default_admin and not user.role and not user.permissions
