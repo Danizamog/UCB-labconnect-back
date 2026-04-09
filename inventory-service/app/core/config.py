@@ -42,26 +42,26 @@ class Settings:
         self.pocketbase_auth_collection = os.getenv("POCKETBASE_AUTH_COLLECTION", "_superusers")
         self.pocketbase_timeout_seconds = float(os.getenv("POCKETBASE_TIMEOUT_SECONDS", "10"))
         self.pocketbase_retry_seconds = float(os.getenv("POCKETBASE_RETRY_SECONDS", "60"))
-        self.data_mode = os.getenv("DATA_MODE", "hybrid").strip().lower() or "hybrid"
+        self.data_mode = os.getenv("DATA_MODE", "pocketbase").strip().lower() or "pocketbase"
         self.postgres_url = os.getenv("POSTGRES_URL", "").strip()
         self.local_data_namespace = os.getenv("LOCAL_DATA_NAMESPACE", "labconnect").strip() or "labconnect"
-        self.pb_assets_collection = os.getenv("POCKETBASE_INVENTORY_ASSETS_COLLECTION", "inventory_assets_v2")
-        self.pb_stock_items_collection = os.getenv("POCKETBASE_INVENTORY_STOCK_ITEMS_COLLECTION", "inventory_stock_items_v2")
+        self.pb_assets_collection = os.getenv("POCKETBASE_INVENTORY_ASSETS_COLLECTION", "asset")
+        self.pb_stock_items_collection = os.getenv("POCKETBASE_INVENTORY_STOCK_ITEMS_COLLECTION", "stock_item")
         self.pb_stock_movements_collection = os.getenv(
             "POCKETBASE_INVENTORY_STOCK_MOVEMENTS_COLLECTION",
-            "inventory_stock_movements_v2",
+            "stock_movement",
         )
         self.pb_loan_records_collection = os.getenv(
             "POCKETBASE_INVENTORY_LOAN_RECORDS_COLLECTION",
-            "inventory_loan_records_v2",
+            "loan_record",
         )
         self.pb_asset_status_logs_collection = os.getenv(
             "POCKETBASE_INVENTORY_ASSET_STATUS_LOGS_COLLECTION",
-            "inventory_asset_status_logs_v2",
+            "asset_status_log",
         )
         self.pb_asset_maintenance_tickets_collection = os.getenv(
             "POCKETBASE_INVENTORY_ASSET_MAINTENANCE_TICKETS_COLLECTION",
-            "inventory_asset_maintenance_tickets_v2",
+            "asset_maintenance_ticket",
         )
 
 

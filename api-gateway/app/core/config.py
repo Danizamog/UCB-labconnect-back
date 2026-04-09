@@ -35,10 +35,16 @@ class Settings:
     cors_allowed_origins: list[str]
 
     def __init__(self) -> None:
-        raw_origins = os.getenv(
-            "CORS_ALLOWED_ORIGINS",
-            "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",
-        )
+        explicit_cors = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+        frontend_urls = os.getenv("FRONTEND_URLS", "").strip()
+
+        if explicit_cors:
+            raw_origins = explicit_cors
+        elif frontend_urls:
+            raw_origins = frontend_urls
+        else:
+            raw_origins = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173"
+
         self.cors_allowed_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 

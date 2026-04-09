@@ -1,21 +1,4 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: labconnect-postgres
-    environment:
-      - POSTGRES_DB=${POSTGRES_DB:-labconnect}
-      - POSTGRES_USER=${POSTGRES_USER:-labconnect}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-labconnect}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - labconnect_postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-labconnect} -d ${POSTGRES_DB:-labconnect}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   mailpit:
     image: axllent/mailpit:latest
     container_name: labconnect-mailpit
@@ -44,12 +27,8 @@ services:
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
       - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
       - POCKETBASE_RETRY_SECONDS=${POCKETBASE_RETRY_SECONDS:-60}
-      - DATA_MODE=${DATA_MODE:-hybrid}
-      - POSTGRES_URL=${POSTGRES_URL:-postgresql://labconnect:labconnect@postgres:5432/labconnect}
+      - DATA_MODE=${DATA_MODE:-pocketbase}
       - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
-    depends_on:
-      postgres:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2)"]
       interval: 10s
@@ -71,12 +50,8 @@ services:
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
       - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
       - POCKETBASE_RETRY_SECONDS=${POCKETBASE_RETRY_SECONDS:-60}
-      - DATA_MODE=${DATA_MODE:-hybrid}
-      - POSTGRES_URL=${POSTGRES_URL:-postgresql://labconnect:labconnect@postgres:5432/labconnect}
+      - DATA_MODE=${DATA_MODE:-pocketbase}
       - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
-    depends_on:
-      postgres:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=2)"]
       interval: 10s
@@ -101,12 +76,8 @@ services:
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
       - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
       - POCKETBASE_RETRY_SECONDS=${POCKETBASE_RETRY_SECONDS:-60}
-      - DATA_MODE=${DATA_MODE:-hybrid}
-      - POSTGRES_URL=${POSTGRES_URL:-postgresql://labconnect:labconnect@postgres:5432/labconnect}
+      - DATA_MODE=${DATA_MODE:-pocketbase}
       - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
-    depends_on:
-      postgres:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health', timeout=2)"]
       interval: 10s
@@ -132,8 +103,7 @@ services:
       - POCKETBASE_USERS_COLLECTION=${POCKETBASE_USERS_COLLECTION:-users}
       - POCKETBASE_RETRY_SECONDS=${POCKETBASE_RETRY_SECONDS:-60}
       - TUTORIAL_SESSIONS_STORAGE_PATH=/app/data/tutorial_sessions.json
-      - DATA_MODE=${DATA_MODE:-hybrid}
-      - POSTGRES_URL=${POSTGRES_URL:-postgresql://labconnect:labconnect@postgres:5432/labconnect}
+      - DATA_MODE=${DATA_MODE:-pocketbase}
       - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
       - SMTP_HOST=mailpit
       - SMTP_PORT=1025
@@ -141,8 +111,6 @@ services:
       - SMTP_USE_TLS=false
       - SMTP_USE_SSL=false
     depends_on:
-      postgres:
-        condition: service_healthy
       mailpit:
         condition: service_started
     healthcheck:
@@ -178,5 +146,3 @@ services:
       reservation-service:
         condition: service_healthy
 
-volumes:
-  labconnect_postgres_data:

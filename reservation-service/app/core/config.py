@@ -42,7 +42,7 @@ class Settings:
         self.pocketbase_auth_collection = os.getenv("POCKETBASE_AUTH_COLLECTION", "_superusers")
         self.pocketbase_timeout_seconds = float(os.getenv("POCKETBASE_TIMEOUT_SECONDS", "10"))
         self.pocketbase_retry_seconds = float(os.getenv("POCKETBASE_RETRY_SECONDS", "60"))
-        self.data_mode = os.getenv("DATA_MODE", "hybrid").strip().lower() or "hybrid"
+        self.data_mode = os.getenv("DATA_MODE", "pocketbase").strip().lower() or "pocketbase"
         self.postgres_url = os.getenv("POSTGRES_URL", "").strip()
         self.local_data_namespace = os.getenv("LOCAL_DATA_NAMESPACE", "labconnect").strip() or "labconnect"
         self.pb_users_collection = os.getenv("POCKETBASE_USERS_COLLECTION", "users").strip() or "users"
@@ -51,16 +51,16 @@ class Settings:
         self.pb_lab_block_collection = os.getenv("POCKETBASE_LAB_BLOCK_COLLECTION", "lab_block")
         self.pb_lab_access_sessions_collection = os.getenv(
             "POCKETBASE_LAB_ACCESS_SESSIONS_COLLECTION",
-            "lab_access_sessions_v2",
+            "lab_access_session",
         )
         self.pb_laboratory_collection = os.getenv("POCKETBASE_LABORATORY_COLLECTION", "laboratory").strip() or "laboratory"
         self.pb_inventory_assets_collection = (
-            os.getenv("POCKETBASE_INVENTORY_ASSETS_COLLECTION", "inventory_assets_v2").strip()
-            or "inventory_assets_v2"
+            os.getenv("POCKETBASE_INVENTORY_ASSETS_COLLECTION", "asset").strip()
+            or "asset"
         )
         self.pb_inventory_asset_maintenance_tickets_collection = (
-            os.getenv("POCKETBASE_INVENTORY_ASSET_MAINTENANCE_TICKETS_COLLECTION", "inventory_asset_maintenance_tickets_v2").strip()
-            or "inventory_asset_maintenance_tickets_v2"
+            os.getenv("POCKETBASE_INVENTORY_ASSET_MAINTENANCE_TICKETS_COLLECTION", "asset_maintenance_ticket").strip()
+            or "asset_maintenance_ticket"
         )
         self.tutorial_sessions_storage_path = (
             os.getenv(
