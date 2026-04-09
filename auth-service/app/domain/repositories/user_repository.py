@@ -21,6 +21,3 @@ class UserRepository(Protocol):
 
     def authenticate(self, username: str, password: str) -> User | None:
         ...
-
-    def delete(self, user_id: str) -> bool:
-        ...

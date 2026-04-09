@@ -16,11 +16,10 @@ def _utcnow_iso() -> str:
 
 
 class LoanRecordRepository:
-    def __init__(self, client: BasePocketBaseClient, *, asset_repo, asset_maintenance_repo, user_directory_repo) -> None:
+    def __init__(self, client: BasePocketBaseClient, *, asset_repo, asset_maintenance_repo) -> None:
         self._client = client
         self._asset_repo = asset_repo
         self._asset_maintenance_repo = asset_maintenance_repo
-        self._user_directory_repo = user_directory_repo
         self._collection = settings.pb_loan_records_collection
         self._admin_client = AdminPocketBaseClient(
             base_url=settings.pocketbase_url,
@@ -120,8 +119,7 @@ class LoanRecordRepository:
         if borrower_query:
             needle = str(borrower_query).strip().lower()
             items = [
-                item
-                for item in items
+                item for item in items
                 if needle in str(item.borrower_name or "").lower()
                 or needle in str(item.borrower_email or "").lower()
                 or needle in str(item.borrower_id or "").lower()
@@ -156,19 +154,9 @@ class LoanRecordRepository:
         if asset.status == "loaned" or self.get_open_for_asset(asset.id):
             raise ValueError("El equipo ya se encuentra prestado y no puede asignarse nuevamente")
         if asset.status == "damaged":
-            raise ValueError("El equipo esta marcado como danado y debe pasar por mantenimiento antes de un nuevo prestamo")
+            raise ValueError("El equipo esta marcado como dañado y debe pasar por mantenimiento antes de un nuevo prestamo")
         if asset.status != "available":
             raise ValueError("El equipo no esta disponible para prestamo")
-
-        borrower = self._user_directory_repo.resolve(
-            identifier=body.borrower_id,
-            email=body.borrower_email,
-            access_token=str(current_user.get("access_token") or ""),
-        )
-        if borrower is None:
-            raise ValueError("Debes seleccionar un usuario valido del directorio institucional")
-        if not borrower.get("is_active", True):
-            raise ValueError("El usuario seleccionado no esta activo y no puede recibir prestamos")
 
         actor = str(current_user.get("username") or "encargado")
         now_iso = _utcnow_iso()
@@ -178,10 +166,10 @@ class LoanRecordRepository:
             "asset_serial_number": asset.serial_number,
             "laboratory_id": asset.laboratory_id,
             "laboratory_name": asset.laboratory_name or "",
-            "borrower_id": str(borrower.get("id") or "").strip(),
-            "borrower_name": str(borrower.get("name") or "").strip(),
-            "borrower_email": str(borrower.get("email") or "").strip().lower(),
-            "borrower_role": str(borrower.get("role") or borrower.get("profile_type") or "").strip(),
+            "borrower_id": body.borrower_id.strip(),
+            "borrower_name": body.borrower_name.strip(),
+            "borrower_email": body.borrower_email.strip().lower(),
+            "borrower_role": body.borrower_role.strip(),
             "purpose": body.purpose.strip(),
             "notes": body.notes.strip(),
             "status": "active",
@@ -210,7 +198,7 @@ class LoanRecordRepository:
         if loan.status != "active":
             raise ValueError("El prestamo ya fue cerrado y no puede procesarse nuevamente")
         if body.return_condition == "damaged" and not str(body.incident_notes or "").strip():
-            raise ValueError("Debes describir el problema cuando marcas una devolucion con danos")
+            raise ValueError("Debes describir el problema cuando marcas una devolucion con daños")
 
         actor = str(current_user.get("username") or "encargado")
         now_iso = _utcnow_iso()
@@ -233,7 +221,7 @@ class LoanRecordRepository:
                     loan.asset_id,
                     AssetMaintenanceTicketCreate(
                         ticket_type="damage",
-                        title=f"Dano reportado durante devolucion de {loan.asset_name}",
+                        title=f"Daño reportado durante devolucion de {loan.asset_name}",
                         description=str(body.incident_notes or "").strip(),
                         severity="high",
                         evidence_report_id=loan.id,

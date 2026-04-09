@@ -1,14 +1,15 @@
+import logging
 import math
 import re
-import logging
 from calendar import monthrange
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
-from app.application.container import laboratory_access_repo, lab_access_session_repo, lab_reservation_repo, tutorial_session_repo, user_penalty_repo
+logger = logging.getLogger(__name__)
+
+from app.application.container import lab_access_session_repo, lab_reservation_repo, tutorial_session_repo, user_penalty_repo
 from app.application.container import lab_block_repo, lab_schedule_repo
-from app.application.laboratory_access import ensure_user_can_reserve_laboratory
 from app.core.datetime_utils import combine_date_time, iter_time_ranges, now_local_naive, parse_datetime
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
@@ -25,11 +26,10 @@ from app.schemas.lab_reservation import (
 )
 
 router = APIRouter(prefix="/reservations", tags=["reservations"])
-logger = logging.getLogger(__name__)
 _USER_RESERVATION_MODIFICATION_WINDOW_SECONDS = 2 * 60 * 60
 _ABSENT_GRACE_PERIOD_SECONDS = 15 * 60
-_WALK_IN_START_TOLERANCE_SECONDS = 15 * 60
 _MANAGEMENT_PERMISSIONS = {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"}
+_FINAL_RESERVATION_STATUSES = {"rejected", "cancelled", "completed", "absent"}
 _WHERE_PATTERN = re.compile(r"^(?P<field>[a-zA-Z_][a-zA-Z0-9_]*)(?P<operator>>=|<=|!=|=|~|>|<)(?P<value>.+)$")
 _SUPPORTED_SORT_FIELDS = {
     "start_at",
@@ -44,53 +44,6 @@ _SUPPORTED_SORT_FIELDS = {
     "updated",
     "date",
 }
-
-
-def _service_temporarily_unavailable(detail: str) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail=detail,
-    )
-
-
-def _safe_list_schedules_for_validation() -> list:
-    try:
-        return lab_schedule_repo.list_all()
-    except Exception as exc:
-        logger.warning("No se pudieron cargar horarios para validacion: %s", exc)
-        raise _service_temporarily_unavailable(
-            "No se pudo validar el horario del laboratorio en este momento. Intenta nuevamente."
-        ) from exc
-
-
-def _safe_list_reservations_for_validation() -> list[LabReservationResponse]:
-    try:
-        return lab_reservation_repo.list_all()
-    except Exception as exc:
-        logger.warning("No se pudieron cargar reservas para validacion: %s", exc)
-        raise _service_temporarily_unavailable(
-            "No se pudo validar disponibilidad de reservas en este momento. Intenta nuevamente."
-        ) from exc
-
-
-def _safe_list_blocks_for_validation() -> list:
-    try:
-        return lab_block_repo.list_all()
-    except Exception as exc:
-        logger.warning("No se pudieron cargar bloqueos para validacion: %s", exc)
-        raise _service_temporarily_unavailable(
-            "No se pudo validar bloqueos del laboratorio en este momento. Intenta nuevamente."
-        ) from exc
-
-
-def _safe_list_public_tutorials_for_validation() -> list:
-    try:
-        return tutorial_session_repo.list_public()
-    except Exception as exc:
-        logger.warning("No se pudieron cargar tutorias para validacion: %s", exc)
-        raise _service_temporarily_unavailable(
-            "No se pudo validar tutorias activas en este momento. Intenta nuevamente."
-        ) from exc
 
 
 def _max_allowed_reservation_date(base_day):
@@ -113,7 +66,7 @@ def _has_schedule_overlap(start_at: datetime, end_at: datetime, other_start_raw:
 def _resolve_schedule_window(laboratory_id: str, reservation_day) -> tuple[datetime, datetime, int]:
     weekday = reservation_day.weekday()
     schedules = [
-        item for item in _safe_list_schedules_for_validation()
+        item for item in lab_schedule_repo.list_all()
         if item.laboratory_id == laboratory_id and item.weekday == weekday and item.is_active
     ]
 
@@ -184,7 +137,7 @@ def _validate_reservation_time_rules(
             ),
         )
 
-    for block in _safe_list_blocks_for_validation():
+    for block in lab_block_repo.list_all():
         if block.laboratory_id != laboratory_id or not block.is_active:
             continue
         if not block.start_at.startswith(start_at.date().isoformat()):
@@ -195,7 +148,7 @@ def _validate_reservation_time_rules(
                 detail="El bloque seleccionado no esta disponible porque el laboratorio se encuentra bloqueado o en mantenimiento",
             )
 
-    for reservation in _safe_list_reservations_for_validation():
+    for reservation in lab_reservation_repo.list_all():
         if reservation.laboratory_id != laboratory_id or not reservation.is_active:
             continue
         if skip_reservation_id and reservation.id == skip_reservation_id:
@@ -210,7 +163,7 @@ def _validate_reservation_time_rules(
                 detail="Ese bloque ya no esta disponible porque existe otra reserva activa en el mismo horario",
             )
 
-    for tutorial_session in _safe_list_public_tutorials_for_validation():
+    for tutorial_session in tutorial_session_repo.list_public():
         if tutorial_session.laboratory_id != laboratory_id:
             continue
         if not tutorial_session.start_at.startswith(start_at.date().isoformat()):
@@ -220,116 +173,6 @@ def _validate_reservation_time_rules(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Ese bloque ya no esta disponible porque existe una tutoria publicada en el mismo horario",
             )
-
-
-def _validate_walk_in_time_rules(
-    *,
-    laboratory_id: str,
-    start_at_raw: str,
-    end_at_raw: str,
-) -> None:
-    start_at = parse_datetime(start_at_raw)
-    end_at = parse_datetime(end_at_raw)
-    now = now_local_naive()
-
-    if end_at <= start_at:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="La hora estimada de salida debe ser mayor a la hora de ingreso",
-        )
-
-    if start_at.date() != end_at.date() or start_at.date() != now.date():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="El walk-in debe registrarse dentro del mismo dia operativo",
-        )
-
-    if end_at <= now:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="La hora estimada de salida debe ser posterior al momento actual",
-        )
-
-    if abs((start_at - now).total_seconds()) > _WALK_IN_START_TOLERANCE_SECONDS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="El walk-in debe iniciar en el momento actual o dentro de una tolerancia maxima de 15 minutos",
-        )
-
-    day_start, day_end, _ = _resolve_schedule_window(laboratory_id, start_at.date())
-    if start_at < day_start or end_at > day_end:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="El walk-in esta fuera del horario habilitado del laboratorio",
-        )
-
-    for block in _safe_list_blocks_for_validation():
-        if block.laboratory_id != laboratory_id or not block.is_active:
-            continue
-        if not block.start_at.startswith(start_at.date().isoformat()):
-            continue
-        if _has_schedule_overlap(start_at, end_at, block.start_at, block.end_at):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="No puedes registrar un walk-in porque el laboratorio se encuentra bloqueado o en mantenimiento",
-            )
-
-    for tutorial_session in _safe_list_public_tutorials_for_validation():
-        if tutorial_session.laboratory_id != laboratory_id:
-            continue
-        if not tutorial_session.start_at.startswith(start_at.date().isoformat()):
-            continue
-        if _has_schedule_overlap(start_at, end_at, tutorial_session.start_at, tutorial_session.end_at):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="No puedes registrar un walk-in porque existe una tutoria activa en ese horario",
-            )
-
-
-def _ensure_reservation_can_check_in_now(reservation: LabReservationResponse) -> None:
-    now = now_local_naive()
-    start_at = parse_datetime(reservation.start_at)
-    end_at = parse_datetime(reservation.end_at)
-
-    if now < start_at:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Solo puedes registrar entrada cuando comience el horario reservado",
-        )
-
-    if now >= end_at:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="La reserva ya termino y no puede registrar una nueva entrada",
-        )
-
-
-def _ensure_reservation_can_check_out_now(reservation: LabReservationResponse) -> None:
-    now = now_local_naive()
-    start_at = parse_datetime(reservation.start_at)
-
-    if now < start_at:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="No puedes registrar salida antes de que comience el horario reservado",
-        )
-    
-
-def _validate_walk_in_capacity(laboratory_id: str) -> None:
-    laboratory = laboratory_access_repo.get_by_id(laboratory_id)
-    if laboratory is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Laboratorio no encontrado")
-
-    configured_capacity = int(laboratory.get("capacity") or 0)
-    if configured_capacity <= 0:
-        return
-
-    current_occupancy = int(lab_access_session_repo.get_dashboard(laboratory_id=laboratory_id).current_occupancy)
-    if current_occupancy >= configured_capacity:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="El laboratorio ya alcanzo su capacidad actual y no admite nuevos ingresos rapidos",
-        )
 
 
 def _serialize_reservation(reservation: LabReservationResponse) -> LabReservationResponse:
@@ -358,14 +201,6 @@ async def _broadcast_access_event(action: str, reservation: LabReservationRespon
 def _can_manage_reservations(current_user: dict) -> bool:
     permissions = set(current_user.get("permissions") or [])
     return current_user.get("role") == "admin" or "*" in permissions or bool(permissions.intersection(_MANAGEMENT_PERMISSIONS))
-
-
-def _safe_reservations_for_read() -> list[LabReservationResponse]:
-    try:
-        return lab_reservation_repo.list_all()
-    except Exception as exc:
-        logger.warning("No se pudieron cargar reservas para lectura: %s", exc)
-        return []
 
 
 def _reservation_field_value(reservation: LabReservationResponse, field: str) -> str:
@@ -483,6 +318,19 @@ def _ensure_user_can_change_reservation(
             detail="No puedes modificar una reserva cuando faltan menos de 2 horas para su inicio",
         )
 
+    if operation == "modify" and int(reservation.user_modification_count or 0) >= 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Solo puedes modificar una reserva una vez",
+        )
+
+
+def _resolve_laboratory_name(laboratory_id: str) -> str:
+    record = laboratory_access_repo.get_by_id(laboratory_id)
+    if not isinstance(record, dict):
+        return ""
+    return str(record.get("name") or record.get("laboratory_name") or record.get("label") or "").strip()
+
 
 def _build_schedule_change_payload(
     previous: LabReservationResponse,
@@ -521,6 +369,8 @@ def _build_schedule_change_payload(
         "new_end_at": updated.end_at,
         "old_laboratory_id": previous.laboratory_id,
         "new_laboratory_id": updated.laboratory_id,
+        "old_laboratory_name": _resolve_laboratory_name(previous.laboratory_id),
+        "new_laboratory_name": _resolve_laboratory_name(updated.laboratory_id),
         "status": updated.status,
         "actor_user_id": str(current_user.get("user_id") or ""),
         "actor_name": str(current_user.get("name") or current_user.get("username") or "Sistema"),
@@ -619,11 +469,16 @@ async def _notify_operations_reservation_cancelled(
     reservation: LabReservationResponse,
     current_user: dict,
 ) -> None:
+    actor_name = str(current_user.get("name") or current_user.get("username") or "Usuario")
+    start_time = parse_datetime(reservation.start_at).strftime("%d/%m/%Y %H:%M") if reservation.start_at else "N/A"
+    
+    message = f"{actor_name} canceló una reserva aprobada programada para {start_time}. Propósito: {reservation.purpose}"
+    
     notification = notification_store.create(
         recipient_user_id=OPERATIONS_RECIPIENT_ID,
         notification_type="reservation_cancelled_by_user",
-        title="Reserva Cancelada por Usuario",
-        message="Una reserva aprobada fue cancelada por el usuario y requiere seguimiento operativo.",
+        title="⚠️ Reserva Cancelada por Usuario",
+        message=message,
         payload={
             "reservation_id": reservation.id,
             "purpose": reservation.purpose,
@@ -631,7 +486,9 @@ async def _notify_operations_reservation_cancelled(
             "laboratory_id": reservation.laboratory_id,
             "start_at": reservation.start_at,
             "end_at": reservation.end_at,
-            "actor_name": str(current_user.get("name") or current_user.get("username") or "Usuario"),
+            "requested_by": reservation.requested_by,
+            "actor_name": actor_name,
+            "actor_id": current_user.get("user_id") or "",
             "target_path": "/app/admin/reservas",
         },
     )
@@ -654,7 +511,7 @@ def list_reservations(
     status_filter: str | None = Query(default=None, alias="status"),
     current_user: dict = Depends(get_current_user),
 ) -> list[LabReservationResponse]:
-    data = _safe_reservations_for_read()
+    data = lab_reservation_repo.list_all()
 
     if not _can_manage_reservations(current_user):
         requester = current_user.get("user_id") or ""
@@ -682,7 +539,7 @@ def search_reservations(
     where: str | None = Query(default=None),
     current_user: dict = Depends(get_current_user),
 ) -> PaginatedLabReservationResponse:
-    data = _safe_reservations_for_read()
+    data = lab_reservation_repo.list_all()
 
     if not _can_manage_reservations(current_user):
         requester = current_user.get("user_id") or ""
@@ -720,7 +577,7 @@ def search_reservations(
 @router.get("/mine", response_model=list[LabReservationResponse])
 def list_my_reservations(current_user: dict = Depends(get_current_user)) -> list[LabReservationResponse]:
     requester = current_user.get("user_id") or ""
-    return [_serialize_reservation(item) for item in _safe_reservations_for_read() if item.requested_by == requester]
+    return [_serialize_reservation(item) for item in lab_reservation_repo.list_all() if item.requested_by == requester]
 
 
 @router.get("/occupancy", response_model=OccupancyDashboardResponse)
@@ -751,8 +608,6 @@ def get_reservation(reservation_id: str, current_user: dict = Depends(get_curren
 
 @router.post("", response_model=LabReservationResponse, status_code=status.HTTP_201_CREATED)
 async def create_reservation(body: LabReservationCreate, current_user: dict = Depends(get_current_user)) -> LabReservationResponse:
-    ensure_user_can_reserve_laboratory(body.laboratory_id, current_user)
-
     active_penalty = user_penalty_repo.get_active_for_user(str(current_user.get("user_id") or "").strip())
     if active_penalty is not None:
         raise HTTPException(
@@ -795,7 +650,6 @@ async def create_walk_in_reservation(
         {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
         "No tienes permisos para registrar ingresos rapidos",
     )
-    ensure_user_can_reserve_laboratory(body.laboratory_id, current_user)
 
     active_penalty = user_penalty_repo.get_active_for_user(str(body.requested_by or "").strip())
     if active_penalty is not None:
@@ -803,13 +657,6 @@ async def create_walk_in_reservation(
             status_code=status.HTTP_423_LOCKED,
             detail="El usuario tiene una penalizacion activa y no puede ingresar mediante un walk-in",
         )
-
-    _validate_walk_in_time_rules(
-        laboratory_id=body.laboratory_id,
-        start_at_raw=body.start_at,
-        end_at_raw=body.end_at,
-    )
-    _validate_walk_in_capacity(body.laboratory_id)
 
     try:
         created = lab_reservation_repo.create(
@@ -822,30 +669,28 @@ async def create_walk_in_reservation(
                 end_at=body.end_at,
                 notes=body.notes,
             ),
-            current_user={
-                "user_id": str(body.requested_by or "").strip(),
-                "name": body.occupant_name.strip(),
-                "email": body.occupant_email.strip(),
-            },
-            status_override="in_progress",
-            skip_overlap_validation=True,
-            extra_payload={
-                "approved_by": str(current_user.get("user_id") or ""),
-                "approved_at": datetime.utcnow().isoformat(),
-                "is_walk_in": True,
-                "station_label": body.station_label.strip(),
-            },
+            current_user=current_user,
         )
+        updated = lab_reservation_repo.update(
+            created.id,
+            LabReservationUpdate(
+                status="in_progress",
+                approved_by=str(current_user.get("user_id") or ""),
+                approved_at=datetime.utcnow().isoformat(),
+            ),
+        )
+        if updated is None:
+            raise ValueError("No se pudo registrar el walk-in")
         lab_access_session_repo.create(
-            reservation_id=created.id,
-            laboratory_id=created.laboratory_id,
-            requested_by=created.requested_by,
+            reservation_id=updated.id,
+            laboratory_id=updated.laboratory_id,
+            requested_by=updated.requested_by,
             occupant_name=body.occupant_name.strip(),
             occupant_email=body.occupant_email.strip(),
             station_label=body.station_label.strip(),
-            purpose=created.purpose,
-            start_at=created.start_at,
-            end_at=created.end_at,
+            purpose=updated.purpose,
+            start_at=updated.start_at,
+            end_at=updated.end_at,
             is_walk_in=True,
             recorded_by=str(current_user.get("name") or current_user.get("username") or "Encargado"),
             notes=body.notes,
@@ -853,7 +698,7 @@ async def create_walk_in_reservation(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    enriched = _serialize_reservation(created)
+    enriched = _serialize_reservation(updated)
     await realtime_manager.broadcast(
         {
             "topic": "lab_reservation",
@@ -884,19 +729,21 @@ async def update_reservation(
     _ensure_user_can_change_reservation(existing_reservation, current_user=current_user, operation="modify")
 
     change_fields = {field for field in {"laboratory_id", "area_id", "start_at", "end_at"} if getattr(body, field) is not None}
+    has_meaningful_schedule_change = any(
+        [
+            body.laboratory_id is not None and body.laboratory_id != existing_reservation.laboratory_id,
+            body.area_id is not None and body.area_id != existing_reservation.area_id,
+            body.start_at is not None and body.start_at != existing_reservation.start_at,
+            body.end_at is not None and body.end_at != existing_reservation.end_at,
+        ]
+    )
     payload = body
-    if not can_manage and existing_reservation.status == "approved" and change_fields:
+    if not can_manage and has_meaningful_schedule_change:
         payload = body.model_copy(
             update={
-                "status": "pending",
-                "approved_by": "",
-                "approved_at": "",
-                "cancel_reason": "",
+                "user_modification_count": int(existing_reservation.user_modification_count or 0) + 1,
             }
         )
-
-    if not can_manage:
-        ensure_user_can_reserve_laboratory(str(payload.laboratory_id or existing_reservation.laboratory_id), current_user)
 
     _validate_reservation_time_rules(
         laboratory_id=str(payload.laboratory_id or existing_reservation.laboratory_id),
@@ -941,6 +788,12 @@ async def update_reservation_status(
     existing_reservation = lab_reservation_repo.get_by_id(reservation_id)
     if existing_reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+
+    if existing_reservation.status in _FINAL_RESERVATION_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No puedes cambiar el estado de una reserva finalizada",
+        )
 
     if body.status == "rejected" and not str(body.cancel_reason or "").strip():
         raise HTTPException(
@@ -995,7 +848,6 @@ async def register_reservation_entry(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Solo puedes registrar entrada sobre reservas aprobadas")
     if lab_access_session_repo.get_open_by_reservation(reservation_id):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="La reserva ya tiene una entrada registrada")
-    _ensure_reservation_can_check_in_now(reservation)
 
     updated = reservation
     if reservation.status != "in_progress":
@@ -1049,7 +901,6 @@ async def register_reservation_exit(
     session = lab_access_session_repo.get_open_by_reservation(reservation_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="La reserva no tiene una entrada activa")
-    _ensure_reservation_can_check_out_now(reservation)
 
     lab_access_session_repo.close(session.id)
     updated = lab_reservation_repo.update(reservation_id, LabReservationUpdate(status="completed"))
@@ -1112,31 +963,64 @@ async def mark_reservation_absent(
     return enriched
 
 
-@router.delete("/{reservation_id}", response_class=Response)
-async def delete_reservation(reservation_id: str, current_user: dict = Depends(get_current_user)) -> None:
+@router.patch("/{reservation_id}/cancel", response_model=LabReservationResponse)
+async def cancel_reservation(reservation_id: str, current_user: dict = Depends(get_current_user)) -> LabReservationResponse:
+    logger.warning(f"🛑 [CANCEL RESERVATION] Starting cancellation of reservation: {reservation_id}")
+    
     reservation = lab_reservation_repo.get_by_id(reservation_id)
     if reservation is None:
+        logger.error(f"❌ [CANCEL RESERVATION] Reservation not found: {reservation_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+    
+    logger.info(f"📋 [CANCEL RESERVATION] Current reservation status: {reservation.status}")
 
     can_manage = _can_manage_reservations(current_user)
     if not can_manage and reservation.requested_by != (current_user.get("user_id") or ""):
+        logger.warning(f"🚫 [CANCEL RESERVATION] User {current_user.get('user_id')} denied access to cancel reservation {reservation_id}")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta reserva")
 
     _ensure_user_can_change_reservation(reservation, current_user=current_user, operation="cancel")
 
-    deleted = lab_reservation_repo.delete(reservation_id)
-    if not deleted:
+    # IMPORTANTE: Solo actualizar status a 'cancelled', SIN BORRAR el registro
+    logger.warning(f"🔄 [CANCEL RESERVATION] Updating reservation {reservation_id} status to 'cancelled' (NOT deleting)")
+    cancelled = lab_reservation_repo.update(
+        reservation_id,
+        LabReservationUpdate(status="cancelled"),
+    )
+    if cancelled is None:
+        logger.error(f"❌ [CANCEL RESERVATION] Failed to update reservation {reservation_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
-    if not can_manage and reservation.status == "approved":
-        await _notify_operations_reservation_cancelled(reservation, current_user)
+    logger.info(f"✅ [CANCEL RESERVATION] Successfully updated reservation {reservation_id} to cancelled status")
+
+    # Limpiar notificaciones antiguas ANTES de crear la nueva notificación de cancelación
+    # Pero NO borrar las notificaciones de cancelación si existen
+    notification_store.delete_for_reservation(
+        reservation_id=reservation_id,
+        exclude_types=["reservation_cancelled_by_user"]
+    )
+
+    # Enviar notificación al encargado SIEMPRE que se cancele una reserva aprobada
+    # (Ya sea por usuario regular o por admin)
+    if reservation.status == "approved":
+        logger.info(f"📢 [CANCEL RESERVATION] Notifying operations about cancellation of approved reservation {reservation_id}")
+        await _notify_operations_reservation_cancelled(cancelled, current_user)
+    else:
+        logger.info(f"ℹ️ [CANCEL RESERVATION] No notification sent (reservation wasn't approved, status: {reservation.status})")
 
     await realtime_manager.broadcast(
         {
             "topic": "lab_reservation",
-            "action": "delete",
-            "record": {"id": reservation_id},
+            "action": "update",
+            "record": cancelled.model_dump(),
             "at": datetime.utcnow().isoformat(),
         }
     )
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return _serialize_reservation(cancelled)
+
+
+# Mantener DELETE para compatibilidad, pero redirige a cancel
+@router.delete("/{reservation_id}", response_model=LabReservationResponse)
+async def delete_reservation(reservation_id: str, current_user: dict = Depends(get_current_user)) -> LabReservationResponse:
+    # Esta ruta ahora redirige a cancel por seguridad - nunca borra, solo cancela
+    return await cancel_reservation(reservation_id, current_user)

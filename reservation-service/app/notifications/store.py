@@ -4,9 +4,6 @@ from datetime import datetime, UTC
 from threading import Lock
 from uuid import uuid4
 
-from pydantic import ValidationError
-
-from app.infrastructure.local_store import LocalJsonStore
 from app.schemas.notification import UserNotificationResponse
 
 OPERATIONS_RECIPIENT_ID = "__operations__"
@@ -17,26 +14,6 @@ class NotificationStore:
         self._notifications_by_user: dict[str, list[UserNotificationResponse]] = {}
         self._lock = Lock()
         self._max_notifications_per_user = max_notifications_per_user
-        self._local_store = LocalJsonStore("user_notification")
-        self._load_from_local_store()
-
-    def _load_from_local_store(self) -> None:
-        loaded: dict[str, list[UserNotificationResponse]] = {}
-        for raw_record in self._local_store.list():
-            try:
-                notification = UserNotificationResponse.model_validate(raw_record)
-            except ValidationError:
-                continue
-            loaded.setdefault(notification.recipient_user_id, []).append(notification)
-
-        for bucket in loaded.values():
-            bucket.sort(key=lambda item: item.created_at, reverse=True)
-
-        with self._lock:
-            self._notifications_by_user = loaded
-
-    def _persist(self, notification: UserNotificationResponse, *, operation: str = "update") -> None:
-        self._local_store.upsert(notification.id, notification.model_dump(), operation=operation)
 
     def create(
         self,
@@ -64,33 +41,11 @@ class NotificationStore:
             if len(bucket) > self._max_notifications_per_user:
                 del bucket[self._max_notifications_per_user :]
 
-        self._persist(notification, operation="create")
         return notification
 
     def list_for_user(self, recipient_user_id: str) -> list[UserNotificationResponse]:
         with self._lock:
             return list(self._notifications_by_user.get(recipient_user_id, []))
-
-    def exists_for_user(
-        self,
-        *,
-        recipient_user_id: str,
-        notification_type: str,
-        payload_match: dict | None = None,
-    ) -> bool:
-        expected_payload = payload_match or {}
-
-        with self._lock:
-            bucket = self._notifications_by_user.get(recipient_user_id, [])
-            for notification in bucket:
-                if notification.notification_type != notification_type:
-                    continue
-
-                payload = notification.payload if isinstance(notification.payload, dict) else {}
-                if all(payload.get(key) == value for key, value in expected_payload.items()):
-                    return True
-
-        return False
 
     def mark_as_read(
         self,
@@ -106,7 +61,6 @@ class NotificationStore:
 
                 updated_notification = notification.model_copy(update={"is_read": True})
                 bucket[index] = updated_notification
-                self._persist(updated_notification)
                 return updated_notification
 
         return None
@@ -126,7 +80,6 @@ class NotificationStore:
 
                     updated_notification = notification.model_copy(update={"is_read": True})
                     bucket[index] = updated_notification
-                    self._persist(updated_notification)
                     return updated_notification
 
         return None
@@ -141,7 +94,6 @@ class NotificationStore:
                     continue
 
                 bucket[index] = notification.model_copy(update={"is_read": True})
-                self._persist(bucket[index])
                 updated_count += 1
 
         return updated_count
@@ -157,10 +109,38 @@ class NotificationStore:
                         continue
 
                     bucket[index] = notification.model_copy(update={"is_read": True})
-                    self._persist(bucket[index])
                     updated_count += 1
 
         return updated_count
+
+    def delete_for_reservation(self, *, reservation_id: str, exclude_types: list[str] | None = None) -> int:
+        """
+        Delete all notifications for a reservation, optionally excluding certain notification types.
+        
+        Args:
+            reservation_id: The reservation ID to filter by
+            exclude_types: List of notification types to NOT delete (e.g., ['reservation_cancelled_by_user'])
+        
+        Returns:
+            Number of notifications deleted
+        """
+        deleted_count = 0
+        exclude_types = exclude_types or []
+
+        with self._lock:
+            for recipient_user_id, bucket in self._notifications_by_user.items():
+                original_count = len(bucket)
+                self._notifications_by_user[recipient_user_id] = [
+                    n for n in bucket
+                    if not (
+                        n.payload and 
+                        n.payload.get("reservation_id") == reservation_id and
+                        n.notification_type not in exclude_types
+                    )
+                ]
+                deleted_count += original_count - len(self._notifications_by_user[recipient_user_id])
+
+        return deleted_count
 
 
 notification_store = NotificationStore()

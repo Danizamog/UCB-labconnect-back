@@ -1,23 +1,16 @@
 from __future__ import annotations
 
-import json
 from calendar import monthrange
 from datetime import UTC, datetime
-from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
-from pydantic import ValidationError
-
-from app.core.config import settings
 from app.core.datetime_utils import combine_date_time, now_local_naive, parse_datetime
-from app.infrastructure.local_store import LocalJsonStore
 from app.infrastructure.repositories.lab_reservation_repository import LabReservationRepository
 from app.schemas.tutorial_session import (
     TutorialEnrollmentResponse,
     TutorialSessionCreate,
     TutorialSessionResponse,
-    TutorialSessionUpdate,
 )
 
 
@@ -53,73 +46,6 @@ class TutorialSessionRepository:
         self._reservation_repo = reservation_repo
         self._sessions: dict[str, TutorialSessionResponse] = {}
         self._lock = Lock()
-        self._storage_path = Path(settings.tutorial_sessions_storage_path).expanduser()
-        self._local_store = LocalJsonStore("tutorial_session")
-        self._storage_path.parent.mkdir(parents=True, exist_ok=True)
-        if not self._load_from_local_store():
-            self._load_from_disk()
-            self._save_to_local_store()
-
-    def _hydrate_payload(self, raw_payload: list) -> dict[str, TutorialSessionResponse]:
-        loaded: dict[str, TutorialSessionResponse] = {}
-        for item in raw_payload:
-            if not isinstance(item, dict):
-                continue
-            try:
-                session = TutorialSessionResponse.model_validate(item)
-            except ValidationError:
-                continue
-            loaded[session.id] = session
-
-        return loaded
-
-    def _load_from_local_store(self) -> bool:
-        raw_payload = self._local_store.list()
-        if not raw_payload:
-            return False
-
-        loaded = self._hydrate_payload(raw_payload)
-        if not loaded:
-            return False
-
-        with self._lock:
-            self._sessions = loaded
-        return True
-
-    def _load_from_disk(self) -> None:
-        if not self._storage_path.exists():
-            return
-
-        try:
-            raw_payload = json.loads(self._storage_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
-
-        if not isinstance(raw_payload, list):
-            return
-
-        loaded = self._hydrate_payload(raw_payload)
-        if loaded:
-            with self._lock:
-                self._sessions = loaded
-
-    def _save_to_local_store(self) -> None:
-        with self._lock:
-            sessions = list(self._sessions.values())
-        for session in sessions:
-            self._local_store.upsert(session.id, session.model_dump(), operation="update")
-
-    def _save_to_disk(self) -> None:
-        with self._lock:
-            payload = [session.model_dump() for session in self._sessions.values()]
-
-        temp_path = self._storage_path.with_suffix(f"{self._storage_path.suffix}.tmp")
-        temp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        temp_path.replace(self._storage_path)
-        self._save_to_local_store()
 
     def _build_session(self, session_id: str, body: TutorialSessionCreate) -> TutorialSessionResponse:
         topic = str(body.topic or "").strip()
@@ -229,17 +155,6 @@ class TutorialSessionRepository:
         normalized_tutor_id = str(tutor_id or "").strip()
         return [session for session in self.list_all(include_past=True) if session.tutor_id == normalized_tutor_id]
 
-    def list_for_student(self, student_id: str) -> list[TutorialSessionResponse]:
-        normalized_student_id = str(student_id or "").strip()
-        if not normalized_student_id:
-            return []
-
-        return [
-            session
-            for session in self.list_all()
-            if any(enrollment.student_id == normalized_student_id for enrollment in session.enrolled_students)
-        ]
-
     def get_by_id(self, session_id: str) -> TutorialSessionResponse | None:
         with self._lock:
             return self._sessions.get(session_id)
@@ -251,89 +166,7 @@ class TutorialSessionRepository:
         with self._lock:
             self._sessions[session.id] = session
 
-        self._local_store.upsert(session.id, session.model_dump(), operation="create")
-        self._save_to_disk()
         return session
-
-    def update(self, session_id: str, body: TutorialSessionUpdate) -> TutorialSessionResponse:
-        with self._lock:
-            existing = self._sessions.get(session_id)
-            if existing is None:
-                raise KeyError("Tutoria no encontrada")
-
-        topic = existing.topic if body.topic is None else str(body.topic or "").strip()
-        description = existing.description if body.description is None else str(body.description or "").strip()
-        laboratory_id = existing.laboratory_id if body.laboratory_id is None else str(body.laboratory_id or "").strip()
-        location = existing.location if body.location is None else str(body.location or "").strip()
-        session_date = existing.session_date if body.session_date is None else str(body.session_date or "").strip()
-        start_time = existing.start_time if body.start_time is None else str(body.start_time or "").strip()
-        end_time = existing.end_time if body.end_time is None else str(body.end_time or "").strip()
-        max_students = existing.max_students if body.max_students is None else int(body.max_students or 0)
-        tutor_id = existing.tutor_id if body.tutor_id is None else str(body.tutor_id or "").strip()
-        tutor_name = existing.tutor_name if body.tutor_name is None else str(body.tutor_name or "").strip()
-        tutor_email = existing.tutor_email if body.tutor_email is None else str(body.tutor_email or "").strip()
-        is_published = existing.is_published if body.is_published is None else bool(body.is_published)
-
-        if len(topic) < 5:
-            raise ValueError("Debes ingresar un tema claro de al menos 5 caracteres")
-
-        if not laboratory_id or not location:
-            raise ValueError("Debes seleccionar el laboratorio donde se realizara la tutoria")
-
-        if max_students <= 0 or max_students > 50:
-            raise ValueError("La capacidad maxima debe estar entre 1 y 50 estudiantes")
-
-        if max_students < len(existing.enrolled_students):
-            raise ValueError("No puedes reducir el cupo por debajo de la cantidad de estudiantes ya inscritos")
-
-        start_dt = combine_date_time(datetime.fromisoformat(session_date).date(), start_time)
-        end_dt = combine_date_time(datetime.fromisoformat(session_date).date(), end_time)
-        if end_dt <= start_dt:
-            raise ValueError("La hora de fin debe ser posterior a la hora de inicio")
-
-        if start_dt.minute != 0 or end_dt.minute != 0:
-            raise ValueError("Las tutorias deben publicarse usando bloques horarios exactos")
-
-        if (end_dt - start_dt).total_seconds() % 3600 != 0:
-            raise ValueError("La duracion de la tutoria debe respetar bloques completos de una hora")
-
-        now = now_local_naive()
-        if start_dt <= now:
-            raise ValueError("No puedes publicar tutorias en horarios pasados o que ya comenzaron")
-
-        max_allowed_day = _max_allowed_session_date(now.date())
-        if start_dt.date() > max_allowed_day:
-            raise ValueError("Solo puedes publicar tutorias con un maximo de un mes de anticipacion")
-
-        if len(description) > 400:
-            raise ValueError("La descripcion no puede superar los 400 caracteres")
-
-        candidate = existing.model_copy(
-            update={
-                "topic": topic,
-                "description": description,
-                "laboratory_id": laboratory_id,
-                "location": location,
-                "session_date": session_date,
-                "start_time": start_time,
-                "end_time": end_time,
-                "start_at": _format_iso_utc(start_dt),
-                "end_at": _format_iso_utc(end_dt),
-                "max_students": max_students,
-                "tutor_id": tutor_id,
-                "tutor_name": tutor_name or "Tutor",
-                "tutor_email": tutor_email,
-                "is_published": is_published,
-                "updated": _iso_now(),
-            }
-        )
-        self._validate_no_conflicts(candidate, skip_id=session_id)
-
-        with self._lock:
-            self._sessions[session_id] = candidate
-
-        self._save_to_disk()
-        return candidate
 
     def enroll(
         self,
@@ -373,40 +206,7 @@ class TutorialSessionRepository:
             ]
             updated = session.model_copy(update={"enrolled_students": next_enrollments, "updated": _iso_now()})
             self._sessions[session_id] = updated
-
-        self._save_to_disk()
-        return updated
-
-    def unenroll(
-        self,
-        session_id: str,
-        *,
-        student_id: str,
-    ) -> TutorialSessionResponse:
-        normalized_student_id = str(student_id or "").strip()
-        if not normalized_student_id:
-            raise ValueError("No se pudo identificar al estudiante")
-
-        with self._lock:
-            session = self._sessions.get(session_id)
-            if session is None:
-                raise KeyError("Tutoria no encontrada")
-            if parse_datetime(session.start_at) <= now_local_naive():
-                raise ValueError("La tutoria ya comenzo o finalizo y no permite cancelar la asistencia")
-
-            if not any(enrollment.student_id == normalized_student_id for enrollment in session.enrolled_students):
-                raise ValueError("No estas inscrito en esta tutoria")
-
-            next_enrollments = [
-                enrollment
-                for enrollment in session.enrolled_students
-                if enrollment.student_id != normalized_student_id
-            ]
-            updated = session.model_copy(update={"enrolled_students": next_enrollments, "updated": _iso_now()})
-            self._sessions[session_id] = updated
-
-        self._save_to_disk()
-        return updated
+            return updated
 
     def delete(self, session_id: str) -> tuple[TutorialSessionResponse, list[TutorialEnrollmentResponse]] | None:
         with self._lock:
@@ -415,6 +215,4 @@ class TutorialSessionRepository:
         if session is None:
             return None
 
-        self._save_to_disk()
-        self._local_store.delete(session_id)
         return session, list(session.enrolled_students)

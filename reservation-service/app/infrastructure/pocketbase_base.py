@@ -1,12 +1,12 @@
 import json
-import time
-from json import JSONDecodeError
+import logging
 from urllib.parse import urlencode
 
 import httpx
 
 from app.core.config import settings
-from app.infrastructure.local_pocketbase import LocalPocketBaseFallback
+
+logger = logging.getLogger(__name__)
 
 
 class PocketBaseClient:
@@ -17,45 +17,10 @@ class PocketBaseClient:
         self._auth_collection = settings.pocketbase_auth_collection
         self._timeout = settings.pocketbase_timeout_seconds
         self._auth_token: str | None = None
-        self._data_mode = settings.data_mode
-        self._primary_offline_until = 0.0
-        self._primary_retry_seconds = max(float(settings.pocketbase_retry_seconds), 1.0)
-        self._fallback = LocalPocketBaseFallback(
-            postgres_url=settings.postgres_url,
-            namespace=settings.local_data_namespace,
-            enabled=settings.data_mode in {"hybrid", "postgres", "local"},
-        )
         self._client = httpx.Client(
             timeout=httpx.Timeout(self._timeout, connect=min(self._timeout, 5.0)),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
-
-    def _use_local_only(self) -> bool:
-        return self._data_mode in {"postgres", "local"} or not self._base_url
-
-    def _primary_is_paused(self) -> bool:
-        return time.monotonic() < self._primary_offline_until
-
-    def _mark_primary_offline(self) -> None:
-        self._auth_token = None
-        self._primary_offline_until = time.monotonic() + self._primary_retry_seconds
-
-    def _mark_primary_online(self) -> None:
-        self._primary_offline_until = 0.0
-
-    def _fallback_request(self, method: str, path: str, payload: dict | None, params: dict | None):
-        if not self._fallback.enabled:
-            raise ValueError("No se pudo conectar con PocketBase")
-        return self._fallback.handle(method, path, payload=payload, params=params)
-
-    def fallback_request(
-        self,
-        method: str,
-        path: str,
-        payload: dict | None = None,
-        params: dict | None = None,
-    ) -> dict | list | None:
-        return self._fallback_request(method, path, payload, params)
 
     def _has_credentials(self) -> bool:
         return bool(self._auth_identity and self._auth_password)
@@ -109,63 +74,35 @@ class PocketBaseClient:
         payload: dict | None = None,
         params: dict | None = None,
         retry_on_auth_error: bool = True,
-        fallback_on_status_codes: set[int] | None = None,
     ) -> dict | list | None:
-        if self._use_local_only() or self._primary_is_paused():
-            return self._fallback_request(method, path, payload, params)
-
-        try:
-            self._ensure_authenticated()
-        except (ValueError, httpx.HTTPError, httpx.HTTPStatusError):
-            self._mark_primary_offline()
-            return self._fallback_request(method, path, payload, params)
+        self._ensure_authenticated()
 
         url = f"{self._base_url}{path}"
         if params:
             url = f"{url}?{urlencode(params)}"
 
+        # LOGGING: Registrar todas las solicitudes a PocketBase
+        logger.info(f"[POCKETBASE] {method} {url} | Payload: {payload}")
+
         try:
             response = self._client.request(method, url, json=payload, headers=self._headers())
             response.raise_for_status()
             raw_body = response.content
+            logger.info(f"[POCKETBASE SUCCESS] {method} {url} | Status: {response.status_code}")
         except httpx.HTTPStatusError as exc:
+            logger.error(f"[POCKETBASE ERROR] {method} {url} | Status: {exc.response.status_code} | Response: {exc.response.text}")
             if exc.response.status_code == 401 and retry_on_auth_error and self._has_credentials():
                 self._auth_token = None
-                try:
-                    self._authenticate()
-                except (ValueError, httpx.HTTPError, httpx.HTTPStatusError):
-                    self._mark_primary_offline()
-                    return self._fallback_request(method, path, payload, params)
-                return self.request(
-                    method,
-                    path,
-                    payload=payload,
-                    params=params,
-                    retry_on_auth_error=False,
-                    fallback_on_status_codes=fallback_on_status_codes,
-                )
-            if fallback_on_status_codes and exc.response.status_code in fallback_on_status_codes and self._fallback.enabled:
-                return self._fallback_request(method, path, payload, params)
+                self._authenticate()
+                return self.request(method, path, payload=payload, params=params, retry_on_auth_error=False)
             raise
-        except httpx.HTTPError:
-            self._mark_primary_offline()
-            return self._fallback_request(method, path, payload, params)
+        except httpx.HTTPError as exc:
+            logger.error(f"[POCKETBASE CONNECTION ERROR] {method} {url} | Error: {str(exc)}")
+            raise ValueError("No se pudo conectar con PocketBase") from exc
 
         if not raw_body:
             return None
-        try:
-            result = json.loads(raw_body.decode("utf-8"))
-        except (JSONDecodeError, UnicodeDecodeError):
-            self._mark_primary_offline()
-            return self._fallback_request(method, path, payload, params)
-
-        self._mark_primary_online()
-        if method.upper() in {"GET", "POST", "PATCH", "DELETE"}:
-            try:
-                self._fallback.sync_pending(base_url=self._base_url, client=self._client, headers_factory=self._headers)
-            except Exception:
-                pass
-        return result
+        return json.loads(raw_body.decode("utf-8"))
 
     def close(self) -> None:
         self._client.close()

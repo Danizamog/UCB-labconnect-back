@@ -1,10 +1,18 @@
+from datetime import timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.dependencies import get_current_user
+from app.core.datetime_utils import parse_datetime, parse_timestamp_to_local_naive
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
 from app.schemas.notification import MarkAllNotificationsReadResponse, UserNotificationResponse
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
+
+_REMINDER_TOLERANCES = {
+    "24h": (timedelta(hours=22), timedelta(hours=26)),
+    "30m": (timedelta(minutes=20), timedelta(minutes=40)),
+}
 
 
 def _notification_buckets_for_user(current_user: dict) -> list[str]:
@@ -24,6 +32,27 @@ def _notification_buckets_for_user(current_user: dict) -> list[str]:
     return buckets
 
 
+def _is_valid_reminder_notification(notification: UserNotificationResponse) -> bool:
+    if notification.notification_type not in {"reservation_reminder", "tutorial_reminder"}:
+        return True
+
+    payload = notification.payload if isinstance(notification.payload, dict) else {}
+    reminder_kind = str(payload.get("reminder_kind") or "").strip()
+    starts_at = str(payload.get("starts_at") or "").strip()
+    min_delta, max_delta = _REMINDER_TOLERANCES.get(reminder_kind, (None, None))
+    if min_delta is None or max_delta is None or not starts_at:
+        return True
+
+    try:
+        start_at = parse_datetime(starts_at)
+        created_at = parse_timestamp_to_local_naive(notification.created_at)
+    except ValueError:
+        return True
+
+    remaining = start_at - created_at
+    return min_delta <= remaining <= max_delta
+
+
 @router.get("/mine", response_model=list[UserNotificationResponse])
 def list_my_notifications(current_user: dict = Depends(get_current_user)) -> list[UserNotificationResponse]:
     buckets = _notification_buckets_for_user(current_user)
@@ -35,6 +64,8 @@ def list_my_notifications(current_user: dict = Depends(get_current_user)) -> lis
     for bucket in buckets:
         for notification in notification_store.list_for_user(bucket):
             if notification.id in seen_ids:
+                continue
+            if not _is_valid_reminder_notification(notification):
                 continue
             seen_ids.add(notification.id)
             notifications.append(notification)

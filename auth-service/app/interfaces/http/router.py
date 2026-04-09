@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.application.container import (
@@ -129,7 +129,6 @@ def _build_live_session_payload(payload: dict) -> dict:
         "user_id": user.id,
         "role": role,
         "name": user.name,
-        "email": user.username,
         "permissions": permissions,
         "picture": payload.get("picture"),
         "auth_provider": payload.get("auth_provider"),
@@ -142,7 +141,7 @@ def _build_live_session_payload(payload: dict) -> dict:
 def _has_any_permission(payload: dict, required_permissions: set[str]) -> bool:
     role = str(payload.get("role") or "user").strip().lower()
     permissions = payload.get("permissions") if isinstance(payload.get("permissions"), list) else []
-    return role in {"admin", "administrador"} or "*" in permissions or bool(required_permissions.intersection(permissions))
+    return role == "admin" or "*" in permissions or bool(required_permissions.intersection(permissions))
 
 
 def _require_profile_manager(payload: dict = Depends(_get_current_payload)) -> dict:
@@ -321,20 +320,6 @@ def create_user_profile(
         payload.password,
     )
     return _to_user_response(user)
-
-
-@users_router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_user_profile(
-    user_id: str,
-    _: dict = Depends(_require_profile_editor),
-) -> Response:
-    user = user_repository.get_by_id(user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
-    deleted = user_repository.delete(user_id)
-    if not deleted:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @users_router.put("/{user_id}", response_model=UserProfileResponse)

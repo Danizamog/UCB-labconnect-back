@@ -19,6 +19,7 @@ class LabReservationCreate(BaseModel):
     approved_at: str | None = None
     cancel_reason: str = ""
     is_active: bool | None = None
+    user_modification_count: int | None = None
 
 
 class LabReservationUpdate(BaseModel):
@@ -35,6 +36,7 @@ class LabReservationUpdate(BaseModel):
     approved_at: str | None = None
     cancel_reason: str | None = None
     is_active: bool | None = None
+    user_modification_count: int | None = None
 
 
 class LabReservationStatusUpdate(BaseModel):
@@ -65,6 +67,7 @@ class LabReservationResponse(BaseModel):
     check_in_at: str = ""
     check_out_at: str = ""
     is_walk_in: bool = False
+    user_modification_count: int = 0
 
 
 class PaginatedLabReservationResponse(BaseModel):

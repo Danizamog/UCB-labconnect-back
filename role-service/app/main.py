@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
 from app.core.dependencies import auth_validation_client
-from app.application.container import role_repository, sync_shadow_roles_from_primary
+from app.application.container import role_repository
 from app.interfaces.http.router import router as roles_router
 
 app = FastAPI(title="LabConnect Role Service", version="1.0.0")
@@ -10,11 +10,6 @@ app = FastAPI(title="LabConnect Role Service", version="1.0.0")
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "service": "role-service"}
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    sync_shadow_roles_from_primary()
 
 
 @app.on_event("shutdown")

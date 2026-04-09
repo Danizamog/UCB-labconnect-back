@@ -150,8 +150,8 @@ class LabAccessSessionRepository:
         session = historical_session
         return {
             **reservation.model_dump(),
-            "requested_by_name": session.occupant_name if session and session.occupant_name else reservation.requested_by_name,
-            "requested_by_email": session.occupant_email if session and session.occupant_email else reservation.requested_by_email,
+            "requested_by_name": session.occupant_name if session else "",
+            "requested_by_email": session.occupant_email if session else "",
             "station_label": session.station_label if session else "",
             "check_in_at": session.check_in_at if session else "",
             "check_out_at": session.check_out_at if session else "",
