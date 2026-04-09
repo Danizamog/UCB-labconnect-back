@@ -10,6 +10,7 @@ from app.api.v1.endpoints import availability as availability_endpoints
 from app.api.v1.endpoints import notifications as notification_endpoints
 from app.api.v1.endpoints import reservations as reservation_endpoints
 from app.core.config import settings
+from app.reminders import scheduler as reminder_scheduler
 from app.infrastructure.repositories.tutorial_session_repository import TutorialSessionRepository
 from app.schemas.lab_reservation import LabReservationResponse
 from app.schemas.notification import UserNotificationResponse
@@ -285,6 +286,74 @@ class TutorialAcceptanceTests(unittest.TestCase):
                 self.assertEqual(cancelled.enrolled_count, 0)
                 self.assertEqual(cancelled.seats_left, 2)
                 self.assertEqual(repo.list_for_student("student-1"), [])
+
+class ReservationReminderSchedulerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scheduler_sends_24h_and_30m_reminders_once_each(self) -> None:
+        base_start = datetime(2026, 4, 12, 12, 0, 0)
+        reservation = _reservation(status="approved", reservation_id="res-rem-1").model_copy(
+            update={
+                "start_at": base_start.isoformat(),
+                "end_at": (base_start + timedelta(hours=1)).isoformat(),
+                "is_active": True,
+                "requested_by": "student-1",
+            }
+        )
+
+        notifications = _FakeNotificationStore()
+        realtime = _FakeRealtimeManager()
+        source = _FakeReservationSource([reservation])
+        scheduler = reminder_scheduler.ReservationReminderScheduler()
+
+        with patch.object(reminder_scheduler, "lab_reservation_repo", source), \
+             patch.object(reminder_scheduler, "notification_store", notifications), \
+             patch.object(reminder_scheduler, "realtime_manager", realtime):
+            await scheduler.run_once(now=base_start - timedelta(hours=23, minutes=59))
+            await scheduler.run_once(now=base_start - timedelta(minutes=29))
+            await scheduler.run_once(now=base_start - timedelta(minutes=29))
+
+        self.assertEqual(len(notifications.created), 2)
+        self.assertEqual(
+            [item["payload"]["reminder_kind"] for item in notifications.created],
+            ["24h", "30m"],
+        )
+        self.assertEqual(len(realtime.events), 2)
+
+    async def test_scheduler_skips_non_approved_inactive_or_without_requester(self) -> None:
+        base_start = datetime(2026, 4, 12, 12, 0, 0)
+        pending = _reservation(status="pending", reservation_id="res-rem-2").model_copy(
+            update={
+                "start_at": base_start.isoformat(),
+                "end_at": (base_start + timedelta(hours=1)).isoformat(),
+                "is_active": True,
+            }
+        )
+        inactive = _reservation(status="approved", reservation_id="res-rem-3").model_copy(
+            update={
+                "start_at": base_start.isoformat(),
+                "end_at": (base_start + timedelta(hours=1)).isoformat(),
+                "is_active": False,
+            }
+        )
+        no_requester = _reservation(status="approved", reservation_id="res-rem-4").model_copy(
+            update={
+                "start_at": base_start.isoformat(),
+                "end_at": (base_start + timedelta(hours=1)).isoformat(),
+                "requested_by": "",
+            }
+        )
+
+        notifications = _FakeNotificationStore()
+        realtime = _FakeRealtimeManager()
+        source = _FakeReservationSource([pending, inactive, no_requester])
+        scheduler = reminder_scheduler.ReservationReminderScheduler()
+
+        with patch.object(reminder_scheduler, "lab_reservation_repo", source), \
+             patch.object(reminder_scheduler, "notification_store", notifications), \
+             patch.object(reminder_scheduler, "realtime_manager", realtime):
+            await scheduler.run_once(now=base_start - timedelta(minutes=29))
+
+        self.assertEqual(notifications.created, [])
+        self.assertEqual(realtime.events, [])
 
     def test_tutor_cannot_publish_tutorial_that_overlaps_own_lab_reservation(self) -> None:
         start_at, end_at, day = _future_range(days=5, start_hour=14)
