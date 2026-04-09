@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -47,9 +48,23 @@ class AssetMaintenanceRepository:
             if self._collection_ready:
                 return
 
-            self._admin_client.ensure_collection(
-                self._collection,
-                [
+            asset_collection = self._admin_client.get_collection(settings.pb_assets_collection) or {}
+            asset_collection_id = str(asset_collection.get("id") or "").strip()
+
+            fields: list[dict[str, Any]] = []
+            if asset_collection_id:
+                fields.append(
+                    {
+                        "name": "asset_ref",
+                        "type": "relation",
+                        "required": False,
+                        "collectionId": asset_collection_id,
+                        "maxSelect": 1,
+                        "minSelect": 0,
+                    }
+                )
+
+            fields.extend([
                     {"name": "asset_id", "type": "text", "required": True, "max": 80},
                     {"name": "asset_name", "type": "text", "required": True, "max": 160},
                     {"name": "ticket_type", "type": "text", "required": True, "max": 20},
@@ -60,26 +75,28 @@ class AssetMaintenanceRepository:
                     {"name": "status", "type": "text", "required": True, "max": 20},
                     {"name": "reported_at", "type": "date", "required": True},
                     {"name": "reported_by", "type": "text", "required": True, "max": 160},
+                    {"name": "reported_by_user_id", "type": "text", "required": False, "max": 160},
+                    {"name": "reported_by_email", "type": "text", "required": False, "max": 180},
                     {"name": "resolved_at", "type": "date", "required": False},
                     {"name": "resolved_by", "type": "text", "required": False, "max": 160},
+                    {"name": "resolved_by_user_id", "type": "text", "required": False, "max": 160},
+                    {"name": "resolved_by_email", "type": "text", "required": False, "max": 180},
                     {"name": "resolution_notes", "type": "text", "required": False, "max": 4000},
                     {"name": "asset_status_before", "type": "text", "required": False, "max": 40},
                     {"name": "asset_status_after_open", "type": "text", "required": False, "max": 40},
-                    {"name": "asset_status_after_close", "type": "text", "required": False, "max": 40},
                     {"name": "related_loan_id", "type": "text", "required": False, "max": 120},
-                    {"name": "related_loan_status", "type": "text", "required": False, "max": 40},
-                    {"name": "related_loaned_at", "type": "date", "required": False},
                     {"name": "responsible_borrower_name", "type": "text", "required": False, "max": 160},
                     {"name": "responsible_borrower_email", "type": "text", "required": False, "max": 180},
-                    {"name": "responsible_borrower_role", "type": "text", "required": False, "max": 80},
                     {"name": "is_responsibility_flagged", "type": "bool", "required": False},
-                ],
-            )
+                ])
+
+            self._admin_client.ensure_collection(self._collection, fields)
             self._collection_ready = True
 
     def _to_response(self, record: dict[str, Any]) -> AssetMaintenanceTicketResponse:
         return AssetMaintenanceTicketResponse(
             id=record.get("id", ""),
+            asset_ref=record.get("asset_ref", ""),
             asset_id=record.get("asset_id", ""),
             asset_name=record.get("asset_name", ""),
             ticket_type=record.get("ticket_type", "maintenance"),
@@ -90,18 +107,18 @@ class AssetMaintenanceRepository:
             status=record.get("status", "open"),
             reported_at=record.get("reported_at", ""),
             reported_by=record.get("reported_by", ""),
+            reported_by_user_id=record.get("reported_by_user_id", ""),
+            reported_by_email=record.get("reported_by_email", ""),
             resolved_at=record.get("resolved_at", ""),
             resolved_by=record.get("resolved_by", ""),
+            resolved_by_user_id=record.get("resolved_by_user_id", ""),
+            resolved_by_email=record.get("resolved_by_email", ""),
             resolution_notes=record.get("resolution_notes", ""),
             asset_status_before=record.get("asset_status_before", ""),
             asset_status_after_open=record.get("asset_status_after_open", ""),
-            asset_status_after_close=record.get("asset_status_after_close", ""),
             related_loan_id=record.get("related_loan_id", ""),
-            related_loan_status=record.get("related_loan_status", ""),
-            related_loaned_at=record.get("related_loaned_at", ""),
             responsible_borrower_name=record.get("responsible_borrower_name", ""),
             responsible_borrower_email=record.get("responsible_borrower_email", ""),
-            responsible_borrower_role=record.get("responsible_borrower_role", ""),
             is_responsibility_flagged=bool(record.get("is_responsibility_flagged", False)),
             created=record.get("created", ""),
             updated=record.get("updated", ""),
@@ -171,29 +188,34 @@ class AssetMaintenanceRepository:
         asset_record = self._get_asset_record(asset_id) or {}
         asset_source_id = str(asset_record.get("source_id") or "").strip()
         latest_loan = self._find_latest_related_loan(asset_id, asset_source_id=asset_source_id)
-        actor = str(current_user.get("username") or "encargado")
+        actor = str(current_user.get("username") or current_user.get("name") or "encargado")
+        actor_id = str(current_user.get("user_id") or current_user.get("id") or "").strip()
+        actor_email = str(current_user.get("email") or "").strip().lower()
         now_iso = _utcnow_iso()
+        evidence_report_id = str(body.evidence_report_id or "").strip()
+        if not evidence_report_id:
+            prefix = "DANO" if body.ticket_type == "damage" else "MTTO"
+            evidence_report_id = f"{prefix}-{datetime.now(UTC).strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
 
         payload = {
+            "asset_ref": asset.id,
             "asset_id": asset.id,
             "asset_name": asset.name,
             "ticket_type": body.ticket_type,
             "title": body.title.strip(),
             "description": body.description.strip(),
             "severity": body.severity,
-            "evidence_report_id": str(body.evidence_report_id or "").strip(),
+            "evidence_report_id": evidence_report_id,
             "status": "open",
             "reported_at": now_iso,
             "reported_by": actor,
+            "reported_by_user_id": actor_id,
+            "reported_by_email": actor_email,
             "asset_status_before": asset.status,
             "asset_status_after_open": "maintenance",
-            "asset_status_after_close": "available",
             "related_loan_id": str(latest_loan.get("id") or "") if latest_loan else "",
-            "related_loan_status": str(latest_loan.get("status") or "") if latest_loan else "",
-            "related_loaned_at": str(latest_loan.get("loaned_at") or "") if latest_loan else "",
             "responsible_borrower_name": str(latest_loan.get("borrower_name") or "") if latest_loan else "",
             "responsible_borrower_email": str(latest_loan.get("borrower_email") or "") if latest_loan else "",
-            "responsible_borrower_role": str(latest_loan.get("borrower_role") or "") if latest_loan else "",
             "is_responsibility_flagged": bool(latest_loan and body.ticket_type == "damage"),
         }
 
@@ -216,7 +238,9 @@ class AssetMaintenanceRepository:
         if ticket.status != "open":
             raise ValueError("El ticket ya fue cerrado y no puede modificarse")
 
-        actor = str(current_user.get("username") or "encargado")
+        actor = str(current_user.get("username") or current_user.get("name") or "encargado")
+        actor_id = str(current_user.get("user_id") or current_user.get("id") or "").strip()
+        actor_email = str(current_user.get("email") or "").strip().lower()
         now_iso = _utcnow_iso()
         updated = self._admin_client.update_record(
             self._collection,
@@ -225,6 +249,8 @@ class AssetMaintenanceRepository:
                 "status": "closed",
                 "resolved_at": now_iso,
                 "resolved_by": actor,
+                "resolved_by_user_id": actor_id,
+                "resolved_by_email": actor_email,
                 "resolution_notes": body.resolution_notes.strip(),
             },
         )
@@ -251,7 +277,6 @@ class AssetMaintenanceRepository:
                 grouped[key] = AssetResponsibilityFlagResponse(
                     borrower_email=key,
                     borrower_name=ticket.responsible_borrower_name,
-                    borrower_role=ticket.responsible_borrower_role,
                     active_damage_count=1 if ticket.status == "open" and ticket.ticket_type == "damage" else 0,
                     latest_ticket_title=ticket.title,
                     latest_asset_name=ticket.asset_name,
@@ -266,7 +291,6 @@ class AssetMaintenanceRepository:
                 grouped[key] = existing.model_copy(
                     update={
                         "borrower_name": ticket.responsible_borrower_name or existing.borrower_name,
-                        "borrower_role": ticket.responsible_borrower_role or existing.borrower_role,
                         "latest_ticket_title": ticket.title,
                         "latest_asset_name": ticket.asset_name,
                         "latest_reported_at": ticket.reported_at,
