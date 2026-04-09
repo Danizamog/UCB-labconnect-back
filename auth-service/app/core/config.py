@@ -42,6 +42,9 @@ class Settings:
     pocketbase_auth_password: str = os.getenv("POCKETBASE_AUTH_PASSWORD", "").strip()
     pocketbase_auth_collection: str = os.getenv("POCKETBASE_AUTH_COLLECTION", "_superusers").strip() or "_superusers"
     pocketbase_timeout_seconds: float = float(os.getenv("POCKETBASE_TIMEOUT_SECONDS", "10"))
+    data_mode: str = os.getenv("DATA_MODE", "hybrid").strip().lower() or "hybrid"
+    postgres_url: str = os.getenv("POSTGRES_URL", "").strip()
+    local_data_namespace: str = os.getenv("LOCAL_DATA_NAMESPACE", "labconnect").strip() or "labconnect"
 
 
 settings = Settings()

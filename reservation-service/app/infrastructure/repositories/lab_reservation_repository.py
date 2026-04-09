@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 
 import httpx
@@ -14,31 +15,39 @@ from app.schemas.lab_reservation import RESERVATION_STATUSES, LabReservationCrea
 _COLLECTION = settings.pb_lab_reservation_collection
 _FINAL_STATUSES = {"rejected", "cancelled", "completed", "absent"}
 _LEGACY_CANCEL_REASON = "Reserva legacy desactivada por horario invalido"
+logger = logging.getLogger(__name__)
+
+
+def _text(record: dict, field: str, default: str = "") -> str:
+    value = record.get(field, default)
+    if value is None:
+        return default
+    return str(value)
 
 
 def _to_response(record: dict) -> LabReservationResponse:
     return LabReservationResponse(
-        id=record.get("id", ""),
-        laboratory_id=record.get("laboratory_id", ""),
-        area_id=record.get("area_id", ""),
-        requested_by=record.get("requested_by", ""),
-        purpose=record.get("purpose", ""),
-        start_at=record.get("start_at", ""),
-        end_at=record.get("end_at", ""),
-        status=record.get("status", "pending"),
+        id=_text(record, "id"),
+        laboratory_id=_text(record, "laboratory_id"),
+        area_id=_text(record, "area_id"),
+        requested_by=_text(record, "requested_by"),
+        purpose=_text(record, "purpose"),
+        start_at=_text(record, "start_at"),
+        end_at=_text(record, "end_at"),
+        status=_text(record, "status", "pending") or "pending",
         attendees_count=record.get("attendees_count"),
-        notes=record.get("notes", ""),
-        approved_by=record.get("approved_by", ""),
-        approved_at=record.get("approved_at", ""),
-        cancel_reason=record.get("cancel_reason", ""),
+        notes=_text(record, "notes"),
+        approved_by=_text(record, "approved_by"),
+        approved_at=_text(record, "approved_at"),
+        cancel_reason=_text(record, "cancel_reason"),
         is_active=bool(record.get("is_active", True)),
-        created=record.get("created", ""),
-        updated=record.get("updated", ""),
-        requested_by_name=record.get("requested_by_name", ""),
-        requested_by_email=record.get("requested_by_email", ""),
-        station_label=record.get("station_label", ""),
-        check_in_at=record.get("check_in_at", ""),
-        check_out_at=record.get("check_out_at", ""),
+        created=_text(record, "created"),
+        updated=_text(record, "updated"),
+        requested_by_name=_text(record, "requested_by_name"),
+        requested_by_email=_text(record, "requested_by_email"),
+        station_label=_text(record, "station_label"),
+        check_in_at=_text(record, "check_in_at"),
+        check_out_at=_text(record, "check_out_at"),
         is_walk_in=bool(record.get("is_walk_in", False)),
     )
 
@@ -66,7 +75,10 @@ class LabReservationRepository:
             auth_collection=settings.pocketbase_auth_collection,
             timeout_seconds=settings.pocketbase_timeout_seconds,
         )
-        self._ensure_identity_fields()
+        try:
+            self._ensure_identity_fields()
+        except Exception as exc:  # pragma: no cover - startup resilience for unavailable external DB
+            logger.warning("No se pudieron asegurar campos de identidad de reservas: %s", exc)
 
     def _ensure_identity_fields(self) -> None:
         if not self._admin_client.enabled:
@@ -101,7 +113,7 @@ class LabReservationRepository:
             ],
         )
 
-    def _list_all_records(self, page: int = 1, per_page: int = 200) -> list[dict]:
+    def _list_remote_records(self, page: int = 1, per_page: int = 200) -> list[dict]:
         items: list[dict] = []
         current_page = page
 
@@ -124,6 +136,47 @@ class LabReservationRepository:
 
         return items
 
+    def _list_local_records(self, page: int = 1, per_page: int = 200) -> list[dict]:
+        data = self._client.fallback_request(
+            "GET",
+            self._base,
+            params={"page": page, "perPage": per_page, "sort": "start_at"},
+        )
+        if not isinstance(data, dict):
+            return []
+        records = data.get("items", [])
+        return [record for record in records if isinstance(record, dict)]
+
+    def _list_all_records(self, page: int = 1, per_page: int = 200) -> list[tuple[dict, bool]]:
+        merged: dict[str, tuple[dict, bool]] = {}
+
+        for record in self._list_remote_records(page=page, per_page=per_page):
+            record_id = str(record.get("id") or "").strip()
+            if record_id:
+                merged[record_id] = (record, True)
+
+        for record in self._list_local_records(page=page, per_page=per_page):
+            record_id = str(record.get("id") or "").strip()
+            if record_id:
+                # Los registros locales representan operaciones operativas cuando PocketBase remoto
+                # no pudo aceptarlas; deben prevalecer para que la UI vea el estado real actual.
+                merged[record_id] = (record, False)
+
+        return [item for item in merged.values()]
+
+    def _get_remote_record(self, record_id: str) -> dict | None:
+        try:
+            data = self._client.request("GET", f"{self._base}/{record_id}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        return data if isinstance(data, dict) else None
+
+    def _get_local_record(self, record_id: str) -> dict | None:
+        data = self._client.fallback_request("GET", f"{self._base}/{record_id}")
+        return data if isinstance(data, dict) else None
+
     def _get_user_record(self, user_id: str) -> dict | None:
         normalized = str(user_id or "").strip()
         if not normalized:
@@ -132,15 +185,20 @@ class LabReservationRepository:
         if normalized in self._user_cache:
             return self._user_cache[normalized]
 
+        user_record: dict | None = None
         try:
             data = self._client.request("GET", f"{self._users_base}/{normalized}")
+            if isinstance(data, dict):
+                user_record = data
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                self._user_cache[normalized] = {}
-                return None
-            raise
+            if exc.response.status_code != 404:
+                raise
 
-        user_record = data if isinstance(data, dict) else {}
+        if not user_record:
+            local_record = self._client.fallback_request("GET", f"{self._users_base}/{normalized}")
+            if isinstance(local_record, dict):
+                user_record = local_record
+
         self._user_cache[normalized] = user_record
         return user_record or None
 
@@ -189,6 +247,9 @@ class LabReservationRepository:
         )
 
     def _legacy_invalid_reason(self, record: dict) -> str | None:
+        if bool(record.get("is_walk_in", False)):
+            return None
+
         try:
             start_at = parse_datetime(str(record.get("start_at") or ""))
             end_at = parse_datetime(str(record.get("end_at") or ""))
@@ -239,7 +300,15 @@ class LabReservationRepository:
     def _normalize_record(self, record: dict, *, persist: bool = True) -> dict:
         patch = self._build_sanitization_patch(record)
         if persist and patch:
-            updated = self._client.request("PATCH", f"{self._base}/{record.get('id')}", payload=patch)
+            try:
+                updated = self._client.request(
+                    "PATCH",
+                    f"{self._base}/{record.get('id')}",
+                    payload=patch,
+                    fallback_on_status_codes={400, 404, 422},
+                )
+            except httpx.HTTPError:
+                updated = None
             if isinstance(updated, dict):
                 merged = dict(updated)
                 merged.update(patch)
@@ -253,33 +322,33 @@ class LabReservationRepository:
 
     def sanitize_legacy_records(self) -> int:
         sanitized = 0
-        for record in self._list_all_records():
+        for record, persist in self._list_all_records():
             patch = self._build_sanitization_patch(record)
             if not patch:
                 continue
-            self._client.request("PATCH", f"{self._base}/{record.get('id')}", payload=patch)
+            if persist:
+                self._client.request("PATCH", f"{self._base}/{record.get('id')}", payload=patch)
+            else:
+                self._client.fallback_request("PATCH", f"{self._base}/{record.get('id')}", payload=patch)
             sanitized += 1
         return sanitized
 
     def list_all(self, page: int = 1, per_page: int = 200) -> list[LabReservationResponse]:
         items: list[LabReservationResponse] = []
-        for record in self._list_all_records(page=page, per_page=per_page):
-            normalized = self._normalize_record(record)
+        for record, persist in self._list_all_records(page=page, per_page=per_page):
+            normalized = self._normalize_record(record, persist=persist)
             if self._is_hidden_legacy_record(normalized):
                 continue
             items.append(_to_response(normalized))
         return items
 
     def get_by_id(self, reservation_id: str) -> LabReservationResponse | None:
-        try:
-            data = self._client.request("GET", f"{self._base}/{reservation_id}")
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return None
-            raise
-        if not isinstance(data, dict):
+        remote_record = self._get_remote_record(reservation_id)
+        local_record = self._get_local_record(reservation_id)
+        data = local_record or remote_record
+        if not data:
             return None
-        return _to_response(self._normalize_record(data))
+        return _to_response(self._normalize_record(data, persist=bool(remote_record and not local_record)))
 
     def _validate_no_overlap(self, laboratory_id: str, start_at: str, end_at: str, skip_id: str | None = None) -> None:
         for item in self.list_all():
@@ -292,14 +361,24 @@ class LabReservationRepository:
             if _has_overlap(start_at, end_at, item.start_at, item.end_at):
                 raise ValueError("Existe una reserva activa que se cruza con ese horario")
 
-    def create(self, body: LabReservationCreate, current_user: dict | None = None) -> LabReservationResponse:
+    def create(
+        self,
+        body: LabReservationCreate,
+        current_user: dict | None = None,
+        *,
+        status_override: str | None = None,
+        skip_overlap_validation: bool = False,
+        extra_payload: dict | None = None,
+    ) -> LabReservationResponse:
         start_at = parse_datetime(body.start_at)
         end_at = parse_datetime(body.end_at)
         if end_at <= start_at:
             raise ValueError("end_at debe ser mayor a start_at")
 
         payload = body.model_dump()
-        payload["status"] = "pending"
+        payload["status"] = status_override or "pending"
+        if payload["status"] not in RESERVATION_STATUSES:
+            raise ValueError(f"status invalido: {payload['status']}")
 
         payload["is_active"] = True if payload.get("is_active") is None else bool(payload.get("is_active"))
         payload["requested_by"] = payload.get("requested_by") or (current_user or {}).get("user_id") or ""
@@ -309,9 +388,13 @@ class LabReservationRepository:
         if not payload["requested_by"]:
             raise ValueError("requested_by es requerido")
 
-        self._validate_no_overlap(payload["laboratory_id"], payload["start_at"], payload["end_at"])
+        if extra_payload:
+            payload.update({key: value for key, value in extra_payload.items() if value is not None})
 
-        data = self._client.request("POST", self._base, payload=payload)
+        if not skip_overlap_validation:
+            self._validate_no_overlap(payload["laboratory_id"], payload["start_at"], payload["end_at"])
+
+        data = self._client.request("POST", self._base, payload=payload, fallback_on_status_codes={400, 404, 422})
         if not isinstance(data, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al crear reserva")
         return _to_response(self._normalize_record(data, persist=False))
@@ -338,14 +421,19 @@ class LabReservationRepository:
             if status_to_check not in _FINAL_STATUSES:
                 self._validate_no_overlap(next_laboratory, next_start, next_end, skip_id=reservation_id)
 
-        data = self._client.request("PATCH", f"{self._base}/{reservation_id}", payload=payload)
+        data = self._client.request(
+            "PATCH",
+            f"{self._base}/{reservation_id}",
+            payload=payload,
+            fallback_on_status_codes={400, 404, 422},
+        )
         if not isinstance(data, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al actualizar reserva")
         return _to_response(self._normalize_record(data))
 
     def delete(self, reservation_id: str) -> bool:
         try:
-            self._client.request("DELETE", f"{self._base}/{reservation_id}")
+            self._client.request("DELETE", f"{self._base}/{reservation_id}", fallback_on_status_codes={404})
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return False

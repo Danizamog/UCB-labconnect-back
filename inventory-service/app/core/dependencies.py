@@ -88,7 +88,9 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Falta token Bearer")
 
     fallback_payload = _decode_token_payload(credentials.credentials)
-    return _resolve_live_payload(credentials.credentials, fallback_payload)
+    resolved_payload = _resolve_live_payload(credentials.credentials, fallback_payload)
+    resolved_payload["access_token"] = credentials.credentials
+    return resolved_payload
 
 
 def ensure_any_permission(current_user: dict, required_permissions: set[str], detail: str) -> None:

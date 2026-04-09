@@ -32,7 +32,6 @@ class Settings:
     )
     role_service_url: str = os.getenv("ROLE_SERVICE_URL", "http://127.0.0.1:8104")
     reservations_service_url: str = os.getenv("RESERVATIONS_SERVICE_URL", "http://127.0.0.1:8005")
-    supply_reservation_service_url: str = os.getenv("SUPPLY_RESERVATION_SERVICE_URL", "http://127.0.0.1:8006")
     cors_allowed_origins: list[str]
 
     def __init__(self) -> None:

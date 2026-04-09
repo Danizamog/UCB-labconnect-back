@@ -4,6 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.application.container import lab_block_repo, lab_reservation_repo, lab_schedule_repo, tutorial_session_repo
+from app.application.laboratory_access import ensure_user_can_reserve_laboratory
 from app.core.datetime_utils import combine_date_time, format_time, iter_time_ranges, now_local_naive, parse_datetime
 from app.core.dependencies import get_current_user
 from app.schemas.availability import AvailabilitySlot, LabAvailabilityResponse
@@ -32,8 +33,10 @@ def _has_overlap(slot_start: datetime, slot_end: datetime, event_start_raw: str,
 def get_lab_availability(
     laboratory_id: str,
     day: str = Query(..., description="Fecha en formato YYYY-MM-DD"),
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ) -> LabAvailabilityResponse:
+    ensure_user_can_reserve_laboratory(laboratory_id, current_user)
+
     try:
         current_date = datetime.strptime(day, "%Y-%m-%d").date()
     except ValueError as exc:
