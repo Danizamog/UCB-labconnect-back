@@ -6,7 +6,7 @@ from datetime import date, datetime
 import httpx
 
 from app.core.config import settings
-from app.core.datetime_utils import combine_date_time, iter_time_ranges, parse_datetime
+from app.core.datetime_utils import combine_date_time, iter_time_ranges, now_local_naive, parse_datetime
 from app.infrastructure.pocketbase_admin import PocketBaseAdminClient
 from app.infrastructure.pocketbase_base import PocketBaseClient
 from app.infrastructure.repositories.lab_schedule_repository import LabScheduleRepository
@@ -137,11 +137,14 @@ class LabReservationRepository:
         return items
 
     def _list_local_records(self, page: int = 1, per_page: int = 200) -> list[dict]:
-        data = self._client.fallback_request(
-            "GET",
-            self._base,
-            params={"page": page, "perPage": per_page, "sort": "start_at"},
-        )
+        try:
+            data = self._client.fallback_request(
+                "GET",
+                self._base,
+                params={"page": page, "perPage": per_page, "sort": "start_at"},
+            )
+        except ValueError:
+            return []
         if not isinstance(data, dict):
             return []
         records = data.get("items", [])
@@ -174,7 +177,10 @@ class LabReservationRepository:
         return data if isinstance(data, dict) else None
 
     def _get_local_record(self, record_id: str) -> dict | None:
-        data = self._client.fallback_request("GET", f"{self._base}/{record_id}")
+        try:
+            data = self._client.fallback_request("GET", f"{self._base}/{record_id}")
+        except ValueError:
+            return None
         return data if isinstance(data, dict) else None
 
     def _get_user_record(self, user_id: str) -> dict | None:
@@ -195,7 +201,10 @@ class LabReservationRepository:
                 raise
 
         if not user_record:
-            local_record = self._client.fallback_request("GET", f"{self._users_base}/{normalized}")
+            try:
+                local_record = self._client.fallback_request("GET", f"{self._users_base}/{normalized}")
+            except ValueError:
+                local_record = None
             if isinstance(local_record, dict):
                 user_record = local_record
 
@@ -290,6 +299,32 @@ class LabReservationRepository:
 
         return patch
 
+    def _build_auto_completion_patch(self, record: dict, *, now: datetime | None = None) -> dict:
+        current_status = str(record.get("status") or "").strip().lower()
+        is_active = bool(record.get("is_active", True))
+        if not is_active and current_status == "completed":
+            return {}
+
+        if current_status in {"rejected", "cancelled", "absent"}:
+            return {}
+
+        try:
+            end_at = parse_datetime(str(record.get("end_at") or ""))
+        except ValueError:
+            return {}
+
+        now_value = now or now_local_naive()
+        if end_at > now_value:
+            return {}
+
+        patch: dict[str, object] = {}
+        if current_status != "completed":
+            patch["status"] = "completed"
+        if is_active:
+            patch["is_active"] = False
+
+        return patch
+
     def _is_hidden_legacy_record(self, record: dict) -> bool:
         return (
             not bool(record.get("is_active", True))
@@ -299,6 +334,9 @@ class LabReservationRepository:
 
     def _normalize_record(self, record: dict, *, persist: bool = True) -> dict:
         patch = self._build_sanitization_patch(record)
+        completion_patch = self._build_auto_completion_patch(record)
+        for key, value in completion_patch.items():
+            patch.setdefault(key, value)
         if persist and patch:
             try:
                 updated = self._client.request(
@@ -319,6 +357,24 @@ class LabReservationRepository:
             merged.update(patch)
             return merged
         return record
+
+    def auto_complete_expired_reservations(self, *, now: datetime | None = None) -> int:
+        completed = 0
+        now_value = now or now_local_naive()
+
+        for record, persist in self._list_all_records():
+            patch = self._build_auto_completion_patch(record, now=now_value)
+            if not patch:
+                continue
+
+            if persist:
+                self._client.request("PATCH", f"{self._base}/{record.get('id')}", payload=patch)
+            else:
+                self._client.fallback_request("PATCH", f"{self._base}/{record.get('id')}", payload=patch)
+
+            completed += 1
+
+        return completed
 
     def sanitize_legacy_records(self) -> int:
         sanitized = 0

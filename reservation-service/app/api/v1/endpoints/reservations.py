@@ -1,5 +1,6 @@
 import math
 import re
+import logging
 from calendar import monthrange
 from datetime import datetime
 
@@ -24,6 +25,7 @@ from app.schemas.lab_reservation import (
 )
 
 router = APIRouter(prefix="/reservations", tags=["reservations"])
+logger = logging.getLogger(__name__)
 _USER_RESERVATION_MODIFICATION_WINDOW_SECONDS = 2 * 60 * 60
 _ABSENT_GRACE_PERIOD_SECONDS = 15 * 60
 _WALK_IN_START_TOLERANCE_SECONDS = 15 * 60
@@ -42,6 +44,53 @@ _SUPPORTED_SORT_FIELDS = {
     "updated",
     "date",
 }
+
+
+def _service_temporarily_unavailable(detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=detail,
+    )
+
+
+def _safe_list_schedules_for_validation() -> list:
+    try:
+        return lab_schedule_repo.list_all()
+    except Exception as exc:
+        logger.warning("No se pudieron cargar horarios para validacion: %s", exc)
+        raise _service_temporarily_unavailable(
+            "No se pudo validar el horario del laboratorio en este momento. Intenta nuevamente."
+        ) from exc
+
+
+def _safe_list_reservations_for_validation() -> list[LabReservationResponse]:
+    try:
+        return lab_reservation_repo.list_all()
+    except Exception as exc:
+        logger.warning("No se pudieron cargar reservas para validacion: %s", exc)
+        raise _service_temporarily_unavailable(
+            "No se pudo validar disponibilidad de reservas en este momento. Intenta nuevamente."
+        ) from exc
+
+
+def _safe_list_blocks_for_validation() -> list:
+    try:
+        return lab_block_repo.list_all()
+    except Exception as exc:
+        logger.warning("No se pudieron cargar bloqueos para validacion: %s", exc)
+        raise _service_temporarily_unavailable(
+            "No se pudo validar bloqueos del laboratorio en este momento. Intenta nuevamente."
+        ) from exc
+
+
+def _safe_list_public_tutorials_for_validation() -> list:
+    try:
+        return tutorial_session_repo.list_public()
+    except Exception as exc:
+        logger.warning("No se pudieron cargar tutorias para validacion: %s", exc)
+        raise _service_temporarily_unavailable(
+            "No se pudo validar tutorias activas en este momento. Intenta nuevamente."
+        ) from exc
 
 
 def _max_allowed_reservation_date(base_day):
@@ -64,7 +113,7 @@ def _has_schedule_overlap(start_at: datetime, end_at: datetime, other_start_raw:
 def _resolve_schedule_window(laboratory_id: str, reservation_day) -> tuple[datetime, datetime, int]:
     weekday = reservation_day.weekday()
     schedules = [
-        item for item in lab_schedule_repo.list_all()
+        item for item in _safe_list_schedules_for_validation()
         if item.laboratory_id == laboratory_id and item.weekday == weekday and item.is_active
     ]
 
@@ -135,7 +184,7 @@ def _validate_reservation_time_rules(
             ),
         )
 
-    for block in lab_block_repo.list_all():
+    for block in _safe_list_blocks_for_validation():
         if block.laboratory_id != laboratory_id or not block.is_active:
             continue
         if not block.start_at.startswith(start_at.date().isoformat()):
@@ -146,7 +195,7 @@ def _validate_reservation_time_rules(
                 detail="El bloque seleccionado no esta disponible porque el laboratorio se encuentra bloqueado o en mantenimiento",
             )
 
-    for reservation in lab_reservation_repo.list_all():
+    for reservation in _safe_list_reservations_for_validation():
         if reservation.laboratory_id != laboratory_id or not reservation.is_active:
             continue
         if skip_reservation_id and reservation.id == skip_reservation_id:
@@ -161,7 +210,7 @@ def _validate_reservation_time_rules(
                 detail="Ese bloque ya no esta disponible porque existe otra reserva activa en el mismo horario",
             )
 
-    for tutorial_session in tutorial_session_repo.list_public():
+    for tutorial_session in _safe_list_public_tutorials_for_validation():
         if tutorial_session.laboratory_id != laboratory_id:
             continue
         if not tutorial_session.start_at.startswith(start_at.date().isoformat()):
@@ -214,7 +263,7 @@ def _validate_walk_in_time_rules(
             detail="El walk-in esta fuera del horario habilitado del laboratorio",
         )
 
-    for block in lab_block_repo.list_all():
+    for block in _safe_list_blocks_for_validation():
         if block.laboratory_id != laboratory_id or not block.is_active:
             continue
         if not block.start_at.startswith(start_at.date().isoformat()):
@@ -225,7 +274,7 @@ def _validate_walk_in_time_rules(
                 detail="No puedes registrar un walk-in porque el laboratorio se encuentra bloqueado o en mantenimiento",
             )
 
-    for tutorial_session in tutorial_session_repo.list_public():
+    for tutorial_session in _safe_list_public_tutorials_for_validation():
         if tutorial_session.laboratory_id != laboratory_id:
             continue
         if not tutorial_session.start_at.startswith(start_at.date().isoformat()):
@@ -309,6 +358,14 @@ async def _broadcast_access_event(action: str, reservation: LabReservationRespon
 def _can_manage_reservations(current_user: dict) -> bool:
     permissions = set(current_user.get("permissions") or [])
     return current_user.get("role") == "admin" or "*" in permissions or bool(permissions.intersection(_MANAGEMENT_PERMISSIONS))
+
+
+def _safe_reservations_for_read() -> list[LabReservationResponse]:
+    try:
+        return lab_reservation_repo.list_all()
+    except Exception as exc:
+        logger.warning("No se pudieron cargar reservas para lectura: %s", exc)
+        return []
 
 
 def _reservation_field_value(reservation: LabReservationResponse, field: str) -> str:
@@ -597,7 +654,7 @@ def list_reservations(
     status_filter: str | None = Query(default=None, alias="status"),
     current_user: dict = Depends(get_current_user),
 ) -> list[LabReservationResponse]:
-    data = lab_reservation_repo.list_all()
+    data = _safe_reservations_for_read()
 
     if not _can_manage_reservations(current_user):
         requester = current_user.get("user_id") or ""
@@ -625,7 +682,7 @@ def search_reservations(
     where: str | None = Query(default=None),
     current_user: dict = Depends(get_current_user),
 ) -> PaginatedLabReservationResponse:
-    data = lab_reservation_repo.list_all()
+    data = _safe_reservations_for_read()
 
     if not _can_manage_reservations(current_user):
         requester = current_user.get("user_id") or ""
@@ -663,7 +720,7 @@ def search_reservations(
 @router.get("/mine", response_model=list[LabReservationResponse])
 def list_my_reservations(current_user: dict = Depends(get_current_user)) -> list[LabReservationResponse]:
     requester = current_user.get("user_id") or ""
-    return [_serialize_reservation(item) for item in lab_reservation_repo.list_all() if item.requested_by == requester]
+    return [_serialize_reservation(item) for item in _safe_reservations_for_read() if item.requested_by == requester]
 
 
 @router.get("/occupancy", response_model=OccupancyDashboardResponse)

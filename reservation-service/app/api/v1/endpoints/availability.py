@@ -1,5 +1,6 @@
 from calendar import monthrange
 from datetime import datetime
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -10,6 +11,7 @@ from app.core.dependencies import get_current_user
 from app.schemas.availability import AvailabilitySlot, LabAvailabilityResponse
 
 router = APIRouter(prefix="/availability", tags=["availability"])
+logger = logging.getLogger(__name__)
 
 
 def _max_allowed_reservation_date(base_day):
@@ -27,6 +29,27 @@ def _has_overlap(slot_start: datetime, slot_end: datetime, event_start_raw: str,
     event_start = parse_datetime(event_start_raw)
     event_end = parse_datetime(event_end_raw)
     return slot_start < event_end and event_start < slot_end
+
+
+def _safe_list_all(repo, name: str, *, critical: bool = False):
+    try:
+        return repo.list_all()
+    except Exception as exc:
+        logger.warning("No se pudo cargar %s para disponibilidad: %s", name, exc)
+        if critical:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"No se pudo verificar {name} en este momento. Intenta nuevamente.",
+            ) from exc
+        return []
+
+
+def _safe_list_public_tutorials():
+    try:
+        return tutorial_session_repo.list_public()
+    except Exception as exc:
+        logger.warning("No se pudo cargar tutorias para disponibilidad: %s", exc)
+        return []
 
 
 @router.get("/labs/{laboratory_id}", response_model=LabAvailabilityResponse)
@@ -69,7 +92,7 @@ def get_lab_availability(
     ranges = iter_time_ranges(day_start, day_end, slot_minutes)
 
     reservations = [
-        item for item in lab_reservation_repo.list_all()
+        item for item in _safe_list_all(lab_reservation_repo, "reservas", critical=True)
         if item.laboratory_id == laboratory_id
         and item.status not in {"rejected", "cancelled", "completed", "absent"}
         and item.is_active
@@ -77,13 +100,13 @@ def get_lab_availability(
     ]
 
     tutorial_sessions = [
-        item for item in tutorial_session_repo.list_public()
+        item for item in _safe_list_public_tutorials()
         if item.laboratory_id == laboratory_id
         and item.start_at.startswith(day)
     ]
 
     blocks = [
-        item for item in lab_block_repo.list_all()
+        item for item in _safe_list_all(lab_block_repo, "bloqueos", critical=True)
         if item.laboratory_id == laboratory_id
         and item.is_active
         and item.start_at.startswith(day)

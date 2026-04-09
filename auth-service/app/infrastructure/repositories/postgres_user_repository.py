@@ -428,3 +428,14 @@ class PostgresUserRepository:
         if not user.is_active:
             return None
         return user
+
+    def delete(self, user_id: str) -> bool:
+        normalized_id = user_id.strip()
+        if not normalized_id:
+            return False
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM users WHERE id = %s", (normalized_id,))
+                deleted = cur.rowcount > 0
+            conn.commit()
+        return deleted

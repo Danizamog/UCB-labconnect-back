@@ -11,6 +11,7 @@ class PocketBaseUserRepository:
         self,
         base_url: str,
         users_collection: str = "users",
+        role_collection: str = "role",
         auth_token: str | None = None,
         auth_identity: str | None = None,
         auth_password: str | None = None,
@@ -19,6 +20,7 @@ class PocketBaseUserRepository:
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._users_collection = users_collection
+        self._role_collection = role_collection
         self._timeout = timeout_seconds
         self._auth_identity = auth_identity
         self._auth_password = auth_password
@@ -49,6 +51,9 @@ class PocketBaseUserRepository:
 
     def _records_endpoint(self) -> str:
         return f"{self._users_endpoint()}/records"
+
+    def _role_records_endpoint(self) -> str:
+        return f"{self._base_url}/api/collections/{self._role_collection}/records"
 
     def _request(
         self,
@@ -136,19 +141,46 @@ class PocketBaseUserRepository:
         normalized_role = role_name.strip()
         return normalized_role or None
 
-    def _to_user(self, record: dict) -> User:
-        email = str(record.get("email", "")).strip().lower()
+    def _extract_role_info(self, record: dict) -> tuple[str | None, list[str]]:
+        role_name = self._map_role_name(record)
+        permissions: list[str] = []
+
         expanded_role = record.get("expand", {}).get("role") if isinstance(record.get("expand"), dict) else None
-        permissions = []
         if isinstance(expanded_role, dict):
-            role_permissions = expanded_role.get("permisos")
+            role_permissions = expanded_role.get("permisos") or expanded_role.get("permissions")
             if isinstance(role_permissions, list):
                 permissions = [str(item).strip() for item in role_permissions if str(item).strip()]
+
+        if role_name:
+            return role_name, permissions
+
+        raw_role_id = str(record.get("role") or "").strip()
+        if not raw_role_id:
+            return None, permissions
+
+        try:
+            role_record = self._request("GET", f"{self._role_records_endpoint()}/{raw_role_id}")
+        except httpx.HTTPStatusError:
+            return None, permissions
+
+        if not isinstance(role_record, dict):
+            return None, permissions
+
+        resolved_role_name = str(role_record.get("nombre") or role_record.get("name") or "").strip() or None
+        role_permissions = role_record.get("permisos") or role_record.get("permissions")
+        if isinstance(role_permissions, list):
+            permissions = [str(item).strip() for item in role_permissions if str(item).strip()]
+
+        return resolved_role_name, permissions
+
+    def _to_user(self, record: dict) -> User:
+        email = str(record.get("email", "")).strip().lower()
+        role_name, permissions = self._extract_role_info(record)
         return User(
             id=record.get("id"),
             username=email,
             name=(str(record.get("name", "")).strip() or None),
-            role=self._map_role_name(record),
+            role=role_name,
             profile_type=(str(record.get("profile_type", "")).strip() or None),
             phone=(str(record.get("phone", "")).strip() or None),
             academic_page=(str(record.get("academic_page", "")).strip() or None),
@@ -404,6 +436,19 @@ class PocketBaseUserRepository:
                 return expanded_user
 
         return self._to_user(record)
+
+    def delete(self, user_id: str) -> bool:
+        normalized_id = user_id.strip()
+        if not normalized_id:
+            return False
+        self._ensure_authenticated()
+        try:
+            self._request("DELETE", f"{self._records_endpoint()}/{normalized_id}")
+            return True
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return False
+            raise
 
     def close(self) -> None:
         self._client.close()

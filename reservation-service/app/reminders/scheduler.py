@@ -57,6 +57,18 @@ class ReservationReminderScheduler:
     async def _tick(self, now: datetime) -> None:
         self._prune_sent_reminders(now)
 
+        with contextlib.suppress(Exception):
+            completed_count = lab_reservation_repo.auto_complete_expired_reservations(now=now)
+            if completed_count:
+                await realtime_manager.broadcast(
+                    {
+                        "topic": "lab_reservation",
+                        "action": "auto_completed",
+                        "count": completed_count,
+                        "at": now.isoformat(),
+                    }
+                )
+
         for reservation in lab_reservation_repo.list_all():
             await self._process_reservation(reservation, now)
         for tutorial_session in tutorial_session_repo.list_public():
