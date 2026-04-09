@@ -2,8 +2,9 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.application.container import lab_reservation_repo, tutorial_session_repo
 from app.core.dependencies import get_current_user
-from app.core.datetime_utils import parse_datetime, parse_timestamp_to_local_naive
+from app.core.datetime_utils import now_local_naive, parse_datetime, parse_timestamp_to_local_naive
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
 from app.schemas.notification import MarkAllNotificationsReadResponse, UserNotificationResponse
 
@@ -13,6 +14,52 @@ _REMINDER_TOLERANCES = {
     "24h": (timedelta(hours=22), timedelta(hours=26)),
     "30m": (timedelta(minutes=20), timedelta(minutes=40)),
 }
+
+
+def _validate_reservation_reminder(payload: dict, reminder_start_at) -> bool:
+    reservation_id = str(payload.get("reservation_id") or "").strip()
+    if not reservation_id:
+        return True
+
+    reservation = lab_reservation_repo.get_by_id(reservation_id)
+    if reservation is None:
+        return False
+
+    if reservation.status != "approved" or not reservation.is_active:
+        return False
+
+    try:
+        current_start_at = parse_datetime(reservation.start_at)
+    except ValueError:
+        return False
+
+    return current_start_at == reminder_start_at
+
+
+def _validate_tutorial_reminder(notification: UserNotificationResponse, payload: dict, reminder_start_at) -> bool:
+    tutorial_session_id = str(payload.get("tutorial_session_id") or "").strip()
+    if not tutorial_session_id:
+        return True
+
+    tutorial_session = tutorial_session_repo.get_by_id(tutorial_session_id)
+    if tutorial_session is None:
+        return False
+
+    if not tutorial_session.is_published:
+        return False
+
+    recipient_user_id = str(notification.recipient_user_id or "").strip()
+    if recipient_user_id:
+        enrolled_ids = {str(item.student_id or "").strip() for item in tutorial_session.enrolled_students}
+        if recipient_user_id not in enrolled_ids:
+            return False
+
+    try:
+        current_start_at = parse_datetime(tutorial_session.start_at)
+    except ValueError:
+        return False
+
+    return current_start_at == reminder_start_at
 
 
 def _notification_buckets_for_user(current_user: dict) -> list[str]:
@@ -49,8 +96,17 @@ def _is_valid_reminder_notification(notification: UserNotificationResponse) -> b
     except ValueError:
         return True
 
+    if start_at <= now_local_naive():
+        return False
+
     remaining = start_at - created_at
-    return min_delta <= remaining <= max_delta
+    if not (min_delta <= remaining <= max_delta):
+        return False
+
+    if notification.notification_type == "reservation_reminder":
+        return _validate_reservation_reminder(payload, start_at)
+
+    return _validate_tutorial_reminder(notification, payload, start_at)
 
 
 @router.get("/mine", response_model=list[UserNotificationResponse])
