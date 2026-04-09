@@ -1,16 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.application.container import asset_repo
-from app.core.dependencies import get_current_user
-from app.schemas.asset import (
-    AssetCreate,
-    AssetResponse,
-    AssetStatusHistoryEntry,
-    AssetStatusUpdateRequest,
-    AssetUpdate,
-)
+from app.core.dependencies import ensure_any_permission, get_current_user
+from app.schemas.asset import AssetCreate, AssetResponse, AssetUpdate
 
 router = APIRouter(prefix="/assets", tags=["assets"])
+_MANAGE_ASSETS = {"gestionar_inventario"}
+_MANAGE_ASSET_STATUS = {"gestionar_estado_equipos", "gestionar_mantenimiento", "gestionar_inventario"}
 
 
 @router.get("", response_model=list[AssetResponse])
@@ -26,17 +22,9 @@ def get_asset(asset_id: str, _: dict = Depends(get_current_user)) -> AssetRespon
     return asset
 
 
-@router.get("/{asset_id}/status-history", response_model=list[AssetStatusHistoryEntry])
-def list_asset_status_history(
-    asset_id: str,
-    limit: int = Query(default=100, ge=1, le=200),
-    _: dict = Depends(get_current_user),
-) -> list[AssetStatusHistoryEntry]:
-    return asset_repo.list_status_history(asset_id, limit=limit)
-
-
 @router.post("", response_model=AssetResponse, status_code=status.HTTP_201_CREATED)
-def create_asset(body: AssetCreate, _: dict = Depends(get_current_user)) -> AssetResponse:
+def create_asset(body: AssetCreate, current_user: dict = Depends(get_current_user)) -> AssetResponse:
+    ensure_any_permission(current_user, _MANAGE_ASSETS, "No tienes permisos para crear equipos")
     try:
         return asset_repo.create(body)
     except ValueError as exc:
@@ -45,7 +33,8 @@ def create_asset(body: AssetCreate, _: dict = Depends(get_current_user)) -> Asse
 
 @router.patch("/{asset_id}", response_model=AssetResponse)
 @router.put("/{asset_id}", response_model=AssetResponse)
-def update_asset(asset_id: str, body: AssetUpdate, _: dict = Depends(get_current_user)) -> AssetResponse:
+def update_asset(asset_id: str, body: AssetUpdate, current_user: dict = Depends(get_current_user)) -> AssetResponse:
+    ensure_any_permission(current_user, _MANAGE_ASSETS, "No tienes permisos para editar equipos")
     try:
         asset = asset_repo.update(asset_id, body)
     except ValueError as exc:
@@ -56,19 +45,10 @@ def update_asset(asset_id: str, body: AssetUpdate, _: dict = Depends(get_current
 
 
 @router.patch("/{asset_id}/status", response_model=AssetResponse)
-def update_asset_status(
-    asset_id: str,
-    body: AssetStatusUpdateRequest,
-    current_user: dict = Depends(get_current_user),
-) -> AssetResponse:
-    changed_by = current_user.get("username") or current_user.get("email") or "sistema"
+def update_asset_status(asset_id: str, body: dict, current_user: dict = Depends(get_current_user)) -> AssetResponse:
+    ensure_any_permission(current_user, _MANAGE_ASSET_STATUS, "No tienes permisos para cambiar el estado de equipos")
     try:
-        asset = asset_repo.update_status(
-            asset_id,
-            status=body.status,
-            changed_by=str(changed_by),
-            notes=body.notes,
-        )
+        asset = asset_repo.update(asset_id, AssetUpdate(status=body.get("status")))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     if asset is None:
@@ -77,7 +57,8 @@ def update_asset_status(
 
 
 @router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_asset(asset_id: str, _: dict = Depends(get_current_user)) -> None:
+def delete_asset(asset_id: str, current_user: dict = Depends(get_current_user)) -> None:
+    ensure_any_permission(current_user, _MANAGE_ASSETS, "No tienes permisos para eliminar equipos")
     deleted = asset_repo.delete(asset_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset no encontrado")

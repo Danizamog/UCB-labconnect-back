@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -7,6 +9,7 @@ from app.core.dependencies import auth_validation_client
 from app.reminders.scheduler import reservation_reminder_scheduler
 
 app = FastAPI(title="LabConnect Reservation Service", version="1.0.0")
+logger = logging.getLogger(__name__)
 
 origins = [
     "http://localhost:5173",
@@ -31,7 +34,10 @@ async def health() -> dict:
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    lab_reservation_repo.sanitize_legacy_records()
+    try:
+        lab_reservation_repo.sanitize_legacy_records()
+    except Exception as exc:  # pragma: no cover - startup resilience for unavailable external DB
+        logger.warning("No se pudieron sanear reservas legacy durante el arranque: %s", exc)
     reservation_reminder_scheduler.start()
 
 

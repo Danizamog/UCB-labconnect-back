@@ -1,10 +1,47 @@
-from fastapi import APIRouter, Request
+import asyncio
+import logging
+
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
+from websockets.asyncio.client import connect as ws_connect
 
 from app.core.config import settings
 from app.infrastructure.http.proxy import forward_request
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+@router.websocket("/v1/ws/reservations")
+async def proxy_reservations_ws(websocket: WebSocket) -> None:
+    await websocket.accept()
+
+    ws_base = settings.reservations_service_url.replace("http://", "ws://").replace("https://", "wss://")
+    target_url = f"{ws_base}/v1/ws/reservations"
+
+    try:
+        async with ws_connect(target_url) as upstream:
+
+            async def forward_to_client() -> None:
+                async for message in upstream:
+                    await websocket.send_text(message if isinstance(message, str) else message.decode())
+
+            async def forward_to_upstream() -> None:
+                while True:
+                    data = await websocket.receive_text()
+                    await upstream.send(data)
+
+            tasks = [
+                asyncio.create_task(forward_to_client()),
+                asyncio.create_task(forward_to_upstream()),
+            ]
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.debug("WebSocket proxy closed: %s", exc)
 
 
 # Auth Service
@@ -271,23 +308,4 @@ async def proxy_penalties_path(path: str, request: Request) -> Response:
 )
 async def proxy_penalties_root(request: Request) -> Response:
     target_url = f"{settings.reservations_service_url}/v1/penalties"
-    return await forward_request(target_url, request)
-
-
-# Supply Reservation Service - Supply reservations
-@router.api_route(
-    "/api/v1/supply-reservations/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_supply_reservations_path(path: str, request: Request) -> Response:
-    target_url = f"{settings.supply_reservation_service_url}/v1/supply-reservations/{path}"
-    return await forward_request(target_url, request)
-
-
-@router.api_route(
-    "/api/v1/supply-reservations",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_supply_reservations_root(request: Request) -> Response:
-    target_url = f"{settings.supply_reservation_service_url}/v1/supply-reservations"
     return await forward_request(target_url, request)

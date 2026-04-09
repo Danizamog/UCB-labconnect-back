@@ -25,6 +25,21 @@ class TutorialSessionCreate(BaseModel):
     is_published: bool | None = None
 
 
+class TutorialSessionUpdate(BaseModel):
+    topic: str | None = None
+    description: str | None = None
+    laboratory_id: str | None = None
+    location: str | None = None
+    session_date: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    max_students: int | None = None
+    tutor_id: str | None = None
+    tutor_name: str | None = None
+    tutor_email: str | None = None
+    is_published: bool | None = None
+
+
 class TutorialSessionResponse(BaseModel):
     id: str
     tutor_id: str

@@ -7,6 +7,7 @@ from app.infrastructure.google.google_identity import GoogleIdentityTokenVerifie
 from app.infrastructure.security.token_provider import create_access_token
 
 ACCOUNT_NOT_RECOGNIZED_MESSAGE = "Cuenta no reconocida"
+DEFAULT_GOOGLE_ROLE = "Estudiante"
 
 
 def _is_in_allowed_domain(email: str, configured_domain: str) -> bool:
@@ -44,21 +45,25 @@ class LoginWithGoogle:
                 User(
                     username=username,
                     name=google_user["name"],
-                    role="user",
+                    role=DEFAULT_GOOGLE_ROLE,
                     profile_type="student",
                 ),
                 secrets.token_urlsafe(24),
             )
         elif not user.is_active:
             raise ValueError(ACCOUNT_NOT_RECOGNIZED_MESSAGE)
-        elif google_user["name"] and google_user["name"] != user.name:
+        elif (
+            (google_user["name"] and google_user["name"] != user.name)
+            or (user.role or "").strip().lower() in {"", "user"}
+            or not user.profile_type
+        ):
             user = self.repository.save(
                 User(
                     id=user.id,
                     username=user.username,
-                    name=google_user["name"],
-                    role=user.role,
-                    profile_type=user.profile_type,
+                    name=google_user["name"] or user.name,
+                    role=user.role if (user.role or "").strip().lower() not in {"", "user"} else DEFAULT_GOOGLE_ROLE,
+                    profile_type=user.profile_type or "student",
                     phone=user.phone,
                     academic_page=user.academic_page,
                     faculty=user.faculty,

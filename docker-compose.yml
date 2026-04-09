@@ -1,4 +1,16 @@
 services:
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: labconnect-mailpit
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8025"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   auth-service:
     build:
       context: ./auth-service
@@ -14,6 +26,15 @@ services:
       - POCKETBASE_URL=${POCKETBASE_URL}
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
       - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
+      - POCKETBASE_RETRY_SECONDS=${POCKETBASE_RETRY_SECONDS:-60}
+      - DATA_MODE=${DATA_MODE:-pocketbase}
+      - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   inventory-service:
     build:
@@ -23,10 +44,20 @@ services:
       - "8003:8003"
     environment:
       - AUTH_SERVICE_URL=http://auth-service:8001
+      - INVENTORY_SERVICE_URL=http://inventory-service:8003
       - SECRET_KEY=${SECRET_KEY}
       - POCKETBASE_URL=${POCKETBASE_URL}
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
       - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
+      - POCKETBASE_RETRY_SECONDS=${POCKETBASE_RETRY_SECONDS:-60}
+      - DATA_MODE=${DATA_MODE:-pocketbase}
+      - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   role-service:
     build:
@@ -39,10 +70,20 @@ services:
         max-file: "3"
     environment:
       - AUTH_SERVICE_URL=http://auth-service:8001
+      - INVENTORY_SERVICE_URL=http://inventory-service:8003
       - SECRET_KEY=${SECRET_KEY}
       - POCKETBASE_URL=${POCKETBASE_URL}
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
       - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
+      - POCKETBASE_RETRY_SECONDS=${POCKETBASE_RETRY_SECONDS:-60}
+      - DATA_MODE=${DATA_MODE:-pocketbase}
+      - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   reservation-service:
     build:
@@ -54,27 +95,30 @@ services:
       - ./reservation-service/data:/app/data
     environment:
       - AUTH_SERVICE_URL=http://auth-service:8001
+      - INVENTORY_SERVICE_URL=http://inventory-service:8003
       - SECRET_KEY=${SECRET_KEY}
       - POCKETBASE_URL=${POCKETBASE_URL}
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
       - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
       - POCKETBASE_USERS_COLLECTION=${POCKETBASE_USERS_COLLECTION:-users}
+      - POCKETBASE_RETRY_SECONDS=${POCKETBASE_RETRY_SECONDS:-60}
       - TUTORIAL_SESSIONS_STORAGE_PATH=/app/data/tutorial_sessions.json
-
-  supply-reservation-service:
-    build:
-      context: ./supply-reservation-service
-    container_name: supply-reservation-service
-    ports:
-      - "8006:8006"
-    environment:
-      - AUTH_SERVICE_URL=http://auth-service:8001
-      - SECRET_KEY=${SECRET_KEY}
-      - POCKETBASE_URL=${POCKETBASE_URL}
-      - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
-      - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
-      - POCKETBASE_INVENTORY_STOCK_ITEMS_COLLECTION=${POCKETBASE_INVENTORY_STOCK_ITEMS_COLLECTION:-inventory_stock_items_v2}
-      - POCKETBASE_SUPPLY_RESERVATIONS_COLLECTION=${POCKETBASE_SUPPLY_RESERVATIONS_COLLECTION:-supply_reservation}
+      - DATA_MODE=${DATA_MODE:-pocketbase}
+      - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
+      - SMTP_HOST=mailpit
+      - SMTP_PORT=1025
+      - SMTP_SENDER=${SMTP_SENDER:-labconnect@ucb.edu.bo}
+      - SMTP_USE_TLS=false
+      - SMTP_USE_SSL=false
+    depends_on:
+      mailpit:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8005/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
   
   api-gateway:
     build:
@@ -90,12 +134,15 @@ services:
       - INVENTORY_SERVICE_URL=http://inventory-service:8003
       - ROLE_SERVICE_URL=http://role-service:8004
       - RESERVATIONS_SERVICE_URL=http://reservation-service:8005
-      - SUPPLY_RESERVATION_SERVICE_URL=http://supply-reservation-service:8006
     ports:
       - "${API_GATEWAY_PORT:-8000}:8000"
     depends_on:
-      - auth-service
-      - inventory-service
-      - role-service
-      - reservation-service
-      - supply-reservation-service
+      auth-service:
+        condition: service_healthy
+      inventory-service:
+        condition: service_healthy
+      role-service:
+        condition: service_healthy
+      reservation-service:
+        condition: service_healthy
+

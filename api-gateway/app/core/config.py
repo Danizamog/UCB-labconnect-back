@@ -32,15 +32,27 @@ class Settings:
     )
     role_service_url: str = os.getenv("ROLE_SERVICE_URL", "http://127.0.0.1:8104")
     reservations_service_url: str = os.getenv("RESERVATIONS_SERVICE_URL", "http://127.0.0.1:8005")
-    supply_reservation_service_url: str = os.getenv("SUPPLY_RESERVATION_SERVICE_URL", "http://127.0.0.1:8006")
     cors_allowed_origins: list[str]
+    cors_allowed_origin_regex: str | None
 
     def __init__(self) -> None:
-        raw_origins = os.getenv(
-            "CORS_ALLOWED_ORIGINS",
-            "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",
-        )
+        explicit_cors = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+        explicit_cors_regex = os.getenv("CORS_ALLOWED_ORIGIN_REGEX", "").strip()
+        frontend_urls = os.getenv("FRONTEND_URLS", "").strip()
+
+        if explicit_cors:
+            raw_origins = explicit_cors
+        elif frontend_urls:
+            raw_origins = frontend_urls
+        else:
+            raw_origins = (
+                "http://localhost:5173,http://127.0.0.1:5173,"
+                "http://localhost:4173,http://127.0.0.1:4173"
+            )
+
         self.cors_allowed_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+        # Cloudflare Pages preview/prod domains can vary; regex avoids hardcoding each subdomain.
+        self.cors_allowed_origin_regex = explicit_cors_regex or r"^https://([a-zA-Z0-9-]+\.)*pages\.dev$"
 
 
 settings = Settings()
