@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from threading import Lock
 
+from app.infrastructure.cache_utils import TTLCache
 from app.infrastructure.repositories.asset_maintenance_repository import AssetMaintenanceRepository
 from app.infrastructure.repositories.loan_record_repository import LoanRecordRepository
 from app.schemas.asset import AssetResponse
@@ -38,12 +39,42 @@ class _FakeAdminClient:
     def get_record(self, collection: str, record_id: str) -> dict | None:
         return self.records.get(collection, {}).get(record_id)
 
-    def list_records(self, collection: str, sort: str | None = None) -> list[dict]:
+    def list_records(
+        self,
+        collection: str,
+        sort: str | None = None,
+        filter: str | None = None,
+        per_page: int = 200,
+        max_items: int | None = None,
+    ) -> list[dict]:
         items = list(self.records.get(collection, {}).values())
+        if filter:
+            clauses = [clause.strip() for clause in filter.split("&&") if clause.strip()]
+            filtered_items: list[dict] = []
+            for item in items:
+                matches_all = True
+                for clause in clauses:
+                    if "~" in clause:
+                        field, expected = clause.split("~", 1)
+                        if expected.strip().strip('"').lower() not in str(item.get(field.strip()) or "").lower():
+                            matches_all = False
+                            break
+                    elif "=" in clause:
+                        field, expected = clause.split("=", 1)
+                        if str(item.get(field.strip()) or "") != expected.strip().strip('"'):
+                            matches_all = False
+                            break
+                if matches_all:
+                    filtered_items.append(item)
+            items = filtered_items
         if sort and sort.startswith("-"):
             key = sort[1:]
             items.sort(key=lambda item: str(item.get(key) or ""), reverse=True)
-        return items
+        elif sort:
+            items.sort(key=lambda item: str(item.get(sort) or ""))
+        if max_items is not None:
+            return items[:max_items]
+        return items[:per_page] if per_page and len(items) > per_page else items
 
 
 class _FakeBaseClient:
@@ -107,6 +138,7 @@ def _build_maintenance_repo(*, asset_repo: _FakeAssetRepo, admin_client: _FakeAd
     repo._admin_client = admin_client or _FakeAdminClient()
     repo._collection_ready = True
     repo._collection_lock = Lock()
+    repo._records_cache = TTLCache[list[dict]](ttl_seconds=3.0)
     return repo
 
 
@@ -125,6 +157,7 @@ def _build_loan_repo(
     repo._admin_client = admin_client or _FakeAdminClient()
     repo._collection_ready = True
     repo._collection_lock = Lock()
+    repo._records_cache = TTLCache[list[dict]](ttl_seconds=3.0)
     return repo
 
 

@@ -11,6 +11,6 @@ _pb_client = PocketBaseClient()
 lab_reservation_repo = LabReservationRepository(_pb_client)
 lab_schedule_repo = LabScheduleRepository(_pb_client)
 lab_block_repo = LabBlockRepository(_pb_client)
-tutorial_session_repo = TutorialSessionRepository(lab_reservation_repo)
+tutorial_session_repo = TutorialSessionRepository(_pb_client, lab_reservation_repo)
 user_penalty_repo = penalty_store
 lab_access_session_repo = LabAccessSessionRepository()

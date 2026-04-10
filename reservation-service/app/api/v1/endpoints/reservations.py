@@ -293,6 +293,25 @@ def _sort_reservations(items: list[LabReservationResponse], sort_by: str, sort_t
     )
 
 
+def _validate_sort_params(sort_by: str, sort_type: str) -> tuple[str, str]:
+    normalized_sort_by = str(sort_by or "start_at").strip()
+    normalized_sort_type = str(sort_type or "ASC").strip().upper()
+
+    if normalized_sort_by not in _SUPPORTED_SORT_FIELDS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"sortBy invalido: {normalized_sort_by}",
+        )
+
+    if normalized_sort_type not in {"ASC", "DESC"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"sortType invalido: {normalized_sort_type}",
+        )
+
+    return normalized_sort_by, normalized_sort_type
+
+
 def _ensure_user_can_change_reservation(
     reservation: LabReservationResponse,
     *,
@@ -539,28 +558,47 @@ def search_reservations(
     where: str | None = Query(default=None),
     current_user: dict = Depends(get_current_user),
 ) -> PaginatedLabReservationResponse:
-    data = lab_reservation_repo.list_all()
+    normalized_sort_by, normalized_sort_type = _validate_sort_params(sort_by, sort_type)
+    requester = None if _can_manage_reservations(current_user) else str(current_user.get("user_id") or "")
+    normalized_where = str(where or "").strip() or None
 
-    if not _can_manage_reservations(current_user):
-        requester = current_user.get("user_id") or ""
-        data = [item for item in data if item.requested_by == requester]
+    if normalized_where is None:
+        paginated_source_items, total_elements = lab_reservation_repo.search_page(
+            laboratory_id=laboratory_id,
+            day=day,
+            status_filter=status_filter,
+            requested_by=requester,
+            page_number=page_number,
+            page_size=page_size,
+            sort_by=normalized_sort_by,
+            sort_type=normalized_sort_type,
+        )
+        paginated_items = [
+            LabReservationResponse.model_validate(item)
+            for item in lab_access_session_repo.enrich_reservations(paginated_source_items)
+        ]
+    else:
+        source_items = lab_reservation_repo.list_filtered(
+            laboratory_id=laboratory_id,
+            day=day,
+            status_filter=status_filter,
+            requested_by=requester,
+            sort_by=normalized_sort_by,
+            sort_type=normalized_sort_type,
+        )
+        serialized = [
+            LabReservationResponse.model_validate(item)
+            for item in lab_access_session_repo.enrich_reservations(source_items)
+        ]
+        filtered = _apply_where_filter(serialized, normalized_where)
+        ordered = _sort_reservations(filtered, normalized_sort_by, normalized_sort_type)
 
-    if laboratory_id:
-        data = [item for item in data if item.laboratory_id == laboratory_id]
-    if status_filter:
-        data = [item for item in data if item.status == status_filter]
-    if day:
-        data = [item for item in data if item.start_at.startswith(day)]
+        total_elements = len(ordered)
+        start_index = page_number * page_size
+        end_index = start_index + page_size
+        paginated_items = ordered[start_index:end_index]
 
-    serialized = [_serialize_reservation(item) for item in data]
-    filtered = _apply_where_filter(serialized, where)
-    ordered = _sort_reservations(filtered, sort_by, sort_type)
-
-    total_elements = len(ordered)
     total_pages = math.ceil(total_elements / page_size) if total_elements > 0 else 0
-    start_index = page_number * page_size
-    end_index = start_index + page_size
-    paginated_items = ordered[start_index:end_index]
 
     return PaginatedLabReservationResponse(
         items=paginated_items,
@@ -568,9 +606,9 @@ def search_reservations(
         pageSize=page_size,
         totalElements=total_elements,
         totalPages=total_pages,
-        sortBy=str(sort_by or "start_at"),
-        sortType=str(sort_type or "DESC").upper(),
-        where=str(where or ""),
+        sortBy=normalized_sort_by,
+        sortType=normalized_sort_type,
+        where=str(normalized_where or ""),
     )
 
 

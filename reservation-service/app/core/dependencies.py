@@ -13,15 +13,15 @@ auth_validation_client = httpx.Client(
 )
 
 
-def _decode_token_payload(token: str) -> dict:
+def _decode_token_payload(token: str) -> dict | None:
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
-    except JWTError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalido o expirado") from exc
+    except JWTError:
+        return None
 
-    subject = payload.get("sub")
+    subject = payload.get("sub") or payload.get("subject")
     if not subject:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalido o expirado")
+        return None
 
     permissions = payload.get("permissions")
     if not isinstance(permissions, list):
@@ -37,9 +37,13 @@ def _decode_token_payload(token: str) -> dict:
     }
 
 
-def _resolve_live_payload(token: str, fallback_payload: dict) -> dict:
+def _resolve_live_payload(token: str, fallback_payload: dict | None) -> dict:
     auth_service_url = settings.auth_service_url.strip().rstrip("/")
+    fallback_payload = fallback_payload or {}
+
     if not auth_service_url:
+        if not fallback_payload:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalido o expirado")
         return fallback_payload
 
     try:
@@ -71,6 +75,8 @@ def _resolve_live_payload(token: str, fallback_payload: dict) -> dict:
 
     body = response.json()
     if not isinstance(body, dict):
+        if not fallback_payload:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalido o expirado")
         return fallback_payload
 
     live_permissions = body.get("permissions")
@@ -78,11 +84,11 @@ def _resolve_live_payload(token: str, fallback_payload: dict) -> dict:
         live_permissions = fallback_payload.get("permissions") or []
 
     return {
-        "username": str(body.get("subject") or body.get("sub") or fallback_payload["username"]),
+        "username": str(body.get("subject") or body.get("sub") or fallback_payload.get("username", "")),
         "role": str(body.get("role") or fallback_payload.get("role") or "user"),
         "permissions": [str(p).strip() for p in live_permissions if str(p).strip()],
         "user_id": str(body.get("user_id") or fallback_payload.get("user_id") or ""),
-        "name": str(body.get("name") or fallback_payload.get("name") or fallback_payload["username"]),
+        "name": str(body.get("name") or fallback_payload.get("name") or fallback_payload.get("username", "")),
         "email": str(body.get("email") or fallback_payload.get("email") or ""),
     }
 
@@ -95,6 +101,14 @@ def get_current_user(
 
     fallback_payload = _decode_token_payload(credentials.credentials)
     return _resolve_live_payload(credentials.credentials, fallback_payload)
+
+
+def validate_token(token: str) -> dict:
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Falta token Bearer")
+
+    fallback_payload = _decode_token_payload(token)
+    return _resolve_live_payload(token, fallback_payload)
 
 
 def ensure_any_permission(current_user: dict, required_permissions: set[str], detail: str) -> None:

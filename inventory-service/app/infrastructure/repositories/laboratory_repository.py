@@ -1,5 +1,6 @@
 import httpx
 
+from app.infrastructure.cache_utils import TTLCache
 from app.infrastructure.pocketbase_base import PocketBaseClient
 from app.schemas.laboratory import LaboratoryCreate, LaboratoryResponse, LaboratoryUpdate
 
@@ -32,46 +33,65 @@ class LaboratoryRepository:
     def __init__(self, client: PocketBaseClient) -> None:
         self._client = client
         self._base = f"/api/collections/{_COLLECTION}/records"
+        self._list_cache = TTLCache[list[LaboratoryResponse]](ttl_seconds=10.0)
+        self._detail_cache = TTLCache[LaboratoryResponse | None](ttl_seconds=10.0)
 
-    def list_all(self, page: int = 1, per_page: int = 50) -> list[LaboratoryResponse]:
-        items: list[LaboratoryResponse] = []
-        current_page = page
+    def _invalidate_cache(self) -> None:
+        self._list_cache.invalidate()
+        self._detail_cache.invalidate()
 
-        while True:
-            data = self._client.request(
-                "GET",
-                self._base,
-                params={"page": current_page, "perPage": per_page, "sort": "name", "expand": "area_id"},
-            )
-            if not isinstance(data, dict):
-                break
-            records = data.get("items", [])
-            if not isinstance(records, list) or not records:
-                break
-            items.extend(_to_response(r) for r in records if isinstance(r, dict))
-            total_pages = int(data.get("totalPages", current_page))
-            if current_page >= total_pages:
-                break
-            current_page += 1
+    def list_all(self, page: int = 1, per_page: int = 200) -> list[LaboratoryResponse]:
+        cache_key = ("list_all", page, per_page)
 
-        return items
+        def load() -> list[LaboratoryResponse]:
+            items: list[LaboratoryResponse] = []
+            current_page = page
+
+            while True:
+                data = self._client.request(
+                    "GET",
+                    self._base,
+                    params={"page": current_page, "perPage": per_page, "sort": "name", "expand": "area_id"},
+                )
+                if not isinstance(data, dict):
+                    break
+                records = data.get("items", [])
+                if not isinstance(records, list) or not records:
+                    break
+                items.extend(_to_response(r) for r in records if isinstance(r, dict))
+                total_pages = int(data.get("totalPages", current_page))
+                if current_page >= total_pages:
+                    break
+                current_page += 1
+
+            return items
+
+        return self._list_cache.get_or_set(cache_key, load)
 
     def get_by_id(self, lab_id: str) -> LaboratoryResponse | None:
-        try:
-            data = self._client.request("GET", f"{self._base}/{lab_id}", params={"expand": "area_id"})
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return None
-            raise
-        if not isinstance(data, dict):
+        normalized_id = str(lab_id or "").strip()
+        if not normalized_id:
             return None
-        return _to_response(data)
+
+        def load() -> LaboratoryResponse | None:
+            try:
+                data = self._client.request("GET", f"{self._base}/{normalized_id}", params={"expand": "area_id"})
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    return None
+                raise
+            if not isinstance(data, dict):
+                return None
+            return _to_response(data)
+
+        return self._detail_cache.get_or_set(("detail", normalized_id), load)
 
     def create(self, body: LaboratoryCreate) -> LaboratoryResponse:
         payload = body.model_dump()
         data = self._client.request("POST", self._base, payload=payload, params={"expand": "area_id"})
         if not isinstance(data, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al crear el laboratorio")
+        self._invalidate_cache()
         return _to_response(data)
 
     def update(self, lab_id: str, body: LaboratoryUpdate) -> LaboratoryResponse | None:
@@ -82,6 +102,7 @@ class LaboratoryRepository:
         data = self._client.request("PATCH", f"{self._base}/{lab_id}", payload=payload, params={"expand": "area_id"})
         if not isinstance(data, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al actualizar el laboratorio")
+        self._invalidate_cache()
         return _to_response(data)
 
     def delete(self, lab_id: str) -> bool:
@@ -91,4 +112,5 @@ class LaboratoryRepository:
             if exc.response.status_code == 404:
                 return False
             raise
+        self._invalidate_cache()
         return True

@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.infrastructure.cache_utils import TTLCache
 from app.infrastructure.pocketbase_base import PocketBaseClient as BasePocketBaseClient
 from app.infrastructure.pocketbase_client import PocketBaseClient as AdminPocketBaseClient
 from app.schemas.asset import AssetResponse, AssetUpdate
@@ -20,6 +21,10 @@ from app.schemas.asset_maintenance import (
 
 def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _escape_filter_value(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
 
 
 class AssetMaintenanceRepository:
@@ -38,6 +43,10 @@ class AssetMaintenanceRepository:
         )
         self._collection_ready = False
         self._collection_lock = Lock()
+        self._records_cache = TTLCache[list[dict[str, Any]]](ttl_seconds=3.0)
+
+    def _invalidate_cache(self) -> None:
+        self._records_cache.invalidate()
 
     def _ensure_collection(self) -> None:
         if self._collection_ready or not self._admin_client.enabled:
@@ -107,19 +116,29 @@ class AssetMaintenanceRepository:
             updated=record.get("updated", ""),
         )
 
-    def _list_raw(self) -> list[dict[str, Any]]:
+    def _list_raw(self, *, filter_expression: str | None = None) -> list[dict[str, Any]]:
         self._ensure_collection()
-        return self._admin_client.list_records(self._collection, sort="-reported_at")
+        cache_key = ("raw", filter_expression or "")
+        return self._records_cache.get_or_set(
+            cache_key,
+            lambda: self._admin_client.list_records(
+                self._collection,
+                sort="-reported_at",
+                filter=filter_expression,
+                per_page=200,
+            ),
+        )
 
     def list_all(self, *, status_filter: str | None = None) -> list[AssetMaintenanceTicketResponse]:
-        items = [self._to_response(record) for record in self._list_raw()]
-        if status_filter:
-            items = [item for item in items if item.status == status_filter]
-        return items
+        filter_expression = f'status="{_escape_filter_value(status_filter)}"' if status_filter else None
+        return [self._to_response(record) for record in self._list_raw(filter_expression=filter_expression)]
 
     def list_for_asset(self, asset_id: str) -> list[AssetMaintenanceTicketResponse]:
         normalized_asset_id = str(asset_id or "").strip()
-        return [item for item in self.list_all() if item.asset_id == normalized_asset_id]
+        if not normalized_asset_id:
+            return []
+        filter_expression = f'asset_id="{_escape_filter_value(normalized_asset_id)}"'
+        return [self._to_response(record) for record in self._list_raw(filter_expression=filter_expression)]
 
     def get_by_id(self, ticket_id: str) -> AssetMaintenanceTicketResponse | None:
         self._ensure_collection()
@@ -143,16 +162,25 @@ class AssetMaintenanceRepository:
         if not self._admin_client.enabled:
             return None
 
-        candidates = self._admin_client.list_records(self._loan_collection, sort="-loaned_at")
-        asset_keys = {str(asset_id or "").strip()}
+        loan_filter_clauses = [f'asset_id="{_escape_filter_value(str(asset_id or "").strip())}"']
         if asset_source_id:
-            asset_keys.add(str(asset_source_id).strip())
+            loan_filter_clauses.append(f'asset_id="{_escape_filter_value(str(asset_source_id).strip())}"')
 
-        for record in candidates:
-            raw_asset_id = str(record.get("asset_id") or "").strip()
-            if raw_asset_id and raw_asset_id in asset_keys:
-                return record
-        return None
+        latest_match: dict[str, Any] | None = None
+        for clause in loan_filter_clauses:
+            matches = self._admin_client.list_records(
+                self._loan_collection,
+                sort="-loaned_at",
+                filter=clause,
+                per_page=1,
+                max_items=1,
+            )
+            if matches:
+                candidate = matches[0]
+                if latest_match is None or str(candidate.get("loaned_at") or "") > str(latest_match.get("loaned_at") or ""):
+                    latest_match = candidate
+
+        return latest_match
 
     def _find_open_ticket_for_asset(self, asset_id: str) -> AssetMaintenanceTicketResponse | None:
         for item in self.list_for_asset(asset_id):
@@ -199,6 +227,7 @@ class AssetMaintenanceRepository:
 
         self._ensure_collection()
         record = self._admin_client.create_record(self._collection, payload)
+        self._invalidate_cache()
         self._asset_repo.update(
             asset_id,
             AssetUpdate(
@@ -228,6 +257,7 @@ class AssetMaintenanceRepository:
                 "resolution_notes": body.resolution_notes.strip(),
             },
         )
+        self._invalidate_cache()
         self._asset_repo.update(
             ticket.asset_id,
             AssetUpdate(

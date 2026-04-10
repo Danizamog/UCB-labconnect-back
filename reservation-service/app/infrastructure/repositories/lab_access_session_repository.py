@@ -141,13 +141,10 @@ class LabAccessSessionRepository:
         return self._to_response(updated)
 
     def enrich_reservation(self, reservation) -> dict:
-        access_session = self.get_open_by_reservation(reservation.id)
-        if access_session is None:
-            historical_session = next((item for item in self.list_all() if item.reservation_id == reservation.id), None)
-        else:
-            historical_session = access_session
-
-        session = historical_session
+        enriched = self.enrich_reservations([reservation])
+        if enriched:
+            return enriched[0]
+        session = None
         return {
             **reservation.model_dump(),
             "requested_by_name": session.occupant_name if session else "",
@@ -157,6 +154,45 @@ class LabAccessSessionRepository:
             "check_out_at": session.check_out_at if session else "",
             "is_walk_in": bool(session.is_walk_in) if session else False,
         }
+
+    def enrich_reservations(self, reservations: list) -> list[dict]:
+        if not reservations:
+            return []
+
+        reservation_ids = {str(item.id) for item in reservations if getattr(item, "id", "")}
+        if not reservation_ids:
+            return [item.model_dump() for item in reservations]
+
+        sessions = self.list_all()
+        indexed_sessions: dict[str, LabAccessSessionResponse] = {}
+        for session in sessions:
+            reservation_id = str(session.reservation_id or "")
+            if reservation_id not in reservation_ids or reservation_id in indexed_sessions:
+                continue
+            indexed_sessions[reservation_id] = session
+
+        open_sessions = {
+            str(session.reservation_id or ""): session
+            for session in sessions
+            if str(session.reservation_id or "") in reservation_ids and session.status == "open" and not session.check_out_at
+        }
+
+        enriched_items: list[dict] = []
+        for reservation in reservations:
+            session = open_sessions.get(str(reservation.id)) or indexed_sessions.get(str(reservation.id))
+            enriched_items.append(
+                {
+                    **reservation.model_dump(),
+                    "requested_by_name": session.occupant_name if session else reservation.requested_by_name,
+                    "requested_by_email": session.occupant_email if session else reservation.requested_by_email,
+                    "station_label": session.station_label if session else reservation.station_label,
+                    "check_in_at": session.check_in_at if session else reservation.check_in_at,
+                    "check_out_at": session.check_out_at if session else reservation.check_out_at,
+                    "is_walk_in": bool(session.is_walk_in) if session else bool(reservation.is_walk_in),
+                }
+            )
+
+        return enriched_items
 
     def get_dashboard(self, *, laboratory_id: str | None = None) -> OccupancyDashboardResponse:
         active_sessions = [item for item in self.list_all() if item.status == "open" and not item.check_out_at]
