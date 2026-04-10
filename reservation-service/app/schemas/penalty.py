@@ -14,6 +14,11 @@ class PenaltyCreate(BaseModel):
     reason: str
     evidence_type: PenaltyEvidenceType = "damage_report"
     evidence_report_id: str = ""
+    incident_scope: str = "laboratory"  # "asset" o "laboratory"
+    incident_laboratory_id: str = ""
+    incident_date: str = ""
+    incident_start_time: str = ""
+    incident_end_time: str = ""
     asset_id: str = ""
     related_reservation_id: str = ""
     starts_at: str | None = None
@@ -33,8 +38,13 @@ class PenaltyResponse(BaseModel):
     reason: str
     evidence_type: PenaltyEvidenceType
     evidence_report_id: str
+    incident_scope: str
+    incident_laboratory_id: str
+    incident_date: str
+    incident_start_time: str
+    incident_end_time: str
     asset_id: str
-    related_reservation_id: str
+    related_reservation_id: str = ""
     starts_at: str
     ends_at: str
     notes: str
@@ -42,7 +52,7 @@ class PenaltyResponse(BaseModel):
     is_active: bool
     email_sent: bool = False
     created_at: str
-    updated_at: str
+    updated_at: str = ""
     created_by: str
     created_by_name: str
     lifted_at: str = ""

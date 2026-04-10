@@ -3,6 +3,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import httpx
 from jose import JWTError, jwt
 
+from app.application.container import user_penalty_repo
 from app.core.config import settings
 
 
@@ -100,7 +101,22 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Falta token Bearer")
 
     fallback_payload = _decode_token_payload(credentials.credentials)
-    return _resolve_live_payload(credentials.credentials, fallback_payload)
+    user_info = _resolve_live_payload(credentials.credentials, fallback_payload)
+
+    # Verificar si el usuario tiene penalizaciones activas
+    user_id = user_info.get("user_id")
+    if user_id:
+        active_penalty = user_penalty_repo.get_active_for_user(str(user_id).strip())
+        if active_penalty is not None:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail=(
+                    "Tu cuenta tiene una penalizacion activa y no puede acceder al sistema. "
+                    f"Motivo: {active_penalty.reason}. Vigente hasta {active_penalty.ends_at}"
+                ),
+            )
+
+    return user_info
 
 
 def validate_token(token: str) -> dict:
@@ -108,7 +124,22 @@ def validate_token(token: str) -> dict:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Falta token Bearer")
 
     fallback_payload = _decode_token_payload(token)
-    return _resolve_live_payload(token, fallback_payload)
+    user_info = _resolve_live_payload(token, fallback_payload)
+
+    # Verificar si el usuario tiene penalizaciones activas
+    user_id = user_info.get("user_id")
+    if user_id:
+        active_penalty = user_penalty_repo.get_active_for_user(str(user_id).strip())
+        if active_penalty is not None:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail=(
+                    "Tu cuenta tiene una penalizacion activa y no puede acceder al sistema. "
+                    f"Motivo: {active_penalty.reason}. Vigente hasta {active_penalty.ends_at}"
+                ),
+            )
+
+    return user_info
 
 
 def ensure_any_permission(current_user: dict, required_permissions: set[str], detail: str) -> None:

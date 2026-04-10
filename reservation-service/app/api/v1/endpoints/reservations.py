@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import math
 import re
 from calendar import monthrange
@@ -8,10 +8,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 logger = logging.getLogger(__name__)
 
-from app.application.container import lab_access_session_repo, lab_reservation_repo, tutorial_session_repo, user_penalty_repo
+from app.application.container import (
+    lab_access_session_repo,
+    lab_reservation_repo,
+    reservation_support_repo,
+    tutorial_session_repo,
+    user_penalty_repo,
+)
 from app.application.container import lab_block_repo, lab_schedule_repo
 from app.core.datetime_utils import combine_date_time, iter_time_ranges, now_local_naive, parse_datetime
 from app.core.dependencies import ensure_any_permission, get_current_user
+from app.infrastructure.repositories.reservation_support_repository import parse_reservation_resource_metadata
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
 from app.realtime.manager import realtime_manager
 from app.schemas.lab_reservation import (
@@ -344,11 +351,83 @@ def _ensure_user_can_change_reservation(
         )
 
 
+def _actor_name(current_user: dict) -> str:
+    return str(current_user.get("name") or current_user.get("username") or "Sistema").strip() or "Sistema"
+
+
 def _resolve_laboratory_name(laboratory_id: str) -> str:
-    record = laboratory_access_repo.get_by_id(laboratory_id)
-    if not isinstance(record, dict):
-        return ""
-    return str(record.get("name") or record.get("laboratory_name") or record.get("label") or "").strip()
+    return reservation_support_repo.get_laboratory_name(laboratory_id)
+
+
+def _release_reserved_resources(
+    reservation: LabReservationResponse,
+    *,
+    current_user: dict,
+    restore_materials: bool,
+) -> None:
+    metadata = parse_reservation_resource_metadata(reservation.notes)
+    if not metadata.get("assets") and not metadata.get("materials"):
+        return
+
+    reservation_support_repo.release_resources(
+        metadata,
+        actor_name=_actor_name(current_user),
+        restore_materials=restore_materials,
+    )
+
+
+def _validate_resource_reservation_availability(
+    *,
+    laboratory_id: str,
+    start_at_raw: str,
+    end_at_raw: str,
+    metadata: dict,
+    skip_reservation_id: str | None = None,
+) -> None:
+    requested_assets = metadata.get("assets", []) if isinstance(metadata, dict) else []
+    requested_asset_ids = {
+        str((asset or {}).get("id") or "").strip()
+        for asset in requested_assets
+        if str((asset or {}).get("id") or "").strip()
+    }
+    if not requested_asset_ids:
+        return
+
+    candidate_start = parse_datetime(start_at_raw)
+    candidate_end = parse_datetime(end_at_raw)
+    requested_asset_names = {
+        str((asset or {}).get("id") or "").strip(): str((asset or {}).get("name") or "").strip()
+        for asset in requested_assets
+    }
+
+    for reservation in lab_reservation_repo.list_all():
+        if skip_reservation_id and reservation.id == skip_reservation_id:
+            continue
+        if not reservation.is_active or reservation.status in _FINAL_RESERVATION_STATUSES:
+            continue
+        if reservation.laboratory_id != laboratory_id:
+            continue
+        if not _has_schedule_overlap(candidate_start, candidate_end, reservation.start_at, reservation.end_at):
+            continue
+
+        existing_metadata = parse_reservation_resource_metadata(reservation.notes)
+        existing_asset_ids = {
+            str((asset or {}).get("id") or "").strip()
+            for asset in existing_metadata.get("assets", [])
+            if str((asset or {}).get("id") or "").strip()
+        }
+        conflicting_assets = requested_asset_ids.intersection(existing_asset_ids)
+        if not conflicting_assets:
+            continue
+
+        conflicting_asset_id = next(iter(conflicting_assets))
+        conflicting_asset_name = requested_asset_names.get(conflicting_asset_id) or "equipo seleccionado"
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"El equipo '{conflicting_asset_name}' ya esta apartado en otra reserva activa para ese horario"
+            ),
+        )
 
 
 def _build_schedule_change_payload(
@@ -484,6 +563,72 @@ async def _notify_status_change(
     )
 
 
+async def _notify_staff_reservation_cancelled(
+    reservation: LabReservationResponse,
+    current_user: dict,
+) -> None:
+    actor_name = _actor_name(current_user)
+    actor_user_id = str(current_user.get("user_id") or "").strip()
+    start_time = parse_datetime(reservation.start_at).strftime("%d/%m/%Y %H:%M") if reservation.start_at else "N/A"
+    laboratory_name = _resolve_laboratory_name(reservation.laboratory_id) or "Laboratorio"
+    recipients = [
+        item for item in reservation_support_repo.list_operations_recipients()
+        if str(item.get("id") or "").strip() and str(item.get("id") or "").strip() != actor_user_id
+    ]
+    if not recipients:
+        return
+
+    message = (
+        f"{actor_name} cancelo una reserva en {laboratory_name} programada para {start_time}. "
+        f"Proposito: {reservation.purpose}"
+    )
+    payload = {
+        "reservation_id": reservation.id,
+        "purpose": reservation.purpose,
+        "status": "cancelled",
+        "laboratory_id": reservation.laboratory_id,
+        "laboratory_name": laboratory_name,
+        "start_at": reservation.start_at,
+        "end_at": reservation.end_at,
+        "requested_by": reservation.requested_by,
+        "requested_by_name": reservation.requested_by_name,
+        "requested_by_email": reservation.requested_by_email,
+        "actor_name": actor_name,
+        "actor_id": actor_user_id,
+        "target_path": "/app/admin/reservas",
+    }
+
+    first_notification = None
+    recipient_ids: list[str] = []
+    for recipient in recipients:
+        recipient_id = str(recipient.get("id") or "").strip()
+        if not recipient_id:
+            continue
+        notification = notification_store.create(
+            recipient_user_id=recipient_id,
+            notification_type="reservation_cancelled_by_user",
+            title="Reserva cancelada por el usuario",
+            message=message,
+            payload=payload,
+        )
+        recipient_ids.append(recipient_id)
+        if first_notification is None:
+            first_notification = notification
+
+    if not recipient_ids or first_notification is None:
+        return
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "user_notification",
+            "action": "create",
+            "recipients": recipient_ids,
+            "record": first_notification.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+
+
 async def _notify_operations_reservation_cancelled(
     reservation: LabReservationResponse,
     current_user: dict,
@@ -491,12 +636,12 @@ async def _notify_operations_reservation_cancelled(
     actor_name = str(current_user.get("name") or current_user.get("username") or "Usuario")
     start_time = parse_datetime(reservation.start_at).strftime("%d/%m/%Y %H:%M") if reservation.start_at else "N/A"
     
-    message = f"{actor_name} canceló una reserva aprobada programada para {start_time}. Propósito: {reservation.purpose}"
+    message = f"{actor_name} cancelÃ³ una reserva aprobada programada para {start_time}. PropÃ³sito: {reservation.purpose}"
     
     notification = notification_store.create(
         recipient_user_id=OPERATIONS_RECIPIENT_ID,
         notification_type="reservation_cancelled_by_user",
-        title="⚠️ Reserva Cancelada por Usuario",
+        title="âš ï¸ Reserva Cancelada por Usuario",
         message=message,
         payload={
             "reservation_id": reservation.id,
@@ -662,9 +807,47 @@ async def create_reservation(body: LabReservationCreate, current_user: dict = De
         end_at_raw=body.end_at,
     )
 
+    resource_metadata = parse_reservation_resource_metadata(body.notes)
+    _validate_resource_reservation_availability(
+        laboratory_id=body.laboratory_id,
+        start_at_raw=body.start_at,
+        end_at_raw=body.end_at,
+        metadata=resource_metadata,
+    )
+    actor_name = _actor_name(current_user)
+
+    try:
+        reservation_support_repo.reserve_resources(resource_metadata, actor_name=actor_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
     try:
         created = lab_reservation_repo.create(body, current_user=current_user)
     except ValueError as exc:
+        _release_reserved_resources(
+            LabReservationResponse(
+                id="",
+                laboratory_id=body.laboratory_id,
+                area_id=body.area_id,
+                requested_by=str(current_user.get("user_id") or ""),
+                purpose=body.purpose,
+                start_at=body.start_at,
+                end_at=body.end_at,
+                status="pending",
+                attendees_count=body.attendees_count,
+                notes=body.notes,
+                approved_by="",
+                approved_at="",
+                cancel_reason="",
+                is_active=True,
+                created="",
+                updated="",
+                requested_by_name=str(current_user.get("name") or current_user.get("username") or ""),
+                requested_by_email=str(current_user.get("email") or ""),
+            ),
+            current_user=current_user,
+            restore_materials=True,
+        )
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     await realtime_manager.broadcast(
@@ -854,6 +1037,11 @@ async def update_reservation_status(
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
+    if body.status in {"rejected", "cancelled", "absent"}:
+        _release_reserved_resources(updated, current_user=current_user, restore_materials=True)
+    elif body.status == "completed":
+        _release_reserved_resources(updated, current_user=current_user, restore_materials=False)
+
     await _notify_status_change(existing_reservation, updated, current_user)
 
     await realtime_manager.broadcast(
@@ -945,6 +1133,7 @@ async def register_reservation_exit(
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
+    _release_reserved_resources(updated, current_user=current_user, restore_materials=False)
     enriched = _serialize_reservation(updated)
     await realtime_manager.broadcast(
         {
@@ -988,6 +1177,7 @@ async def mark_reservation_absent(
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
+    _release_reserved_resources(updated, current_user=current_user, restore_materials=True)
     enriched = _serialize_reservation(updated)
     await realtime_manager.broadcast(
         {
@@ -1003,48 +1193,43 @@ async def mark_reservation_absent(
 
 @router.patch("/{reservation_id}/cancel", response_model=LabReservationResponse)
 async def cancel_reservation(reservation_id: str, current_user: dict = Depends(get_current_user)) -> LabReservationResponse:
-    logger.warning(f"🛑 [CANCEL RESERVATION] Starting cancellation of reservation: {reservation_id}")
-    
+    logger.warning(f"[CANCEL RESERVATION] Starting cancellation of reservation: {reservation_id}")
+
     reservation = lab_reservation_repo.get_by_id(reservation_id)
     if reservation is None:
-        logger.error(f"❌ [CANCEL RESERVATION] Reservation not found: {reservation_id}")
+        logger.error(f"[CANCEL RESERVATION] Reservation not found: {reservation_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
-    
-    logger.info(f"📋 [CANCEL RESERVATION] Current reservation status: {reservation.status}")
+
+    logger.info(f"[CANCEL RESERVATION] Current reservation status: {reservation.status}")
 
     can_manage = _can_manage_reservations(current_user)
     if not can_manage and reservation.requested_by != (current_user.get("user_id") or ""):
-        logger.warning(f"🚫 [CANCEL RESERVATION] User {current_user.get('user_id')} denied access to cancel reservation {reservation_id}")
+        logger.warning(
+            f"[CANCEL RESERVATION] User {current_user.get('user_id')} denied access to cancel reservation {reservation_id}"
+        )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta reserva")
 
     _ensure_user_can_change_reservation(reservation, current_user=current_user, operation="cancel")
 
-    # IMPORTANTE: Solo actualizar status a 'cancelled', SIN BORRAR el registro
-    logger.warning(f"🔄 [CANCEL RESERVATION] Updating reservation {reservation_id} status to 'cancelled' (NOT deleting)")
+    logger.warning(f"[CANCEL RESERVATION] Updating reservation {reservation_id} status to cancelled")
     cancelled = lab_reservation_repo.update(
         reservation_id,
         LabReservationUpdate(status="cancelled"),
     )
     if cancelled is None:
-        logger.error(f"❌ [CANCEL RESERVATION] Failed to update reservation {reservation_id}")
+        logger.error(f"[CANCEL RESERVATION] Failed to update reservation {reservation_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
-    logger.info(f"✅ [CANCEL RESERVATION] Successfully updated reservation {reservation_id} to cancelled status")
+    logger.info(f"[CANCEL RESERVATION] Successfully updated reservation {reservation_id} to cancelled status")
 
-    # Limpiar notificaciones antiguas ANTES de crear la nueva notificación de cancelación
-    # Pero NO borrar las notificaciones de cancelación si existen
+    _release_reserved_resources(cancelled, current_user=current_user, restore_materials=True)
     notification_store.delete_for_reservation(
         reservation_id=reservation_id,
-        exclude_types=["reservation_cancelled_by_user"]
+        exclude_types=["reservation_cancelled_by_user"],
     )
 
-    # Enviar notificación al encargado SIEMPRE que se cancele una reserva aprobada
-    # (Ya sea por usuario regular o por admin)
-    if reservation.status == "approved":
-        logger.info(f"📢 [CANCEL RESERVATION] Notifying operations about cancellation of approved reservation {reservation_id}")
-        await _notify_operations_reservation_cancelled(cancelled, current_user)
-    else:
-        logger.info(f"ℹ️ [CANCEL RESERVATION] No notification sent (reservation wasn't approved, status: {reservation.status})")
+    logger.info(f"[CANCEL RESERVATION] Notifying staff about cancellation of reservation {reservation_id}")
+    await _notify_staff_reservation_cancelled(cancelled, current_user)
 
     await realtime_manager.broadcast(
         {
@@ -1056,9 +1241,9 @@ async def cancel_reservation(reservation_id: str, current_user: dict = Depends(g
     )
     return _serialize_reservation(cancelled)
 
-
 # Mantener DELETE para compatibilidad, pero redirige a cancel
 @router.delete("/{reservation_id}", response_model=LabReservationResponse)
 async def delete_reservation(reservation_id: str, current_user: dict = Depends(get_current_user)) -> LabReservationResponse:
     # Esta ruta ahora redirige a cancel por seguridad - nunca borra, solo cancela
     return await cancel_reservation(reservation_id, current_user)
+

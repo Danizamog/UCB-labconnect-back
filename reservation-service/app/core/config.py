@@ -48,6 +48,12 @@ class Settings:
             "POCKETBASE_LAB_ACCESS_SESSIONS_COLLECTION",
             "lab_access_sessions_v2",
         )
+        self.pb_user_penalty_collection = os.getenv("POCKETBASE_USER_PENALTY_COLLECTION", "user_penalty")
+        self.pb_users_collection = os.getenv("POCKETBASE_USERS_COLLECTION", "users")
+        self.pb_asset_collection = os.getenv("POCKETBASE_ASSET_COLLECTION", "asset")
+        self.pb_stock_item_collection = os.getenv("POCKETBASE_STOCK_ITEM_COLLECTION", "stock_item")
+        self.pb_laboratory_collection = os.getenv("POCKETBASE_LABORATORY_COLLECTION", "laboratory")
+        self.default_admin_username = os.getenv("DEFAULT_ADMIN_USERNAME", "admin@ucb.edu.bo").strip().lower()
         self.smtp_host = os.getenv("SMTP_HOST", "").strip()
         self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
         self.smtp_username = os.getenv("SMTP_USERNAME", "").strip()
