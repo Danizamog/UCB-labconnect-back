@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from threading import Lock
 
 from app.core.config import settings
+from app.infrastructure.cache_utils import TTLCache
 from app.infrastructure.pocketbase_base import PocketBaseClient as BasePocketBaseClient
 from app.infrastructure.pocketbase_client import PocketBaseClient as AdminPocketBaseClient
 from app.schemas.asset import AssetUpdate
@@ -13,6 +14,10 @@ from app.schemas.loan_record import LoanDashboardResponse, LoanRecordCreate, Loa
 
 def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _escape_filter_value(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
 
 
 class LoanRecordRepository:
@@ -31,6 +36,10 @@ class LoanRecordRepository:
         )
         self._collection_ready = False
         self._collection_lock = Lock()
+        self._records_cache = TTLCache[list[dict]](ttl_seconds=3.0)
+
+    def _invalidate_cache(self) -> None:
+        self._records_cache.invalidate()
 
     def _ensure_collection(self) -> None:
         if self._collection_ready or not self._admin_client.enabled:
@@ -94,9 +103,18 @@ class LoanRecordRepository:
             updated=record.get("updated", ""),
         )
 
-    def _list_raw(self) -> list[dict]:
+    def _list_raw(self, *, filter_expression: str | None = None) -> list[dict]:
         self._ensure_collection()
-        return self._admin_client.list_records(self._collection, sort="-loaned_at")
+        cache_key = ("raw", filter_expression or "")
+        return self._records_cache.get_or_set(
+            cache_key,
+            lambda: self._admin_client.list_records(
+                self._collection,
+                sort="-loaned_at",
+                filter=filter_expression,
+                per_page=200,
+            ),
+        )
 
     def list_all(
         self,
@@ -106,16 +124,17 @@ class LoanRecordRepository:
         borrower_query: str | None = None,
         serial_number: str | None = None,
     ) -> list[LoanRecordResponse]:
-        items = [self._to_response(record) for record in self._list_raw()]
-
+        filter_clauses: list[str] = []
         if status_filter:
-            items = [item for item in items if item.status == status_filter]
+            filter_clauses.append(f'status="{_escape_filter_value(status_filter)}"')
         if asset_id:
-            normalized_asset_id = str(asset_id).strip()
-            items = [item for item in items if item.asset_id == normalized_asset_id]
+            filter_clauses.append(f'asset_id="{_escape_filter_value(str(asset_id).strip())}"')
         if serial_number:
-            needle = str(serial_number).strip().lower()
-            items = [item for item in items if needle in str(item.asset_serial_number or "").lower()]
+            filter_clauses.append(f'asset_serial_number~"{_escape_filter_value(str(serial_number).strip())}"')
+
+        filter_expression = " && ".join(filter_clauses) if filter_clauses else None
+        items = [self._to_response(record) for record in self._list_raw(filter_expression=filter_expression)]
+
         if borrower_query:
             needle = str(borrower_query).strip().lower()
             items = [
@@ -129,7 +148,9 @@ class LoanRecordRepository:
 
     def list_for_asset(self, asset_id: str) -> list[LoanRecordResponse]:
         normalized_asset_id = str(asset_id or "").strip()
-        return [item for item in self.list_all() if item.asset_id == normalized_asset_id]
+        if not normalized_asset_id:
+            return []
+        return self.list_all(asset_id=normalized_asset_id)
 
     def get_by_id(self, loan_id: str) -> LoanRecordResponse | None:
         self._ensure_collection()
@@ -139,7 +160,7 @@ class LoanRecordRepository:
         return self._to_response(record)
 
     def get_open_for_asset(self, asset_id: str) -> LoanRecordResponse | None:
-        for item in self.list_for_asset(asset_id):
+        for item in self.list_all(status_filter="active", asset_id=asset_id):
             if item.status == "active" and not item.returned_at:
                 return item
         return None
@@ -181,6 +202,7 @@ class LoanRecordRepository:
 
         self._ensure_collection()
         record = self._admin_client.create_record(self._collection, payload)
+        self._invalidate_cache()
         self._asset_repo.update(
             asset.id,
             AssetUpdate(
@@ -214,6 +236,7 @@ class LoanRecordRepository:
                 "incident_notes": str(body.incident_notes or "").strip(),
             },
         )
+        self._invalidate_cache()
 
         if body.return_condition == "damaged":
             try:

@@ -16,13 +16,14 @@ router = APIRouter(prefix="/tutorial-sessions", tags=["tutorial-sessions"])
 async def _broadcast_tutorial_notification(
     *,
     recipient_user_id: str,
+    notification_type: str,
     title: str,
     message: str,
     payload: dict,
 ) -> None:
     notification = notification_store.create(
         recipient_user_id=recipient_user_id,
-        notification_type="tutorial_session_cancelled",
+        notification_type=notification_type,
         title=title,
         message=message,
         payload=payload,
@@ -52,6 +53,11 @@ def list_my_tutorial_sessions(current_user: dict = Depends(get_current_user)) ->
         "No tienes permisos para gestionar tutorias",
     )
     return tutorial_session_repo.list_for_tutor(current_user.get("user_id") or "")
+
+
+@router.get("/my-enrollments", response_model=list[TutorialSessionResponse])
+def list_my_enrolled_tutorial_sessions(current_user: dict = Depends(get_current_user)) -> list[TutorialSessionResponse]:
+    return tutorial_session_repo.list_for_student(current_user.get("user_id") or "")
 
 
 @router.get("/{session_id}", response_model=TutorialSessionResponse)
@@ -108,6 +114,77 @@ async def create_tutorial_session(
     return created
 
 
+@router.patch("/{session_id}", response_model=TutorialSessionResponse)
+async def update_tutorial_session(
+    session_id: str,
+    body: TutorialSessionCreate,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_tutorias"},
+        "No tienes permisos para actualizar tutorias",
+    )
+
+    existing = tutorial_session_repo.get_by_id(session_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
+
+    is_admin = current_user.get("role") == "admin"
+    if not is_admin and existing.tutor_id != (current_user.get("user_id") or ""):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No puedes editar una tutoria de otro tutor")
+
+    payload = body.model_copy(
+        update={
+            "tutor_id": existing.tutor_id,
+            "tutor_name": body.tutor_name or existing.tutor_name,
+            "tutor_email": body.tutor_email or existing.tutor_email,
+            "is_published": existing.is_published if body.is_published is None else body.is_published,
+        }
+    )
+
+    try:
+        updated = tutorial_session_repo.update(session_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    for enrollment in existing.enrolled_students:
+        await _broadcast_tutorial_notification(
+            recipient_user_id=enrollment.student_id,
+            notification_type="tutorial_session_updated",
+            title="Tutoria actualizada",
+            message=(
+                f"La tutoria '{updated.topic}' cambio de horario, laboratorio o cupos. "
+                "Revisa el detalle actualizado antes de asistir."
+            ),
+            payload={
+                "tutorial_session_id": updated.id,
+                "topic": updated.topic,
+                "old_location": existing.location,
+                "new_location": updated.location,
+                "old_session_date": existing.session_date,
+                "new_session_date": updated.session_date,
+                "old_start_time": existing.start_time,
+                "old_end_time": existing.end_time,
+                "new_start_time": updated.start_time,
+                "new_end_time": updated.end_time,
+                "target_path": "/app/tutorias",
+            },
+        )
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "update",
+            "record": updated.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return updated
+
+
 @router.post("/{session_id}/enroll", response_model=TutorialSessionResponse)
 async def enroll_in_tutorial_session(
     session_id: str,
@@ -119,6 +196,32 @@ async def enroll_in_tutorial_session(
             student_id=current_user.get("user_id") or "",
             student_name=current_user.get("name") or current_user.get("username") or "Estudiante",
             student_email=current_user.get("email") or "",
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "update",
+            "record": updated.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return updated
+
+
+@router.delete("/{session_id}/enroll", response_model=TutorialSessionResponse)
+async def cancel_tutorial_enrollment(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    try:
+        updated = tutorial_session_repo.cancel_enrollment(
+            session_id,
+            student_id=current_user.get("user_id") or "",
         )
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
@@ -163,6 +266,7 @@ async def delete_tutorial_session(
     for enrollment in enrollments:
         await _broadcast_tutorial_notification(
             recipient_user_id=enrollment.student_id,
+            notification_type="tutorial_session_cancelled",
             title="Tutoria Cancelada",
             message=(
                 f"La tutoria '{deleted_session.topic}' fue cancelada por el tutor. "

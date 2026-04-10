@@ -128,6 +128,7 @@ class PocketBaseClient:
         sort: str | None = "source_id",
         filter: str | None = None,
         per_page: int = 200,
+        max_items: int | None = None,
     ) -> list[dict[str, Any]]:
         page = 1
         records: list[dict[str, Any]] = []
@@ -151,6 +152,8 @@ class PocketBaseClient:
                 break
 
             records.extend(item for item in items if isinstance(item, dict))
+            if max_items is not None and len(records) >= max_items:
+                return records[:max_items]
             if page >= int(payload.get("totalPages", 1)):
                 break
             page += 1

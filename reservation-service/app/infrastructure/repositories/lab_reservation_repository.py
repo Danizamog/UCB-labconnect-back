@@ -44,6 +44,10 @@ def _has_overlap(start_a: str, end_a: str, start_b: str, end_b: str) -> bool:
     return a_start < b_end and b_start < a_end
 
 
+def _escape_filter_value(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
 class LabReservationRepository:
     def __init__(self, client: PocketBaseClient) -> None:
         self._client = client
@@ -71,6 +75,115 @@ class LabReservationRepository:
             current_page += 1
 
         return items
+
+    def _build_filter_expression(
+        self,
+        *,
+        laboratory_id: str | None = None,
+        day: str | None = None,
+        status_filter: str | None = None,
+        requested_by: str | None = None,
+    ) -> str | None:
+        clauses: list[str] = []
+        if laboratory_id:
+            clauses.append(f'laboratory_id="{_escape_filter_value(str(laboratory_id).strip())}"')
+        if status_filter:
+            clauses.append(f'status="{_escape_filter_value(str(status_filter).strip())}"')
+        if requested_by:
+            clauses.append(f'requested_by="{_escape_filter_value(str(requested_by).strip())}"')
+        if day:
+            clauses.append(f'start_at~"{_escape_filter_value(str(day).strip())}"')
+
+        return " && ".join(clauses) if clauses else None
+
+    @staticmethod
+    def _build_sort_expression(sort_by: str, sort_type: str) -> str:
+        normalized_sort_by = "start_at" if sort_by == "date" else str(sort_by or "start_at").strip()
+        normalized_sort_type = str(sort_type or "ASC").strip().upper()
+        return f"-{normalized_sort_by}" if normalized_sort_type == "DESC" else normalized_sort_by
+
+    def list_filtered(
+        self,
+        *,
+        laboratory_id: str | None = None,
+        day: str | None = None,
+        status_filter: str | None = None,
+        requested_by: str | None = None,
+        sort_by: str = "start_at",
+        sort_type: str = "ASC",
+        per_page: int = 200,
+    ) -> list[LabReservationResponse]:
+        items: list[LabReservationResponse] = []
+        current_page = 1
+        filter_expression = self._build_filter_expression(
+            laboratory_id=laboratory_id,
+            day=day,
+            status_filter=status_filter,
+            requested_by=requested_by,
+        )
+        sort_expression = self._build_sort_expression(sort_by, sort_type)
+
+        while True:
+            data = self._client.request(
+                "GET",
+                self._base,
+                params={
+                    "page": current_page,
+                    "perPage": per_page,
+                    "sort": sort_expression,
+                    **({"filter": filter_expression} if filter_expression else {}),
+                },
+            )
+            if not isinstance(data, dict):
+                break
+            records = data.get("items", [])
+            if not isinstance(records, list) or not records:
+                break
+            items.extend(_to_response(r) for r in records if isinstance(r, dict))
+            total_pages = int(data.get("totalPages", current_page))
+            if current_page >= total_pages:
+                break
+            current_page += 1
+
+        return items
+
+    def search_page(
+        self,
+        *,
+        laboratory_id: str | None = None,
+        day: str | None = None,
+        status_filter: str | None = None,
+        requested_by: str | None = None,
+        page_number: int = 0,
+        page_size: int = 10,
+        sort_by: str = "start_at",
+        sort_type: str = "DESC",
+    ) -> tuple[list[LabReservationResponse], int]:
+        filter_expression = self._build_filter_expression(
+            laboratory_id=laboratory_id,
+            day=day,
+            status_filter=status_filter,
+            requested_by=requested_by,
+        )
+        sort_expression = self._build_sort_expression(sort_by, sort_type)
+        data = self._client.request(
+            "GET",
+            self._base,
+            params={
+                "page": page_number + 1,
+                "perPage": page_size,
+                "sort": sort_expression,
+                **({"filter": filter_expression} if filter_expression else {}),
+            },
+        )
+        if not isinstance(data, dict):
+            return [], 0
+
+        records = data.get("items", [])
+        total_items = int(data.get("totalItems", 0) or 0)
+        if not isinstance(records, list):
+            return [], total_items
+        return [_to_response(record) for record in records if isinstance(record, dict)], total_items
 
     def get_by_id(self, reservation_id: str) -> LabReservationResponse | None:
         try:

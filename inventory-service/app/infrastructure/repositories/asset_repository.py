@@ -1,5 +1,6 @@
 import httpx
 
+from app.infrastructure.cache_utils import TTLCache
 from app.infrastructure.pocketbase_base import PocketBaseClient
 from app.schemas.asset import AssetCreate, AssetResponse, AssetUpdate, ASSET_STATUSES
 
@@ -35,40 +36,58 @@ class AssetRepository:
     def __init__(self, client: PocketBaseClient) -> None:
         self._client = client
         self._base = f"/api/collections/{_COLLECTION}/records"
+        self._list_cache = TTLCache[list[AssetResponse]](ttl_seconds=5.0)
+        self._detail_cache = TTLCache[AssetResponse | None](ttl_seconds=5.0)
 
-    def list_all(self, page: int = 1, per_page: int = 50) -> list[AssetResponse]:
-        items: list[AssetResponse] = []
-        current_page = page
+    def _invalidate_cache(self) -> None:
+        self._list_cache.invalidate()
+        self._detail_cache.invalidate()
 
-        while True:
-            data = self._client.request(
-                "GET",
-                self._base,
-                params={"page": current_page, "perPage": per_page, "sort": "name", "expand": "laboratory_id"},
-            )
-            if not isinstance(data, dict):
-                break
-            records = data.get("items", [])
-            if not isinstance(records, list) or not records:
-                break
-            items.extend(_to_response(r) for r in records if isinstance(r, dict))
-            total_pages = int(data.get("totalPages", current_page))
-            if current_page >= total_pages:
-                break
-            current_page += 1
+    def list_all(self, page: int = 1, per_page: int = 200) -> list[AssetResponse]:
+        cache_key = ("list_all", page, per_page)
 
-        return items
+        def load() -> list[AssetResponse]:
+            items: list[AssetResponse] = []
+            current_page = page
+
+            while True:
+                data = self._client.request(
+                    "GET",
+                    self._base,
+                    params={"page": current_page, "perPage": per_page, "sort": "name", "expand": "laboratory_id"},
+                )
+                if not isinstance(data, dict):
+                    break
+                records = data.get("items", [])
+                if not isinstance(records, list) or not records:
+                    break
+                items.extend(_to_response(r) for r in records if isinstance(r, dict))
+                total_pages = int(data.get("totalPages", current_page))
+                if current_page >= total_pages:
+                    break
+                current_page += 1
+
+            return items
+
+        return self._list_cache.get_or_set(cache_key, load)
 
     def get_by_id(self, asset_id: str) -> AssetResponse | None:
-        try:
-            data = self._client.request("GET", f"{self._base}/{asset_id}", params={"expand": "laboratory_id"})
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return None
-            raise
-        if not isinstance(data, dict):
+        normalized_id = str(asset_id or "").strip()
+        if not normalized_id:
             return None
-        return _to_response(data)
+
+        def load() -> AssetResponse | None:
+            try:
+                data = self._client.request("GET", f"{self._base}/{normalized_id}", params={"expand": "laboratory_id"})
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    return None
+                raise
+            if not isinstance(data, dict):
+                return None
+            return _to_response(data)
+
+        return self._detail_cache.get_or_set(("detail", normalized_id), load)
 
     def create(self, body: AssetCreate) -> AssetResponse:
         if body.status not in ASSET_STATUSES:
@@ -77,6 +96,7 @@ class AssetRepository:
         data = self._client.request("POST", self._base, payload=payload, params={"expand": "laboratory_id"})
         if not isinstance(data, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al crear el asset")
+        self._invalidate_cache()
         return _to_response(data)
 
     def update(self, asset_id: str, body: AssetUpdate) -> AssetResponse | None:
@@ -89,6 +109,7 @@ class AssetRepository:
         data = self._client.request("PATCH", f"{self._base}/{asset_id}", payload=payload, params={"expand": "laboratory_id"})
         if not isinstance(data, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al actualizar el asset")
+        self._invalidate_cache()
         return _to_response(data)
 
     def delete(self, asset_id: str) -> bool:
@@ -98,4 +119,5 @@ class AssetRepository:
             if exc.response.status_code == 404:
                 return False
             raise
+        self._invalidate_cache()
         return True
