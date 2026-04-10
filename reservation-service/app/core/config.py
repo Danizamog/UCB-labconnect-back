@@ -44,6 +44,7 @@ class Settings:
         self.pb_lab_block_collection = os.getenv("POCKETBASE_LAB_BLOCK_COLLECTION", "lab_block")
         self.pb_tutorial_session_collection = os.getenv("POCKETBASE_TUTORIAL_SESSION_COLLECTION", "tutorial_session")
         self.pb_tutorial_enrollment_collection = os.getenv("POCKETBASE_TUTORIAL_ENROLLMENT_COLLECTION", "tutorial_enrollment")
+        self.pb_penalty_collection = os.getenv("POCKETBASE_PENALTY_COLLECTION", "user_penalty")
         self.pb_lab_access_sessions_collection = os.getenv(
             "POCKETBASE_LAB_ACCESS_SESSIONS_COLLECTION",
             "lab_access_sessions_v2",

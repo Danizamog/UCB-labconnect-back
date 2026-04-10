@@ -4,7 +4,7 @@ from app.infrastructure.repositories.lab_block_repository import LabBlockReposit
 from app.infrastructure.repositories.lab_reservation_repository import LabReservationRepository
 from app.infrastructure.repositories.lab_schedule_repository import LabScheduleRepository
 from app.infrastructure.repositories.tutorial_session_repository import TutorialSessionRepository
-from app.penalties.store import penalty_store
+from app.penalties.store import PenaltyStore
 
 _pb_client = PocketBaseClient()
 
@@ -12,5 +12,5 @@ lab_reservation_repo = LabReservationRepository(_pb_client)
 lab_schedule_repo = LabScheduleRepository(_pb_client)
 lab_block_repo = LabBlockRepository(_pb_client)
 tutorial_session_repo = TutorialSessionRepository(_pb_client, lab_reservation_repo)
-user_penalty_repo = penalty_store
+user_penalty_repo = PenaltyStore(_pb_client)
 lab_access_session_repo = LabAccessSessionRepository()

@@ -4,9 +4,9 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.application.container import user_penalty_repo
 from app.email.sender import send_penalty_email
 from app.core.dependencies import ensure_any_permission, get_current_user
-from app.penalties.store import penalty_store
 from app.notifications.store import notification_store
 from app.realtime.manager import realtime_manager
 from app.schemas.penalty import PenaltyCreate, PenaltyLiftRequest, PenaltyLiftResponse, PenaltyResponse
@@ -84,8 +84,7 @@ def list_penalties(
     active_only: bool = Query(default=False),
     current_user: dict = Depends(get_current_user),
 ) -> list[PenaltyResponse]:
-    ensure_any_permission(current_user, _MANAGE_PENALTIES, "No tienes permisos para gestionar penalizaciones")
-    items = penalty_store.list_all()
+    items = user_penalty_repo.list_all()
     if active_only:
         items = [item for item in items if item.is_active]
     return items
@@ -96,7 +95,7 @@ def list_my_penalties(current_user: dict = Depends(get_current_user)) -> list[Pe
     user_id = str(current_user.get("user_id") or "").strip()
     if not user_id:
         return []
-    return penalty_store.list_for_user(user_id)
+    return user_penalty_repo.list_for_user(user_id)
 
 
 @router.post("", response_model=PenaltyResponse, status_code=status.HTTP_201_CREATED)
@@ -116,13 +115,13 @@ async def create_penalty(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Debes registrar el motivo de la penalizacion")
 
     try:
-        penalty = penalty_store.create(body, current_user=current_user, email_sent=False)
+        penalty = user_penalty_repo.create(body, current_user=current_user, email_sent=False)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     email_sent = send_penalty_email(penalty=penalty)
     if email_sent:
-        penalty = penalty_store.update_email_delivery(penalty.id, email_sent=True) or penalty
+        penalty = user_penalty_repo.update_email_delivery(penalty.id, email_sent=True) or penalty
 
     await _notify_penalty_applied(penalty)
     await _broadcast_penalty_event("create", penalty)
@@ -136,7 +135,7 @@ async def lift_penalty(
     current_user: dict = Depends(get_current_user),
 ) -> PenaltyLiftResponse:
     ensure_any_permission(current_user, _MANAGE_PENALTIES, "No tienes permisos para gestionar penalizaciones")
-    lifted = penalty_store.lift(
+    lifted = user_penalty_repo.lift(
         penalty_id,
         current_user=current_user,
         lift_reason=str(body.lift_reason or "").strip(),
