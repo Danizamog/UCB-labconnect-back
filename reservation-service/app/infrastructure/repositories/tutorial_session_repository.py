@@ -45,6 +45,24 @@ def _escape_filter_value(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _normalize_hhmm(value: str) -> str:
+    raw = str(value or "").strip()
+    parts = raw.split(":")
+    if len(parts) not in {2, 3}:
+        raise ValueError("Hora invalida, formato esperado HH:MM")
+
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError as exc:
+        raise ValueError("Hora invalida, formato esperado HH:MM") from exc
+
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ValueError("Hora invalida, formato esperado HH:MM")
+
+    return f"{hour:02d}:{minute:02d}"
+
+
 class TutorialSessionRepository:
     def __init__(self, client: PocketBaseClient, reservation_repo: LabReservationRepository) -> None:
         self._client = client
@@ -57,6 +75,8 @@ class TutorialSessionRepository:
         description = str(body.description or "").strip()
         location = str(body.location or "").strip()
         max_students = int(body.max_students or 0)
+        normalized_start_time = _normalize_hhmm(body.start_time)
+        normalized_end_time = _normalize_hhmm(body.end_time)
 
         if len(topic) < 5:
             raise ValueError("Debes ingresar un tema claro de al menos 5 caracteres")
@@ -67,16 +87,10 @@ class TutorialSessionRepository:
         if max_students <= 0 or max_students > 50:
             raise ValueError("La capacidad maxima debe estar entre 1 y 50 estudiantes")
 
-        start_dt = combine_date_time(datetime.fromisoformat(body.session_date).date(), body.start_time)
-        end_dt = combine_date_time(datetime.fromisoformat(body.session_date).date(), body.end_time)
+        start_dt = combine_date_time(datetime.fromisoformat(body.session_date).date(), normalized_start_time)
+        end_dt = combine_date_time(datetime.fromisoformat(body.session_date).date(), normalized_end_time)
         if end_dt <= start_dt:
             raise ValueError("La hora de fin debe ser posterior a la hora de inicio")
-
-        if start_dt.minute != 0 or end_dt.minute != 0:
-            raise ValueError("Las tutorias deben publicarse usando bloques horarios exactos")
-
-        if (end_dt - start_dt).total_seconds() % 3600 != 0:
-            raise ValueError("La duracion de la tutoria debe respetar bloques completos de una hora")
 
         now = now_local_naive()
         if start_dt <= now:
@@ -100,8 +114,8 @@ class TutorialSessionRepository:
             laboratory_id=str(body.laboratory_id or "").strip(),
             location=location,
             session_date=str(body.session_date),
-            start_time=str(body.start_time),
-            end_time=str(body.end_time),
+            start_time=normalized_start_time,
+            end_time=normalized_end_time,
             start_at=_format_iso_utc(start_dt),
             end_at=_format_iso_utc(end_dt),
             max_students=max_students,
