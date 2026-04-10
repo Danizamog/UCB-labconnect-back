@@ -10,6 +10,7 @@ from app.api.v1.endpoints import availability as availability_endpoints
 from app.api.v1.endpoints import notifications as notification_endpoints
 from app.api.v1.endpoints import reservations as reservation_endpoints
 from app.core.config import settings
+from app.reminders import scheduler as reminder_scheduler
 from app.infrastructure.repositories.tutorial_session_repository import TutorialSessionRepository
 from app.schemas.lab_reservation import LabReservationResponse
 from app.schemas.notification import UserNotificationResponse
@@ -133,6 +134,14 @@ class _FakeReservationSource:
 
     def list_all(self):
         return list(self._reservations)
+
+
+class _FakeReservationByIdRepo:
+    def __init__(self, reservations: dict[str, LabReservationResponse] | None = None) -> None:
+        self._reservations = reservations or {}
+
+    def get_by_id(self, reservation_id: str) -> LabReservationResponse | None:
+        return self._reservations.get(reservation_id)
 
 
 class ReservationCancellationTests(unittest.IsolatedAsyncioTestCase):
@@ -286,6 +295,74 @@ class TutorialAcceptanceTests(unittest.TestCase):
                 self.assertEqual(cancelled.seats_left, 2)
                 self.assertEqual(repo.list_for_student("student-1"), [])
 
+class ReservationReminderSchedulerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scheduler_sends_24h_and_30m_reminders_once_each(self) -> None:
+        base_start = datetime(2026, 4, 12, 12, 0, 0)
+        reservation = _reservation(status="approved", reservation_id="res-rem-1").model_copy(
+            update={
+                "start_at": base_start.isoformat(),
+                "end_at": (base_start + timedelta(hours=1)).isoformat(),
+                "is_active": True,
+                "requested_by": "student-1",
+            }
+        )
+
+        notifications = _FakeNotificationStore()
+        realtime = _FakeRealtimeManager()
+        source = _FakeReservationSource([reservation])
+        scheduler = reminder_scheduler.ReservationReminderScheduler()
+
+        with patch.object(reminder_scheduler, "lab_reservation_repo", source), \
+             patch.object(reminder_scheduler, "notification_store", notifications), \
+             patch.object(reminder_scheduler, "realtime_manager", realtime):
+            await scheduler.run_once(now=base_start - timedelta(hours=23, minutes=59))
+            await scheduler.run_once(now=base_start - timedelta(minutes=29))
+            await scheduler.run_once(now=base_start - timedelta(minutes=29))
+
+        self.assertEqual(len(notifications.created), 2)
+        self.assertEqual(
+            [item["payload"]["reminder_kind"] for item in notifications.created],
+            ["24h", "30m"],
+        )
+        self.assertEqual(len(realtime.events), 2)
+
+    async def test_scheduler_skips_non_approved_inactive_or_without_requester(self) -> None:
+        base_start = datetime(2026, 4, 12, 12, 0, 0)
+        pending = _reservation(status="pending", reservation_id="res-rem-2").model_copy(
+            update={
+                "start_at": base_start.isoformat(),
+                "end_at": (base_start + timedelta(hours=1)).isoformat(),
+                "is_active": True,
+            }
+        )
+        inactive = _reservation(status="approved", reservation_id="res-rem-3").model_copy(
+            update={
+                "start_at": base_start.isoformat(),
+                "end_at": (base_start + timedelta(hours=1)).isoformat(),
+                "is_active": False,
+            }
+        )
+        no_requester = _reservation(status="approved", reservation_id="res-rem-4").model_copy(
+            update={
+                "start_at": base_start.isoformat(),
+                "end_at": (base_start + timedelta(hours=1)).isoformat(),
+                "requested_by": "",
+            }
+        )
+
+        notifications = _FakeNotificationStore()
+        realtime = _FakeRealtimeManager()
+        source = _FakeReservationSource([pending, inactive, no_requester])
+        scheduler = reminder_scheduler.ReservationReminderScheduler()
+
+        with patch.object(reminder_scheduler, "lab_reservation_repo", source), \
+             patch.object(reminder_scheduler, "notification_store", notifications), \
+             patch.object(reminder_scheduler, "realtime_manager", realtime):
+            await scheduler.run_once(now=base_start - timedelta(minutes=29))
+
+        self.assertEqual(notifications.created, [])
+        self.assertEqual(realtime.events, [])
+
     def test_tutor_cannot_publish_tutorial_that_overlaps_own_lab_reservation(self) -> None:
         start_at, end_at, day = _future_range(days=5, start_hour=14)
         reservation = _reservation(status="approved", requested_by="tutor-1").model_copy(
@@ -416,6 +493,126 @@ class NotificationAcceptanceTests(unittest.TestCase):
             notifications = notification_endpoints.list_my_notifications(current_user=current_user)
 
         self.assertEqual([item.id for item in notifications], ["notif-status"])
+
+    def test_cancelled_reminder_is_hidden_from_user_list(self) -> None:
+        bucket_user = "student-1"
+        reminder = UserNotificationResponse(
+            id="notif-cancelled-reminder",
+            recipient_user_id=bucket_user,
+            notification_type="reservation_reminder",
+            title="Recordatorio de Reserva",
+            message="Tu reserva aprobada comienza en 24 horas.",
+            payload={
+                "reservation_id": "res-cancelled",
+                "reminder_kind": "24h",
+                "starts_at": "2026-04-10 18:00:00.000Z",
+            },
+            is_read=False,
+            created_at="2026-04-09T18:00:00Z",
+        )
+
+        cancelled_reservation = _reservation(status="cancelled", reservation_id="res-cancelled").model_copy(
+            update={
+                "start_at": "2026-04-10 18:00:00.000Z",
+                "end_at": "2026-04-10 19:00:00.000Z",
+                "is_active": False,
+            }
+        )
+
+        class _FakeNotificationStore:
+            def list_for_user(self, recipient_user_id: str):
+                if recipient_user_id != bucket_user:
+                    return []
+                return [reminder]
+
+        current_user = {"user_id": bucket_user, "permissions": [], "role": "student"}
+
+        with patch.object(notification_endpoints, "notification_store", _FakeNotificationStore()), \
+             patch.object(notification_endpoints, "lab_reservation_repo", _FakeReservationByIdRepo({"res-cancelled": cancelled_reservation})), \
+             patch.object(notification_endpoints, "now_local_naive", lambda: datetime(2026, 4, 9, 17, 0, 0)):
+            notifications = notification_endpoints.list_my_notifications(current_user=current_user)
+
+        self.assertEqual(notifications, [])
+
+    def test_modified_reminder_is_hidden_from_user_list(self) -> None:
+        bucket_user = "student-1"
+        reminder = UserNotificationResponse(
+            id="notif-modified-reminder",
+            recipient_user_id=bucket_user,
+            notification_type="reservation_reminder",
+            title="Recordatorio de Reserva",
+            message="Tu reserva aprobada comienza en 24 horas.",
+            payload={
+                "reservation_id": "res-modified",
+                "reminder_kind": "24h",
+                "starts_at": "2026-04-10 18:00:00.000Z",
+            },
+            is_read=False,
+            created_at="2026-04-09T18:00:00Z",
+        )
+
+        modified_reservation = _reservation(status="approved", reservation_id="res-modified").model_copy(
+            update={
+                "start_at": "2026-04-10 19:00:00.000Z",
+                "end_at": "2026-04-10 20:00:00.000Z",
+                "is_active": True,
+            }
+        )
+
+        class _FakeNotificationStore:
+            def list_for_user(self, recipient_user_id: str):
+                if recipient_user_id != bucket_user:
+                    return []
+                return [reminder]
+
+        current_user = {"user_id": bucket_user, "permissions": [], "role": "student"}
+
+        with patch.object(notification_endpoints, "notification_store", _FakeNotificationStore()), \
+             patch.object(notification_endpoints, "lab_reservation_repo", _FakeReservationByIdRepo({"res-modified": modified_reservation})), \
+             patch.object(notification_endpoints, "now_local_naive", lambda: datetime(2026, 4, 9, 17, 0, 0)):
+            notifications = notification_endpoints.list_my_notifications(current_user=current_user)
+
+        self.assertEqual(notifications, [])
+
+    def test_expired_reminder_is_hidden_from_user_list(self) -> None:
+        bucket_user = "student-1"
+        expired = UserNotificationResponse(
+            id="notif-expired-reminder",
+            recipient_user_id=bucket_user,
+            notification_type="reservation_reminder",
+            title="Recordatorio de Reserva",
+            message="Tu reserva aprobada comienza en 24 horas.",
+            payload={
+                "reservation_id": "res-expired",
+                "reminder_kind": "24h",
+                "starts_at": "2026-04-09 18:00:00.000Z",
+            },
+            is_read=False,
+            created_at="2026-04-08T18:00:00Z",
+        )
+
+        reservation = _reservation(status="approved", reservation_id="res-expired").model_copy(
+            update={
+                "start_at": "2026-04-09 18:00:00.000Z",
+                "end_at": "2026-04-09 19:00:00.000Z",
+                "is_active": True,
+            }
+        )
+
+        class _FakeNotificationStore:
+            def list_for_user(self, recipient_user_id: str):
+                if recipient_user_id != bucket_user:
+                    return []
+                return [expired]
+
+        current_user = {"user_id": bucket_user, "permissions": [], "role": "student"}
+
+        with patch.object(notification_endpoints, "notification_store", _FakeNotificationStore()), \
+             patch.object(notification_endpoints, "lab_reservation_repo", _FakeReservationByIdRepo({"res-expired": reservation})), \
+             patch.object(notification_endpoints, "now_local_naive", lambda: datetime(2026, 4, 9, 19, 0, 0)):
+            notifications = notification_endpoints.list_my_notifications(current_user=current_user)
+
+        self.assertEqual(notifications, [])
 
 
 if __name__ == "__main__":
