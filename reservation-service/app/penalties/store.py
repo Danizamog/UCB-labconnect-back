@@ -21,6 +21,10 @@ def _normalize_iso(value: str | None) -> str:
     return parsed.replace(tzinfo=UTC).isoformat().replace("+00:00", "Z")
 
 
+def _escape_filter_value(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _build_status(record: PenaltyResponse, *, now: datetime | None = None) -> tuple[str, bool]:
     if record.lifted_at:
         return "lifted", False
@@ -113,13 +117,18 @@ class PenaltyStore:
         return record.model_copy(update={"status": status, "is_active": is_active})
 
     def list_all(self) -> list[PenaltyResponse]:
-        records = self._list_records(sort="-created")
+        records = self._list_records()
         items = [self._hydrate(self._to_response(record)) for record in records]
         return sorted(items, key=lambda item: item.created_at, reverse=True)
 
     def list_for_user(self, user_id: str) -> list[PenaltyResponse]:
         normalized_user_id = str(user_id or "").strip()
-        return [item for item in self.list_all() if item.user_id == normalized_user_id]
+        if not normalized_user_id:
+            return []
+
+        records = self._list_records(filter_expr=f'user_id="{_escape_filter_value(normalized_user_id)}"')
+        items = [self._hydrate(self._to_response(record)) for record in records]
+        return sorted(items, key=lambda item: item.created_at, reverse=True)
 
     def get_by_id(self, penalty_id: str) -> PenaltyResponse | None:
         if not penalty_id:
