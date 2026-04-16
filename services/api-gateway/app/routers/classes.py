@@ -39,3 +39,29 @@ def create_class(data: ClassCreate):
 @router.put("/{class_id}")
 def update_class(class_id: int, data: ClassUpdate):
     return {"status": "success", "message": f"Clase {class_id} actualizada", "data": data}
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
