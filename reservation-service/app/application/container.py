@@ -1,4 +1,5 @@
 from app.infrastructure.pocketbase_base import PocketBaseClient
+from app.infrastructure.repositories.laboratory_access_repository import LaboratoryAccessRepository
 from app.infrastructure.repositories.lab_access_session_repository import LabAccessSessionRepository
 from app.infrastructure.repositories.lab_block_repository import LabBlockRepository
 from app.infrastructure.repositories.lab_reservation_repository import LabReservationRepository
@@ -14,3 +15,4 @@ lab_block_repo = LabBlockRepository(_pb_client)
 tutorial_session_repo = TutorialSessionRepository(_pb_client, lab_reservation_repo)
 user_penalty_repo = PenaltyStore(_pb_client)
 lab_access_session_repo = LabAccessSessionRepository()
+laboratory_access_repo = LaboratoryAccessRepository(_pb_client)

@@ -70,6 +70,22 @@ class TutorialSessionRepository:
         self._sessions_base = f"/api/collections/{settings.pb_tutorial_session_collection}/records"
         self._enrollments_base = f"/api/collections/{settings.pb_tutorial_enrollment_collection}/records"
 
+    def list_public_for_laboratory_day(self, laboratory_id: str, day: str) -> list[TutorialSessionResponse]:
+        normalized_laboratory_id = str(laboratory_id or "").strip()
+        normalized_day = str(day or "").strip()
+        if not normalized_laboratory_id or not normalized_day:
+            return []
+
+        filter_expression = (
+            f'laboratory_id="{_escape_filter_value(normalized_laboratory_id)}" '
+            f'&& session_date="{_escape_filter_value(normalized_day)}"'
+        )
+        session_records = self._list_records(self._sessions_base, filter_expression=filter_expression, sort="session_date,start_time")
+        enrollment_map = self._build_enrollment_map(session_records)
+        now = now_local_naive()
+        sessions = [self._map_session(record, enrollment_map.get(str(record.get("id") or ""), [])) for record in session_records]
+        return [session for session in sessions if session.is_published and parse_datetime(session.end_at) >= now]
+
     def _build_session(self, session_id: str, body: TutorialSessionCreate) -> TutorialSessionResponse:
         topic = str(body.topic or "").strip()
         description = str(body.description or "").strip()
@@ -234,7 +250,14 @@ class TutorialSessionRepository:
         if not tutor_id:
             raise ValueError("No se pudo identificar al tutor que publica la sesion")
 
-        for session in self.list_all(include_past=True):
+        candidate_day = str(candidate.session_date or candidate.start_at[:10]).strip()
+        session_records = self._list_records(
+            self._sessions_base,
+            filter_expression=f'session_date="{_escape_filter_value(candidate_day)}"',
+            sort="session_date,start_time",
+        )
+        for record in session_records:
+            session = self._map_session(record, [])
             if skip_id and session.id == skip_id:
                 continue
             if session.laboratory_id == candidate.laboratory_id and _has_overlap(
@@ -249,7 +272,7 @@ class TutorialSessionRepository:
             if _has_overlap(candidate.start_at, candidate.end_at, session.start_at, session.end_at):
                 raise ValueError("Ya tienes otra tutoria publicada que se cruza con ese horario")
 
-        for reservation in self._reservation_repo.list_all():
+        for reservation in self._reservation_repo.list_for_laboratory_day(candidate.laboratory_id, candidate_day):
             if reservation.requested_by != tutor_id:
                 continue
             if reservation.status in {"rejected", "cancelled"}:

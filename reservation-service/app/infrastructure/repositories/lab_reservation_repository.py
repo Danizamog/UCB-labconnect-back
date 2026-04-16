@@ -53,6 +53,43 @@ class LabReservationRepository:
         self._client = client
         self._base = f"/api/collections/{_COLLECTION}/records"
 
+    def list_for_laboratory_day(self, laboratory_id: str, day: str, per_page: int = 200) -> list[LabReservationResponse]:
+        normalized_laboratory_id = str(laboratory_id or "").strip()
+        normalized_day = str(day or "").strip()
+        if not normalized_laboratory_id or not normalized_day:
+            return []
+
+        items: list[LabReservationResponse] = []
+        current_page = 1
+        filter_expression = (
+            f'laboratory_id="{_escape_filter_value(normalized_laboratory_id)}" '
+            f'&& start_at~"{_escape_filter_value(normalized_day)}"'
+        )
+
+        while True:
+            data = self._client.request(
+                "GET",
+                self._base,
+                params={
+                    "page": current_page,
+                    "perPage": per_page,
+                    "sort": "start_at",
+                    "filter": filter_expression,
+                },
+            )
+            if not isinstance(data, dict):
+                break
+            records = data.get("items", [])
+            if not isinstance(records, list) or not records:
+                break
+            items.extend(_to_response(r) for r in records if isinstance(r, dict))
+            total_pages = int(data.get("totalPages", current_page))
+            if current_page >= total_pages:
+                break
+            current_page += 1
+
+        return items
+
     def list_all(self, page: int = 1, per_page: int = 200) -> list[LabReservationResponse]:
         items: list[LabReservationResponse] = []
         current_page = page

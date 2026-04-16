@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 logger = logging.getLogger(__name__)
 
 from app.application.container import lab_access_session_repo, lab_reservation_repo, tutorial_session_repo, user_penalty_repo
-from app.application.container import lab_block_repo, lab_schedule_repo
+from app.application.container import lab_block_repo, lab_schedule_repo, laboratory_access_repo
+from app.application.laboratory_access import ensure_user_can_reserve_laboratory
 from app.core.datetime_utils import combine_date_time, iter_time_ranges, now_local_naive, parse_datetime
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
@@ -65,12 +66,7 @@ def _has_schedule_overlap(start_at: datetime, end_at: datetime, other_start_raw:
 
 def _resolve_schedule_window(laboratory_id: str, reservation_day) -> tuple[datetime, datetime, int]:
     weekday = reservation_day.weekday()
-    schedules = [
-        item for item in lab_schedule_repo.list_all()
-        if item.laboratory_id == laboratory_id and item.weekday == weekday and item.is_active
-    ]
-
-    schedule = schedules[0] if schedules else None
+    schedule = lab_schedule_repo.get_active_for_laboratory_weekday(laboratory_id, weekday)
     if schedule:
         day_start = combine_date_time(reservation_day, schedule.open_time)
         day_end = combine_date_time(reservation_day, schedule.close_time)
@@ -137,25 +133,19 @@ def _validate_reservation_time_rules(
             ),
         )
 
-    for block in lab_block_repo.list_all():
-        if block.laboratory_id != laboratory_id or not block.is_active:
-            continue
-        if not block.start_at.startswith(start_at.date().isoformat()):
-            continue
+    day = start_at.date().isoformat()
+
+    for block in lab_block_repo.list_for_laboratory_day(laboratory_id, day):
         if _has_schedule_overlap(start_at, end_at, block.start_at, block.end_at):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="El bloque seleccionado no esta disponible porque el laboratorio se encuentra bloqueado o en mantenimiento",
             )
 
-    for reservation in lab_reservation_repo.list_all():
-        if reservation.laboratory_id != laboratory_id or not reservation.is_active:
-            continue
+    for reservation in lab_reservation_repo.list_for_laboratory_day(laboratory_id, day):
         if skip_reservation_id and reservation.id == skip_reservation_id:
             continue
         if reservation.status in {"rejected", "cancelled", "completed", "absent"}:
-            continue
-        if not reservation.start_at.startswith(start_at.date().isoformat()):
             continue
         if _has_schedule_overlap(start_at, end_at, reservation.start_at, reservation.end_at):
             raise HTTPException(
@@ -163,11 +153,7 @@ def _validate_reservation_time_rules(
                 detail="Ese bloque ya no esta disponible porque existe otra reserva activa en el mismo horario",
             )
 
-    for tutorial_session in tutorial_session_repo.list_public():
-        if tutorial_session.laboratory_id != laboratory_id:
-            continue
-        if not tutorial_session.start_at.startswith(start_at.date().isoformat()):
-            continue
+    for tutorial_session in tutorial_session_repo.list_public_for_laboratory_day(laboratory_id, day):
         if _has_schedule_overlap(start_at, end_at, tutorial_session.start_at, tutorial_session.end_at):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -656,6 +642,8 @@ async def create_reservation(body: LabReservationCreate, current_user: dict = De
             ),
         )
 
+    ensure_user_can_reserve_laboratory(body.laboratory_id, current_user)
+
     _validate_reservation_time_rules(
         laboratory_id=body.laboratory_id,
         start_at_raw=body.start_at,
@@ -782,6 +770,8 @@ async def update_reservation(
                 "user_modification_count": int(existing_reservation.user_modification_count or 0) + 1,
             }
         )
+
+        ensure_user_can_reserve_laboratory(str(payload.laboratory_id or existing_reservation.laboratory_id), current_user)
 
     _validate_reservation_time_rules(
         laboratory_id=str(payload.laboratory_id or existing_reservation.laboratory_id),
@@ -1023,7 +1013,7 @@ async def cancel_reservation(reservation_id: str, current_user: dict = Depends(g
     logger.warning(f"🔄 [CANCEL RESERVATION] Updating reservation {reservation_id} status to 'cancelled' (NOT deleting)")
     cancelled = lab_reservation_repo.update(
         reservation_id,
-        LabReservationUpdate(status="cancelled"),
+        LabReservationUpdate(status="cancelled", is_active=False),
     )
     if cancelled is None:
         logger.error(f"❌ [CANCEL RESERVATION] Failed to update reservation {reservation_id}")

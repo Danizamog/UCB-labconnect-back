@@ -7,6 +7,10 @@ from app.schemas.lab_schedule import LabScheduleCreate, LabScheduleResponse, Lab
 _COLLECTION = settings.pb_lab_schedule_collection
 
 
+def _escape_filter_value(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _to_response(record: dict) -> LabScheduleResponse:
     return LabScheduleResponse(
         id=record.get("id", ""),
@@ -25,6 +29,35 @@ class LabScheduleRepository:
     def __init__(self, client: PocketBaseClient) -> None:
         self._client = client
         self._base = f"/api/collections/{_COLLECTION}/records"
+
+    def get_active_for_laboratory_weekday(self, laboratory_id: str, weekday: int) -> LabScheduleResponse | None:
+        normalized_laboratory_id = str(laboratory_id or "").strip()
+        if not normalized_laboratory_id:
+            return None
+
+        data = self._client.request(
+            "GET",
+            self._base,
+            params={
+                "page": 1,
+                "perPage": 1,
+                "filter": (
+                    f'laboratory_id="{_escape_filter_value(normalized_laboratory_id)}" '
+                    f'&& weekday={int(weekday)} && is_active=true'
+                ),
+            },
+        )
+        if not isinstance(data, dict):
+            return None
+
+        records = data.get("items", [])
+        if not isinstance(records, list) or not records:
+            return None
+
+        first_record = records[0]
+        if not isinstance(first_record, dict):
+            return None
+        return _to_response(first_record)
 
     def list_all(self, page: int = 1, per_page: int = 100) -> list[LabScheduleResponse]:
         items: list[LabScheduleResponse] = []
