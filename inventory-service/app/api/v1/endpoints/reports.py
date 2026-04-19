@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 
@@ -23,17 +24,33 @@ def _stock_status(quantity_available: int, minimum_stock: int) -> str:
 def get_stock_items_report(
     laboratory_id: str | None = Query(default=None),
     only_low_or_out: bool = Query(default=False),
+    status_filter: Literal["out_of_stock", "low_stock", "ok"] | None = Query(default=None),
+    search: str | None = Query(default=None, min_length=1, max_length=80),
     _: dict = Depends(get_current_user),
 ) -> StockReportResponse:
     items = stock_item_repo.list_all()
+    normalized_search = (search or "").strip().lower()
 
     report_items: list[StockReportItem] = []
     for item in items:
         if laboratory_id and str(item.laboratory_id or "") != laboratory_id:
             continue
 
+        if normalized_search:
+            searchable_values = " ".join(
+                [
+                    str(item.name or ""),
+                    str(item.category or ""),
+                    str(item.laboratory_name or ""),
+                ]
+            ).lower()
+            if normalized_search not in searchable_values:
+                continue
+
         status = _stock_status(item.quantity_available, item.minimum_stock)
         if only_low_or_out and status == "ok":
+            continue
+        if status_filter and status != status_filter:
             continue
 
         report_items.append(
@@ -49,6 +66,9 @@ def get_stock_items_report(
                 status=status,
             )
         )
+
+    status_order = {"out_of_stock": 0, "low_stock": 1, "ok": 2}
+    report_items.sort(key=lambda item: (status_order.get(item.status, 99), item.name.lower()))
 
     out_of_stock = sum(1 for item in report_items if item.status == "out_of_stock")
     low_stock = sum(1 for item in report_items if item.status == "low_stock")
