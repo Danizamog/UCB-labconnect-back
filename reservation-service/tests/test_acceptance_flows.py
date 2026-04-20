@@ -78,6 +78,15 @@ class _FakeReservationRepo:
         self.current = self.current.model_copy(update={"status": "cancelled", "is_active": False})
         return self.current
 
+    def update(self, reservation_id: str, body):
+        if self.current.id != reservation_id:
+            return None
+        payload = {key: value for key, value in body.model_dump().items() if value is not None}
+        if payload.get("status") == "cancelled":
+            self.cancel_calls.append(reservation_id)
+        self.current = self.current.model_copy(update=payload)
+        return self.current
+
 
 class _FakeReservationUpdateRepo:
     def __init__(self, reservation: LabReservationResponse) -> None:
@@ -101,8 +110,22 @@ class _FakeReservationUpdateRepo:
 class _FakeListRepo:
     def __init__(self, items: list) -> None:
         self._items = items
+        self.calls: list[tuple] = []
 
     def list_all(self):
+        self.calls.append(("list_all",))
+        return list(self._items)
+
+    def get_active_for_laboratory_weekday(self, laboratory_id: str, weekday: int):
+        self.calls.append(("get_active_for_laboratory_weekday", laboratory_id, weekday))
+        return self._items[0] if self._items else None
+
+    def list_for_laboratory_day(self, laboratory_id: str, day: str):
+        self.calls.append(("list_for_laboratory_day", laboratory_id, day))
+        return list(self._items)
+
+    def list_public_for_laboratory_day(self, laboratory_id: str, day: str):
+        self.calls.append(("list_public_for_laboratory_day", laboratory_id, day))
         return list(self._items)
 
 
@@ -127,12 +150,18 @@ class _FakePublicTutorialRepo:
     def list_public(self):
         return []
 
+    def list_public_for_laboratory_day(self, laboratory_id: str, day: str):
+        return []
+
 
 class _FakeReservationSource:
     def __init__(self, reservations: list[LabReservationResponse]) -> None:
         self._reservations = reservations
 
     def list_all(self):
+        return list(self._reservations)
+
+    def list_for_laboratory_day(self, laboratory_id: str, day: str):
         return list(self._reservations)
 
 
@@ -160,7 +189,8 @@ class ReservationCancellationTests(unittest.IsolatedAsyncioTestCase):
              patch.object(reservation_endpoints, "_notify_operations_reservation_cancelled", _fake_notify):
             response = await reservation_endpoints.delete_reservation("res-1", current_user=current_user)
 
-        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.status, "cancelled")
+        self.assertFalse(response.is_active)
         self.assertEqual(repo.cancel_calls, ["res-1"])
         self.assertEqual(notifications, [("res-1", "student-1")])
         self.assertEqual(len(realtime.events), 1)
@@ -240,11 +270,75 @@ class AvailabilityAfterCancellationTests(unittest.TestCase):
         self.assertEqual(slot.state, "available")
 
 
+class AvailabilityFilterUsageTests(unittest.TestCase):
+    def test_availability_uses_day_specific_repository_queries(self) -> None:
+        start_at, _, day = _future_range(days=4, start_hour=11)
+        fake_now = datetime.fromisoformat(start_at) - timedelta(days=1)
+        schedule = type(
+            "_Schedule",
+            (),
+            {"open_time": "08:00", "close_time": "20:00", "slot_minutes": 60, "laboratory_id": "lab-1", "weekday": fake_now.weekday(), "is_active": True},
+        )()
+
+        schedule_repo = _FakeListRepo([schedule])
+        block_repo = _FakeListRepo([])
+        reservation_repo = _FakeListRepo([])
+        tutorial_repo = _FakeListRepo([])
+
+        with patch.object(availability_endpoints, "ensure_user_can_reserve_laboratory", lambda *args, **kwargs: None), \
+             patch.object(availability_endpoints, "lab_schedule_repo", schedule_repo), \
+             patch.object(availability_endpoints, "lab_block_repo", block_repo), \
+             patch.object(availability_endpoints, "lab_reservation_repo", reservation_repo), \
+             patch.object(availability_endpoints, "tutorial_session_repo", tutorial_repo), \
+             patch.object(availability_endpoints, "now_local_naive", lambda: fake_now):
+            availability_endpoints.get_lab_availability("lab-1", day=day, current_user={"user_id": "student-1", "permissions": [], "role": "student"})
+
+        self.assertEqual(schedule_repo.calls[0], ("get_active_for_laboratory_weekday", "lab-1", datetime.fromisoformat(day).weekday()))
+        self.assertEqual(block_repo.calls[0], ("list_for_laboratory_day", "lab-1", day))
+        self.assertEqual(reservation_repo.calls[0], ("list_for_laboratory_day", "lab-1", day))
+        self.assertEqual(tutorial_repo.calls[0], ("list_public_for_laboratory_day", "lab-1", day))
+
+
+class ReservationValidationFilterUsageTests(unittest.TestCase):
+    def test_reservation_validation_uses_day_specific_repository_queries(self) -> None:
+        start_at, end_at, _ = _future_range(days=5, start_hour=13)
+        day = datetime.fromisoformat(start_at).date().isoformat()
+        schedule = type(
+            "_Schedule",
+            (),
+            {"open_time": "08:00", "close_time": "20:00", "slot_minutes": 60, "laboratory_id": "lab-1", "weekday": datetime.fromisoformat(start_at).weekday(), "is_active": True},
+        )()
+
+        schedule_repo = _FakeListRepo([schedule])
+        block_repo = _FakeListRepo([])
+        reservation_repo = _FakeListRepo([])
+        tutorial_repo = _FakeListRepo([])
+
+        with patch.object(reservation_endpoints, "lab_schedule_repo", schedule_repo), \
+             patch.object(reservation_endpoints, "lab_block_repo", block_repo), \
+             patch.object(reservation_endpoints, "lab_reservation_repo", reservation_repo), \
+             patch.object(reservation_endpoints, "tutorial_session_repo", tutorial_repo), \
+             patch.object(reservation_endpoints, "now_local_naive", lambda: datetime.fromisoformat(start_at) - timedelta(days=1)):
+            reservation_endpoints._validate_reservation_time_rules(
+                laboratory_id="lab-1",
+                start_at_raw=start_at,
+                end_at_raw=end_at,
+            )
+
+        self.assertEqual(schedule_repo.calls[0], ("get_active_for_laboratory_weekday", "lab-1", datetime.fromisoformat(start_at).weekday()))
+        self.assertEqual(block_repo.calls[0], ("list_for_laboratory_day", "lab-1", day))
+        self.assertEqual(reservation_repo.calls[0], ("list_for_laboratory_day", "lab-1", day))
+        self.assertEqual(tutorial_repo.calls[0], ("list_public_for_laboratory_day", "lab-1", day))
+
+
 class _StubReservationRepo:
     def __init__(self, reservations: list[LabReservationResponse] | None = None) -> None:
         self._reservations = reservations or []
 
     def list_all(self) -> list[LabReservationResponse]:
+        return list(self._reservations)
+
+    def list_for_laboratory_day(self, laboratory_id: str, day: str) -> list[LabReservationResponse]:
         return list(self._reservations)
 
 

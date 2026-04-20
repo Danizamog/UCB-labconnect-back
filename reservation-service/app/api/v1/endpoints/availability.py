@@ -4,6 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.application.container import lab_block_repo, lab_reservation_repo, lab_schedule_repo, tutorial_session_repo
+from app.application.laboratory_access import ensure_user_can_reserve_laboratory
 from app.core.datetime_utils import combine_date_time, format_time, iter_time_ranges, now_local_naive, parse_datetime
 from app.core.dependencies import get_current_user
 from app.schemas.availability import AvailabilitySlot, LabAvailabilityResponse
@@ -32,12 +33,14 @@ def _has_overlap(slot_start: datetime, slot_end: datetime, event_start_raw: str,
 def get_lab_availability(
     laboratory_id: str,
     day: str = Query(..., description="Fecha en formato YYYY-MM-DD"),
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ) -> LabAvailabilityResponse:
     try:
         current_date = datetime.strptime(day, "%Y-%m-%d").date()
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="day debe tener formato YYYY-MM-DD") from exc
+
+    ensure_user_can_reserve_laboratory(laboratory_id, current_user)
 
     current_local_time = now_local_naive()
     max_allowed_day = _max_allowed_reservation_date(current_local_time.date())
@@ -48,12 +51,7 @@ def get_lab_availability(
         )
 
     weekday = current_date.weekday()
-    schedules = [
-        item for item in lab_schedule_repo.list_all()
-        if item.laboratory_id == laboratory_id and item.weekday == weekday and item.is_active
-    ]
-
-    schedule = schedules[0] if schedules else None
+    schedule = lab_schedule_repo.get_active_for_laboratory_weekday(laboratory_id, weekday)
     if schedule:
         day_start = combine_date_time(current_date, schedule.open_time)
         day_end = combine_date_time(current_date, schedule.close_time)
@@ -66,25 +64,14 @@ def get_lab_availability(
     ranges = iter_time_ranges(day_start, day_end, slot_minutes)
 
     reservations = [
-        item for item in lab_reservation_repo.list_all()
-        if item.laboratory_id == laboratory_id
-        and item.status not in {"rejected", "cancelled", "completed", "absent"}
+        item for item in lab_reservation_repo.list_for_laboratory_day(laboratory_id, day)
+        if item.status not in {"rejected", "cancelled", "completed", "absent"}
         and item.is_active
-        and item.start_at.startswith(day)
     ]
 
-    tutorial_sessions = [
-        item for item in tutorial_session_repo.list_public()
-        if item.laboratory_id == laboratory_id
-        and item.start_at.startswith(day)
-    ]
+    tutorial_sessions = tutorial_session_repo.list_public_for_laboratory_day(laboratory_id, day)
 
-    blocks = [
-        item for item in lab_block_repo.list_all()
-        if item.laboratory_id == laboratory_id
-        and item.is_active
-        and item.start_at.startswith(day)
-    ]
+    blocks = lab_block_repo.list_for_laboratory_day(laboratory_id, day)
 
     slots: list[AvailabilitySlot] = []
     for start_dt, end_dt in ranges:
