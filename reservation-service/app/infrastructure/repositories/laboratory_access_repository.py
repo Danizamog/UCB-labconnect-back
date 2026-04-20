@@ -11,6 +11,31 @@ class LaboratoryAccessRepository:
         self._client = client
         self._base = f"/api/collections/{settings.pb_laboratory_collection}/records"
 
+    def list_all(self, page: int = 1, per_page: int = 200) -> list[dict]:
+        items: list[dict] = []
+        current_page = page
+
+        while True:
+            data = self._client.request(
+                "GET",
+                self._base,
+                params={"page": current_page, "perPage": per_page, "sort": "name", "expand": "area_id"},
+            )
+            if not isinstance(data, dict):
+                break
+
+            records = data.get("items", [])
+            if not isinstance(records, list) or not records:
+                break
+
+            items.extend(record for record in records if isinstance(record, dict))
+            total_pages = int(data.get("totalPages", current_page))
+            if current_page >= total_pages:
+                break
+            current_page += 1
+
+        return items
+
     def get_by_id(self, laboratory_id: str) -> dict | None:
         lab_id = str(laboratory_id or "").strip()
         if not lab_id:
