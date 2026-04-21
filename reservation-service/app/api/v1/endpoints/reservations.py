@@ -201,6 +201,25 @@ def _reservation_field_value(reservation: LabReservationResponse, field: str) ->
     return str(value)
 
 
+def _reservation_field_value_for_where(reservation: LabReservationResponse, field: str):
+    if field == "date":
+        return str(reservation.start_at).split("T", 1)[0]
+
+    value = getattr(reservation, field, None)
+    if field in {"attendees_count", "user_modification_count"}:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    if field == "is_walk_in":
+        return bool(value)
+
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _apply_where_filter(items: list[LabReservationResponse], where: str | None) -> list[LabReservationResponse]:
     if not where:
         return items
@@ -232,16 +251,38 @@ def _apply_where_filter(items: list[LabReservationResponse], where: str | None) 
             )
 
         def _matches(item: LabReservationResponse) -> bool:
-            actual = _reservation_field_value(item, field).strip()
-            actual_lower = actual.lower()
+            actual_value = _reservation_field_value_for_where(item, field)
             expected_lower = expected.lower()
 
             if operator == "~":
-                return expected_lower in actual_lower
+                return expected_lower in str(actual_value).lower()
             if operator == "=":
-                return actual_lower == expected_lower
+                if isinstance(actual_value, bool):
+                    return actual_value == (expected_lower in {"true", "1", "yes", "si", "sí"})
+                return str(actual_value).lower() == expected_lower
             if operator == "!=":
-                return actual_lower != expected_lower
+                if isinstance(actual_value, bool):
+                    return actual_value != (expected_lower in {"true", "1", "yes", "si", "sí"})
+                return str(actual_value).lower() != expected_lower
+
+            if isinstance(actual_value, (int, float)):
+                try:
+                    expected_value = float(expected)
+                except ValueError:
+                    return False
+
+                if operator == ">":
+                    return actual_value > expected_value
+                if operator == ">=":
+                    return actual_value >= expected_value
+                if operator == "<":
+                    return actual_value < expected_value
+                if operator == "<=":
+                    return actual_value <= expected_value
+                return False
+
+            actual = str(actual_value)
+            actual_lower = actual.lower()
             if operator == ">":
                 return actual > expected
             if operator == ">=":
