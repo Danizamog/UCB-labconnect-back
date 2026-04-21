@@ -33,7 +33,10 @@ def get_stock_items_report(
 
     report_items: list[StockReportItem] = []
     for item in items:
-        if laboratory_id and str(item.laboratory_id or "") != laboratory_id:
+        item_laboratory_id = str(item.laboratory_id or "").strip()
+        # Si se filtra por laboratorio, los insumos "General" (sin laboratorio)
+        # tambien se consideran disponibles para ese laboratorio.
+        if laboratory_id and item_laboratory_id and item_laboratory_id != laboratory_id:
             continue
 
         if normalized_search:
