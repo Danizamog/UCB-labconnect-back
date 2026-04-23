@@ -85,6 +85,29 @@ class PocketBaseUserRepository:
             return None
         return json.loads(raw_body.decode("utf-8"))
 
+    @staticmethod
+    def _extract_http_status_message(exc: httpx.HTTPStatusError, fallback_message: str) -> str:
+        response = exc.response
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        if isinstance(payload, dict):
+            detail = payload.get("message") or payload.get("detail")
+            if isinstance(detail, str) and detail.strip():
+                return detail.strip()
+
+            data = payload.get("data")
+            if isinstance(data, dict):
+                first_error = next(iter(data.values()), None)
+                if isinstance(first_error, dict):
+                    message = first_error.get("message")
+                    if isinstance(message, str) and message.strip():
+                        return message.strip()
+
+        return fallback_message
+
     def _authenticate(self) -> None:
         if not self._has_credentials():
             return
@@ -102,7 +125,7 @@ class PocketBaseUserRepository:
                 last_error = exc
                 if exc.response.status_code == 404:
                     continue
-                raise
+                continue
             except ValueError as exc:
                 last_error = exc
                 raise
@@ -328,6 +351,9 @@ class PocketBaseUserRepository:
 
         try:
             data = self._request("PATCH", f"{self._records_endpoint()}/{existing_user.id}", payload=payload)
+        except httpx.HTTPStatusError as exc:
+            detail = self._extract_http_status_message(exc, "No se pudo guardar el usuario en PocketBase")
+            raise ValueError(detail) from exc
         except httpx.RequestError as exc:
             raise ValueError("No se pudo conectar con PocketBase") from exc
 
@@ -366,6 +392,9 @@ class PocketBaseUserRepository:
                 )
             else:
                 data = self._request("POST", self._records_endpoint(), payload=payload)
+        except httpx.HTTPStatusError as exc:
+            detail = self._extract_http_status_message(exc, "No se pudo guardar el usuario en PocketBase")
+            raise ValueError(detail) from exc
         except httpx.RequestError as exc:
             raise ValueError("No se pudo conectar con PocketBase") from exc
 
