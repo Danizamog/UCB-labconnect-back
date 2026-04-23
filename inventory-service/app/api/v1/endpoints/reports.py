@@ -4,9 +4,50 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
 
-from app.application.container import stock_item_repo
+from app.application.container import stock_item_repo, loan_record_repo
 from app.core.dependencies import get_current_user
-from app.schemas.stock_report import StockReportItem, StockReportResponse
+from app.schemas.stock_report import StockReportItem, StockReportResponse, UsageReportItem, UsageReportResponse
+@router.get("/usage", response_model=UsageReportResponse)
+def get_usage_report(
+    borrower_id: str | None = Query(default=None),
+    practice: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    _: dict = Depends(get_current_user),
+) -> UsageReportResponse:
+    """
+    Reporte de uso de insumos agrupado por práctica y usuario.
+    Filtros opcionales: usuario, práctica, rango de fechas (prestamo).
+    """
+    records = loan_record_repo.list_all()
+    items: list[UsageReportItem] = []
+    for r in records:
+        # Filtros
+        if borrower_id and r.borrower_id != borrower_id:
+            continue
+        if practice and (r.purpose or "").lower() != practice.lower():
+            continue
+        if date_from and r.loaned_at < date_from:
+            continue
+        if date_to and r.loaned_at > date_to:
+            continue
+        items.append(
+            UsageReportItem(
+                asset_id=r.asset_id,
+                asset_name=r.asset_name,
+                borrower_id=r.borrower_id,
+                borrower_name=r.borrower_name,
+                practice=r.purpose or "",
+                quantity=1,  # Asumimos 1 por registro (ajustar si hay campo de cantidad)
+                loaned_at=r.loaned_at,
+                returned_at=r.returned_at if hasattr(r, "returned_at") else None,
+            )
+        )
+    return UsageReportResponse(
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        total_records=len(items),
+        items=items,
+    )
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
