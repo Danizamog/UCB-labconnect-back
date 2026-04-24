@@ -39,6 +39,10 @@ class Settings:
         self.pocketbase_auth_password = os.getenv("POCKETBASE_AUTH_PASSWORD")
         self.pocketbase_auth_collection = os.getenv("POCKETBASE_AUTH_COLLECTION", "_superusers")
         self.pocketbase_timeout_seconds = float(os.getenv("POCKETBASE_TIMEOUT_SECONDS", "10"))
+        self.pocketbase_verbose_request_logs = os.getenv(
+            "POCKETBASE_VERBOSE_REQUEST_LOGS",
+            "false",
+        ).strip().lower() in {"1", "true", "yes"}
         self.pb_lab_reservation_collection = os.getenv("POCKETBASE_LAB_RESERVATION_COLLECTION", "lab_reservation")
         self.pb_lab_schedule_collection = os.getenv("POCKETBASE_LAB_SCHEDULE_COLLECTION", "lab_schedule")
         self.pb_lab_block_collection = os.getenv("POCKETBASE_LAB_BLOCK_COLLECTION", "lab_block")
@@ -58,6 +62,10 @@ class Settings:
         self.smtp_use_tls = os.getenv("SMTP_USE_TLS", "true").strip().lower() not in {"0", "false", "no"}
         self.smtp_use_ssl = os.getenv("SMTP_USE_SSL", "false").strip().lower() in {"1", "true", "yes"}
         self.smtp_timeout_seconds = float(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
+        self.reservation_reminder_check_interval_seconds = max(
+            10,
+            int(os.getenv("RESERVATION_REMINDER_CHECK_INTERVAL_SECONDS", "60")),
+        )
 
 
 settings = Settings()

@@ -1,9 +1,18 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import logging
 
 from app.api.v1.router import api_router
 from app.core.dependencies import auth_validation_client
 from app.reminders.scheduler import reservation_reminder_scheduler
+
+
+class _SkipHealthAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return 'GET /health' not in record.getMessage()
+
+
+logging.getLogger("uvicorn.access").addFilter(_SkipHealthAccessLogFilter())
 
 app = FastAPI(title="LabConnect Reservation Service", version="1.0.0")
 
