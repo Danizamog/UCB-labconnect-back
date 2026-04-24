@@ -32,6 +32,7 @@ class Settings:
         self.app_port = int(os.getenv("RESERVATION_APP_PORT", "8005"))
         self.app_timezone = os.getenv("APP_TIMEZONE", "America/La_Paz").strip() or "America/La_Paz"
         self.auth_service_url = os.getenv("AUTH_SERVICE_URL", "http://127.0.0.1:8101")
+        self.inventory_service_url = os.getenv("INVENTORY_SERVICE_URL", "http://127.0.0.1:8103")
         self.secret_key = os.getenv("SECRET_KEY", "change-this-secret")
         self.algorithm = os.getenv("JWT_ALGORITHM", os.getenv("ALGORITHM", "HS256"))
         self.pocketbase_url = os.getenv("POCKETBASE_URL", "").rstrip("/")
@@ -46,6 +47,10 @@ class Settings:
         self.pb_tutorial_session_collection = os.getenv("POCKETBASE_TUTORIAL_SESSION_COLLECTION", "tutorial_session")
         self.pb_tutorial_enrollment_collection = os.getenv("POCKETBASE_TUTORIAL_ENROLLMENT_COLLECTION", "tutorial_enrollment")
         self.pb_penalty_collection = os.getenv("POCKETBASE_PENALTY_COLLECTION", "user_penalty")
+        self.pb_penalty_reactivation_history_collection = os.getenv(
+            "POCKETBASE_PENALTY_REACTIVATION_HISTORY_COLLECTION",
+            "user_penalty_reactivation_history",
+        )
         self.pb_lab_access_sessions_collection = os.getenv(
             "POCKETBASE_LAB_ACCESS_SESSIONS_COLLECTION",
             "lab_access_sessions_v2",
