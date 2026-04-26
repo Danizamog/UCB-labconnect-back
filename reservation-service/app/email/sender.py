@@ -72,3 +72,56 @@ def send_penalty_email(*, penalty: PenaltyResponse) -> bool:
     except Exception:
         logger.exception("No se pudo enviar el correo de penalizacion para el usuario %s", penalty.user_id)
         return False
+
+
+def send_penalty_reactivation_email(*, penalty: PenaltyResponse, actor_name: str = "") -> bool:
+    if not _smtp_is_configured() or not penalty.user_email:
+        logger.warning("SMTP no configurado o email del usuario ausente; no se pudo enviar aviso de reactivacion")
+        return False
+
+    message = EmailMessage()
+    message["Subject"] = "LabConnect - Cuenta reactivada"
+    message["From"] = settings.smtp_sender
+    message["To"] = penalty.user_email
+    message.set_content(
+        "\n".join(
+            [
+                f"Hola {penalty.user_name or penalty.user_id},",
+                "",
+                "Tu cuenta fue reactivada y ya puedes volver a solicitar reservas en LabConnect.",
+                f"Penalizacion atendida: {penalty.reason}",
+                f"Levantada por: {actor_name or penalty.lifted_by_name or 'Administracion'}",
+                f"Fecha de reactivacion: {_format_localish(penalty.lifted_at or penalty.updated_at or penalty.ends_at)}",
+                "",
+                "Si el sistema no refleja el cambio de inmediato, cierra sesion y vuelve a ingresar.",
+                "",
+                "Equipo LabConnect",
+            ]
+        )
+    )
+
+    smtp_client: smtplib.SMTP | smtplib.SMTP_SSL
+    try:
+        if settings.smtp_use_ssl:
+            smtp_client = smtplib.SMTP_SSL(
+                settings.smtp_host,
+                settings.smtp_port,
+                timeout=settings.smtp_timeout_seconds,
+            )
+        else:
+            smtp_client = smtplib.SMTP(
+                settings.smtp_host,
+                settings.smtp_port,
+                timeout=settings.smtp_timeout_seconds,
+            )
+
+        with smtp_client as server:
+            if settings.smtp_use_tls and not settings.smtp_use_ssl:
+                server.starttls()
+            if settings.smtp_username:
+                server.login(settings.smtp_username, settings.smtp_password)
+            server.send_message(message)
+        return True
+    except Exception:
+        logger.exception("No se pudo enviar el correo de reactivacion para el usuario %s", penalty.user_id)
+        return False

@@ -1,5 +1,6 @@
 from calendar import monthrange
 from datetime import datetime
+from time import monotonic
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -10,6 +11,9 @@ from app.core.dependencies import get_current_user
 from app.schemas.availability import AvailabilitySlot, LabAvailabilityResponse
 
 router = APIRouter(prefix="/availability", tags=["availability"])
+
+_AVAILABILITY_CACHE: dict[str, tuple[float, LabAvailabilityResponse]] = {}
+_AVAILABILITY_CACHE_MAX_ITEMS = 250
 
 
 def _max_allowed_reservation_date(base_day):
@@ -27,6 +31,31 @@ def _has_overlap(slot_start: datetime, slot_end: datetime, event_start_raw: str,
     event_start = parse_datetime(event_start_raw)
     event_end = parse_datetime(event_end_raw)
     return slot_start < event_end and event_start < slot_end
+
+
+def _cache_key(laboratory_id: str, day: str) -> str:
+    return f"{laboratory_id}:{day}"
+
+
+def _get_cached_availability(laboratory_id: str, day: str) -> LabAvailabilityResponse | None:
+    cached = _AVAILABILITY_CACHE.get(_cache_key(laboratory_id, day))
+    if not cached:
+        return None
+
+    expires_at, response = cached
+    if expires_at <= monotonic():
+        _AVAILABILITY_CACHE.pop(_cache_key(laboratory_id, day), None)
+        return None
+
+    return response
+
+
+def _set_cached_availability(laboratory_id: str, day: str, response: LabAvailabilityResponse, ttl_seconds: int) -> None:
+    if len(_AVAILABILITY_CACHE) >= _AVAILABILITY_CACHE_MAX_ITEMS:
+        oldest_key = next(iter(_AVAILABILITY_CACHE))
+        _AVAILABILITY_CACHE.pop(oldest_key, None)
+
+    _AVAILABILITY_CACHE[_cache_key(laboratory_id, day)] = (monotonic() + ttl_seconds, response)
 
 
 @router.get("/labs/{laboratory_id}", response_model=LabAvailabilityResponse)
@@ -49,6 +78,10 @@ def get_lab_availability(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Solo puedes consultar disponibilidad dentro del plazo maximo de un mes",
         )
+
+    cached_response = _get_cached_availability(laboratory_id, day)
+    if cached_response is not None:
+        return cached_response
 
     weekday = current_date.weekday()
     schedule = lab_schedule_repo.get_active_for_laboratory_weekday(laboratory_id, weekday)
@@ -127,9 +160,12 @@ def get_lab_availability(
             )
         )
 
-    return LabAvailabilityResponse(
+    response = LabAvailabilityResponse(
         laboratory_id=laboratory_id,
         date=day,
         slot_minutes=slot_minutes,
         slots=slots,
     )
+    cache_ttl_seconds = 10 if current_date == current_local_time.date() else 20
+    _set_cached_availability(laboratory_id, day, response, cache_ttl_seconds)
+    return response
