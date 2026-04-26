@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends, Query
 from app.application.container import stock_item_repo, loan_record_repo
 from app.core.dependencies import get_current_user
 from app.schemas.stock_report import StockReportItem, StockReportResponse, UsageReportItem, UsageReportResponse
+router = APIRouter(prefix="/reports", tags=["reports"])
+
 @router.get("/usage", response_model=UsageReportResponse)
 def get_usage_report(
     borrower_id: str | None = Query(default=None),
@@ -50,7 +52,6 @@ def get_usage_report(
         items=items,
     )
 
-router = APIRouter(prefix="/reports", tags=["reports"])
 
 
 def _stock_status(quantity_available: int, minimum_stock: int) -> str:
