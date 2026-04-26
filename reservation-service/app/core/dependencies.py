@@ -2,6 +2,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import httpx
 from jose import JWTError, jwt
+from time import monotonic
 
 from app.core.config import settings
 
@@ -11,6 +12,30 @@ auth_validation_client = httpx.Client(
     timeout=httpx.Timeout(5.0, connect=3.0),
     limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
 )
+_TOKEN_VALIDATION_CACHE: dict[str, tuple[float, dict]] = {}
+_TOKEN_VALIDATION_CACHE_TTL_SECONDS = 15
+_TOKEN_VALIDATION_CACHE_MAX_ITEMS = 300
+
+
+def _get_cached_token_payload(token: str) -> dict | None:
+    cached = _TOKEN_VALIDATION_CACHE.get(token)
+    if not cached:
+        return None
+
+    expires_at, payload = cached
+    if expires_at <= monotonic():
+        _TOKEN_VALIDATION_CACHE.pop(token, None)
+        return None
+
+    return dict(payload)
+
+
+def _set_cached_token_payload(token: str, payload: dict) -> None:
+    if len(_TOKEN_VALIDATION_CACHE) >= _TOKEN_VALIDATION_CACHE_MAX_ITEMS:
+        oldest_key = next(iter(_TOKEN_VALIDATION_CACHE))
+        _TOKEN_VALIDATION_CACHE.pop(oldest_key, None)
+
+    _TOKEN_VALIDATION_CACHE[token] = (monotonic() + _TOKEN_VALIDATION_CACHE_TTL_SECONDS, dict(payload))
 
 
 def _decode_token_payload(token: str) -> dict | None:
@@ -38,12 +63,17 @@ def _decode_token_payload(token: str) -> dict | None:
 
 
 def _resolve_live_payload(token: str, fallback_payload: dict | None) -> dict:
+    cached_payload = _get_cached_token_payload(token)
+    if cached_payload is not None:
+        return cached_payload
+
     auth_service_url = settings.auth_service_url.strip().rstrip("/")
     fallback_payload = fallback_payload or {}
 
     if not auth_service_url:
         if not fallback_payload:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalido o expirado")
+        _set_cached_token_payload(token, fallback_payload)
         return fallback_payload
 
     try:
@@ -83,7 +113,7 @@ def _resolve_live_payload(token: str, fallback_payload: dict | None) -> dict:
     if not isinstance(live_permissions, list):
         live_permissions = fallback_payload.get("permissions") or []
 
-    return {
+    resolved_payload = {
         "username": str(body.get("subject") or body.get("sub") or fallback_payload.get("username", "")),
         "role": str(body.get("role") or fallback_payload.get("role") or "user"),
         "permissions": [str(p).strip() for p in live_permissions if str(p).strip()],
@@ -91,6 +121,8 @@ def _resolve_live_payload(token: str, fallback_payload: dict | None) -> dict:
         "name": str(body.get("name") or fallback_payload.get("name") or fallback_payload.get("username", "")),
         "email": str(body.get("email") or fallback_payload.get("email") or ""),
     }
+    _set_cached_token_payload(token, resolved_payload)
+    return resolved_payload
 
 
 def get_current_user(
