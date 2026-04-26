@@ -15,7 +15,7 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 def _stock_status(quantity_available: int, minimum_stock: int) -> str:
     if quantity_available <= 0:
         return "out_of_stock"
-    if quantity_available <= max(0, minimum_stock):
+    if quantity_available < max(1, minimum_stock):
         return "low_stock"
     return "ok"
 

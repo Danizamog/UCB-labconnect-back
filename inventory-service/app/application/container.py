@@ -5,6 +5,7 @@ from app.infrastructure.repositories.laboratory_repository import LaboratoryRepo
 from app.infrastructure.repositories.asset_repository import AssetRepository
 from app.infrastructure.repositories.loan_record_repository import LoanRecordRepository
 from app.infrastructure.repositories.stock_item_repository import StockItemRepository
+from app.infrastructure.repositories.stock_movement_repository import StockMovementRepository
 
 _pb_client = PocketBaseClient()
 
@@ -14,3 +15,4 @@ asset_repo = AssetRepository(_pb_client)
 asset_maintenance_repo = AssetMaintenanceRepository(_pb_client, asset_repo=asset_repo)
 loan_record_repo = LoanRecordRepository(_pb_client, asset_repo=asset_repo, asset_maintenance_repo=asset_maintenance_repo)
 stock_item_repo = StockItemRepository(_pb_client)
+stock_movement_repo = StockMovementRepository(_pb_client)
