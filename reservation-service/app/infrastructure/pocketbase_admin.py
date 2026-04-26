@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit, parse_qsl
 
 import httpx
+
+from app.core.config import settings
+from app.infrastructure.local_pocketbase import LocalPocketBaseFallback
 
 
 class PocketBaseAdminClient:
@@ -20,6 +24,11 @@ class PocketBaseAdminClient:
         self._auth_identity = auth_identity
         self._auth_password = auth_password
         self._auth_collection = auth_collection
+        self._fallback = LocalPocketBaseFallback(
+            postgres_url=settings.postgres_url,
+            namespace=settings.local_data_namespace,
+            enabled=settings.data_mode in {"hybrid", "postgres", "local"} or not bool(self._base_url),
+        )
         self._client = httpx.Client(
             timeout=httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 5.0)),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
@@ -27,7 +36,15 @@ class PocketBaseAdminClient:
 
     @property
     def enabled(self) -> bool:
-        return bool(self._base_url)
+        return bool(self._base_url) or self._fallback.enabled
+
+    def _fallback_request(self, method: str, url: str, **kwargs) -> dict[str, Any] | list[Any] | None:
+        parsed = urlsplit(url)
+        params = dict(kwargs.get("params") or {})
+        if parsed.query:
+            params.update(dict(parse_qsl(parsed.query, keep_blank_values=True)))
+        payload = kwargs.get("json")
+        return self._fallback.handle(method, parsed.path or url, payload=payload, params=params)
 
     def _has_credentials(self) -> bool:
         return bool(self._auth_identity and self._auth_password)
@@ -71,18 +88,30 @@ class PocketBaseAdminClient:
         if not self.enabled:
             raise RuntimeError("PocketBase no esta configurado")
 
+        if not self._base_url:
+            return self._fallback_request(method, url, **kwargs)
+
         if not self._auth_token and self._has_credentials():
             self._authenticate()
 
-        response = self._client.request(method, url, headers=self._headers(), **kwargs)
-        if response.status_code == 401 and self._has_credentials():
-            self._authenticate()
+        try:
             response = self._client.request(method, url, headers=self._headers(), **kwargs)
+            if response.status_code == 401 and self._has_credentials():
+                self._authenticate()
+                response = self._client.request(method, url, headers=self._headers(), **kwargs)
 
-        response.raise_for_status()
-        if not response.content:
-            return None
-        return response.json()
+            response.raise_for_status()
+            if not response.content:
+                return None
+            return response.json()
+        except httpx.HTTPStatusError as exc:
+            if self._fallback.enabled and exc.response.status_code >= 500:
+                return self._fallback_request(method, url, **kwargs)
+            raise
+        except httpx.HTTPError:
+            if self._fallback.enabled:
+                return self._fallback_request(method, url, **kwargs)
+            raise
 
     def get_collection(self, collection_name: str) -> dict[str, Any] | None:
         try:

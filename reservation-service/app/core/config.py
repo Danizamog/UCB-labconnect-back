@@ -32,9 +32,15 @@ class Settings:
         self.app_port = int(os.getenv("RESERVATION_APP_PORT", "8005"))
         self.app_timezone = os.getenv("APP_TIMEZONE", "America/La_Paz").strip() or "America/La_Paz"
         self.auth_service_url = os.getenv("AUTH_SERVICE_URL", "http://127.0.0.1:8101")
-        self.inventory_service_url = os.getenv("INVENTORY_SERVICE_URL", "http://127.0.0.1:8103")
+        self.inventory_service_url = os.getenv("INVENTORY_SERVICE_URL", "http://127.0.0.1:8003").strip().rstrip("/")
         self.secret_key = os.getenv("SECRET_KEY", "change-this-secret")
         self.algorithm = os.getenv("JWT_ALGORITHM", os.getenv("ALGORITHM", "HS256"))
+        self.data_mode = os.getenv("DATA_MODE", "pocketbase").strip().lower() or "pocketbase"
+        self.local_data_namespace = os.getenv("LOCAL_DATA_NAMESPACE", "labconnect").strip() or "labconnect"
+        self.postgres_url = os.getenv(
+            "POSTGRES_URL",
+            os.getenv("DATABASE_URL", "postgresql://labconnect:labconnect@labconnect-postgres:5432/labconnect"),
+        ).strip()
         self.pocketbase_url = os.getenv("POCKETBASE_URL", "").rstrip("/")
         self.pocketbase_auth_identity = os.getenv("POCKETBASE_AUTH_IDENTITY")
         self.pocketbase_auth_password = os.getenv("POCKETBASE_AUTH_PASSWORD")
@@ -63,6 +69,10 @@ class Settings:
         self.smtp_use_tls = os.getenv("SMTP_USE_TLS", "true").strip().lower() not in {"0", "false", "no"}
         self.smtp_use_ssl = os.getenv("SMTP_USE_SSL", "false").strip().lower() in {"1", "true", "yes"}
         self.smtp_timeout_seconds = float(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
+        self.tutorial_sessions_storage_path = os.getenv(
+            "TUTORIAL_SESSIONS_STORAGE_PATH",
+            str((Path(__file__).resolve().parents[3] / "data" / "tutorial_sessions.json")),
+        ).strip()
 
 
 settings = Settings()

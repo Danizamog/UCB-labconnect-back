@@ -105,6 +105,7 @@ services:
       - TUTORIAL_SESSIONS_STORAGE_PATH=/app/data/tutorial_sessions.json
       - DATA_MODE=${DATA_MODE:-pocketbase}
       - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
+      - POSTGRES_URL=${POSTGRES_URL:-postgresql://labconnect:labconnect@labconnect-postgres:5432/labconnect}
       - SMTP_HOST=mailpit
       - SMTP_PORT=1025
       - SMTP_SENDER=${SMTP_SENDER:-labconnect@ucb.edu.bo}
@@ -145,4 +146,8 @@ services:
         condition: service_healthy
       reservation-service:
         condition: service_healthy
+
+networks:
+  default:
+    name: labconnect-backend-network
 
