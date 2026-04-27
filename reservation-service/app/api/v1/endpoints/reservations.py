@@ -15,6 +15,7 @@ from app.core.datetime_utils import combine_date_time, iter_time_ranges, now_loc
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
 from app.realtime.manager import realtime_manager
+from app.schemas.agenda_summary import AgendaSummaryResponse
 from app.schemas.lab_reservation import (
     LabReservationCreate,
     PaginatedLabReservationResponse,
@@ -25,6 +26,7 @@ from app.schemas.lab_reservation import (
     ReservationAccessUpdate,
     WalkInReservationCreate,
 )
+from app.schemas.tutorial_session import TutorialSessionResponse
 
 router = APIRouter(prefix="/reservations", tags=["reservations"])
 _USER_RESERVATION_MODIFICATION_WINDOW_SECONDS = 2 * 60 * 60
@@ -214,6 +216,25 @@ def _reservation_field_value(reservation: LabReservationResponse, field: str) ->
     return str(value)
 
 
+def _reservation_field_value_for_where(reservation: LabReservationResponse, field: str):
+    if field == "date":
+        return str(reservation.start_at).split("T", 1)[0]
+
+    value = getattr(reservation, field, None)
+    if field in {"attendees_count", "user_modification_count"}:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    if field == "is_walk_in":
+        return bool(value)
+
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _apply_where_filter(items: list[LabReservationResponse], where: str | None) -> list[LabReservationResponse]:
     if not where:
         return items
@@ -245,16 +266,38 @@ def _apply_where_filter(items: list[LabReservationResponse], where: str | None) 
             )
 
         def _matches(item: LabReservationResponse) -> bool:
-            actual = _reservation_field_value(item, field).strip()
-            actual_lower = actual.lower()
+            actual_value = _reservation_field_value_for_where(item, field)
             expected_lower = expected.lower()
 
             if operator == "~":
-                return expected_lower in actual_lower
+                return expected_lower in str(actual_value).lower()
             if operator == "=":
-                return actual_lower == expected_lower
+                if isinstance(actual_value, bool):
+                    return actual_value == (expected_lower in {"true", "1", "yes", "si", "sí"})
+                return str(actual_value).lower() == expected_lower
             if operator == "!=":
-                return actual_lower != expected_lower
+                if isinstance(actual_value, bool):
+                    return actual_value != (expected_lower in {"true", "1", "yes", "si", "sí"})
+                return str(actual_value).lower() != expected_lower
+
+            if isinstance(actual_value, (int, float)):
+                try:
+                    expected_value = float(expected)
+                except ValueError:
+                    return False
+
+                if operator == ">":
+                    return actual_value > expected_value
+                if operator == ">=":
+                    return actual_value >= expected_value
+                if operator == "<":
+                    return actual_value < expected_value
+                if operator == "<=":
+                    return actual_value <= expected_value
+                return False
+
+            actual = str(actual_value)
+            actual_lower = actual.lower()
             if operator == ">":
                 return actual > expected
             if operator == ">=":
@@ -617,6 +660,46 @@ def search_reservations(
 def list_my_reservations(current_user: dict = Depends(get_current_user)) -> list[LabReservationResponse]:
     requester = current_user.get("user_id") or ""
     return [_serialize_reservation(item) for item in lab_reservation_repo.list_all() if item.requested_by == requester]
+
+
+@router.get("/summary", response_model=AgendaSummaryResponse)
+def get_my_agenda_summary(
+    current_user: dict = Depends(get_current_user),
+    limit: int = Query(default=5, ge=1, le=12),
+) -> AgendaSummaryResponse:
+    requester = str(current_user.get("user_id") or "").strip()
+    now = now_local_naive()
+
+    upcoming_reservations = [
+        _serialize_reservation(item)
+        for item in lab_reservation_repo.list_all()
+        if item.requested_by == requester and parse_datetime(item.end_at) >= now
+    ]
+    upcoming_reservations.sort(key=lambda item: (item.start_at, item.end_at, item.id))
+
+    combined_tutorials: dict[str, TutorialSessionResponse] = {}
+    if requester:
+        for session in tutorial_session_repo.list_for_student(requester):
+            if parse_datetime(session.end_at) >= now:
+                combined_tutorials[session.id] = session
+
+        for session in tutorial_session_repo.list_for_tutor(requester):
+            if parse_datetime(session.end_at) >= now:
+                combined_tutorials[session.id] = session
+
+    upcoming_tutorials = sorted(
+        combined_tutorials.values(),
+        key=lambda item: (item.start_at, item.end_at, item.id),
+    )
+
+    return AgendaSummaryResponse(
+        generated_at=datetime.utcnow().isoformat(),
+        reservation_count=len(upcoming_reservations),
+        tutorial_count=len(upcoming_tutorials),
+        total_count=len(upcoming_reservations) + len(upcoming_tutorials),
+        upcoming_reservations=upcoming_reservations[:limit],
+        upcoming_tutorials=upcoming_tutorials[:limit],
+    )
 
 
 @router.get("/mine/history/search", response_model=PaginatedLabReservationResponse)

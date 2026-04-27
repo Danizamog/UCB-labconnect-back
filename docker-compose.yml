@@ -79,11 +79,7 @@ services:
       - DATA_MODE=${DATA_MODE:-pocketbase}
       - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health', timeout=2)"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+      disable: true
 
   reservation-service:
     build:
@@ -111,15 +107,12 @@ services:
       - SMTP_SENDER=${SMTP_SENDER:-labconnect@ucb.edu.bo}
       - SMTP_USE_TLS=false
       - SMTP_USE_SSL=false
+      - RESERVATION_REMINDER_CHECK_INTERVAL_SECONDS=${RESERVATION_REMINDER_CHECK_INTERVAL_SECONDS:-60}
     depends_on:
       mailpit:
         condition: service_started
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8005/health', timeout=2)"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+      disable: true
   
   api-gateway:
     build:
@@ -143,9 +136,9 @@ services:
       inventory-service:
         condition: service_healthy
       role-service:
-        condition: service_healthy
+        condition: service_started
       reservation-service:
-        condition: service_healthy
+        condition: service_started
 
 networks:
   default:

@@ -108,16 +108,22 @@ class PocketBaseClient:
         if params:
             url = f"{url}?{urlencode(params)}"
 
-        # LOGGING: Registrar todas las solicitudes a PocketBase
-        logger.info(f"[POCKETBASE] {method} {url} | Payload: {payload}")
+        if settings.pocketbase_verbose_request_logs:
+            logger.debug("[POCKETBASE] %s %s", method, url)
 
         try:
             response = self._client.request(method, url, json=payload, headers=self._headers())
             response.raise_for_status()
             raw_body = response.content
-            logger.info(f"[POCKETBASE SUCCESS] {method} {url} | Status: {response.status_code}")
+            if settings.pocketbase_verbose_request_logs:
+                logger.debug("[POCKETBASE SUCCESS] %s %s | Status: %s", method, url, response.status_code)
         except httpx.HTTPStatusError as exc:
-            logger.error(f"[POCKETBASE ERROR] {method} {url} | Status: {exc.response.status_code} | Response: {exc.response.text}")
+            logger.error(
+                "[POCKETBASE ERROR] %s %s | Status: %s",
+                method,
+                url,
+                exc.response.status_code,
+            )
             if exc.response.status_code == 401 and retry_on_auth_error and self._has_credentials():
                 self._auth_token = None
                 self._authenticate()
@@ -126,7 +132,7 @@ class PocketBaseClient:
                 return self._fallback_request(method, path, payload=payload, params=params)
             raise
         except httpx.HTTPError as exc:
-            logger.error(f"[POCKETBASE CONNECTION ERROR] {method} {url} | Error: {str(exc)}")
+            logger.error("[POCKETBASE CONNECTION ERROR] %s %s | Error: %s", method, url, str(exc))
             if self._fallback.enabled:
                 return self._fallback_request(method, path, payload=payload, params=params)
             raise ValueError("No se pudo conectar con PocketBase") from exc
