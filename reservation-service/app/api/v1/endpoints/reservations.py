@@ -683,21 +683,28 @@ def get_my_agenda_summary(
         )
     else:
         my_reservations = []
+
+    def _is_upcoming(value: str) -> bool:
+        try:
+            return parse_datetime(value) >= now
+        except ValueError:
+            return False
+
     upcoming_reservations = [
         _serialize_reservation(item)
         for item in my_reservations
-        if parse_datetime(item.end_at) >= now
+        if _is_upcoming(item.end_at)
     ]
     upcoming_reservations.sort(key=lambda item: (item.start_at, item.end_at, item.id))
 
     combined_tutorials: dict[str, TutorialSessionResponse] = {}
     if requester:
         for session in tutorial_session_repo.list_for_student(requester):
-            if parse_datetime(session.end_at) >= now:
+            if _is_upcoming(session.end_at):
                 combined_tutorials[session.id] = session
 
         for session in tutorial_session_repo.list_for_tutor(requester):
-            if parse_datetime(session.end_at) >= now:
+            if _is_upcoming(session.end_at):
                 combined_tutorials[session.id] = session
 
     upcoming_tutorials = sorted(

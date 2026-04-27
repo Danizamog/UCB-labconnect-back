@@ -290,8 +290,12 @@ class TutorialSessionRepository:
         sessions: list[TutorialSessionResponse] = []
         for record in session_records:
             session = self._map_session(record, enrollment_map.get(str(record.get("id") or ""), []))
-            if not include_past and parse_datetime(session.end_at) < now:
-                continue
+            if not include_past:
+                try:
+                    if parse_datetime(session.end_at) < now:
+                        continue
+                except ValueError:
+                    continue
             sessions.append(session)
 
         return sorted(sessions, key=lambda item: (item.session_date, item.start_time, item.topic))
