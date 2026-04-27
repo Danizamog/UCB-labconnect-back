@@ -247,6 +247,89 @@ class ReservationModificationTests(unittest.IsolatedAsyncioTestCase):
                 await reservation_endpoints.update_reservation("res-3", body, current_user=current_user)
 
 
+class ReservationHistoryTests(unittest.TestCase):
+    def test_history_returns_only_past_or_closed_reservations_for_current_user(self) -> None:
+        now = datetime(2026, 4, 18, 12, 0, 0)
+        past_completed = _reservation(status="completed", reservation_id="res-history-1").model_copy(
+            update={
+                "start_at": datetime(2026, 4, 15, 9, 0, 0).isoformat(),
+                "end_at": datetime(2026, 4, 15, 10, 0, 0).isoformat(),
+            }
+        )
+        past_approved = _reservation(status="approved", reservation_id="res-history-2").model_copy(
+            update={
+                "start_at": datetime(2026, 4, 17, 14, 0, 0).isoformat(),
+                "end_at": datetime(2026, 4, 17, 15, 0, 0).isoformat(),
+            }
+        )
+        future_cancelled = _reservation(status="cancelled", reservation_id="res-history-3").model_copy(
+            update={
+                "start_at": datetime(2026, 4, 21, 11, 0, 0).isoformat(),
+                "end_at": datetime(2026, 4, 21, 12, 0, 0).isoformat(),
+            }
+        )
+        other_user_past = _reservation(status="completed", reservation_id="res-history-4", requested_by="student-2").model_copy(
+            update={
+                "start_at": datetime(2026, 4, 14, 11, 0, 0).isoformat(),
+                "end_at": datetime(2026, 4, 14, 12, 0, 0).isoformat(),
+            }
+        )
+
+        current_user = {"user_id": "student-1", "permissions": [], "role": "student"}
+        enrich_repo = type("_AccessRepo", (), {"enrich_reservations": lambda self, items: items})()
+
+        with patch.object(reservation_endpoints, "lab_reservation_repo", _StubReservationRepo([
+            past_completed,
+            past_approved,
+            future_cancelled,
+            other_user_past,
+        ])), \
+             patch.object(reservation_endpoints, "lab_access_session_repo", enrich_repo), \
+             patch.object(reservation_endpoints, "now_local_naive", lambda: now):
+            page = reservation_endpoints.search_my_reservation_history(
+                page_number=0,
+                page_size=10,
+                sort_by="start_at",
+                sort_type="DESC",
+                current_user=current_user,
+            )
+
+        self.assertEqual(page.totalElements, 2)
+        self.assertEqual([item.id for item in page.items], ["res-history-2", "res-history-1"])
+
+    def test_history_supports_pagination(self) -> None:
+        now = datetime(2026, 4, 18, 12, 0, 0)
+        reservations = []
+        for index in range(4):
+            day = 17 - index
+            reservations.append(
+                _reservation(status="completed", reservation_id=f"res-page-{index + 1}").model_copy(
+                    update={
+                        "start_at": datetime(2026, 4, day, 9, 0, 0).isoformat(),
+                        "end_at": datetime(2026, 4, day, 10, 0, 0).isoformat(),
+                    }
+                )
+            )
+
+        current_user = {"user_id": "student-1", "permissions": [], "role": "student"}
+        enrich_repo = type("_AccessRepo", (), {"enrich_reservations": lambda self, items: items})()
+
+        with patch.object(reservation_endpoints, "lab_reservation_repo", _StubReservationRepo(reservations)), \
+             patch.object(reservation_endpoints, "lab_access_session_repo", enrich_repo), \
+             patch.object(reservation_endpoints, "now_local_naive", lambda: now):
+            page = reservation_endpoints.search_my_reservation_history(
+                page_number=1,
+                page_size=2,
+                sort_by="start_at",
+                sort_type="DESC",
+                current_user=current_user,
+            )
+
+        self.assertEqual(page.totalElements, 4)
+        self.assertEqual(page.totalPages, 2)
+        self.assertEqual([item.id for item in page.items], ["res-page-3", "res-page-4"])
+
+
 class AvailabilityAfterCancellationTests(unittest.TestCase):
     def test_cancelled_reservation_releases_public_slot(self) -> None:
         start_at, end_at, day = _future_range(days=3, start_hour=9)
