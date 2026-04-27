@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from app.core.config import settings
 from app.core.datetime_utils import combine_date_time, now_local_naive, parse_datetime
 from app.infrastructure.pocketbase_base import PocketBaseClient
+from app.core.exceptions import ConflictError
 from app.infrastructure.repositories.lab_reservation_repository import LabReservationRepository
 from app.schemas.tutorial_session import (
     TutorialEnrollmentResponse,
@@ -452,7 +453,7 @@ class TutorialSessionRepository:
         if any(enrollment.student_id == normalized_student_id for enrollment in session.enrolled_students):
             raise ValueError("Ya estas inscrito en esta tutoria")
         if session.seats_left <= 0:
-            raise ValueError("La tutoria ya no tiene cupos disponibles")
+            raise ConflictError("La tutoria ya no tiene cupos disponibles")
         if parse_datetime(session.start_at) <= now_local_naive():
             raise ValueError("La tutoria ya comenzo o finalizo")
 

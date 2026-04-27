@@ -14,6 +14,14 @@ def _to_response(record: dict) -> LaboratoryResponse:
         area_record = expand.get("area_id")
         if isinstance(area_record, dict):
             area_name = area_record.get("name") or None
+    def _normalize_list_field(value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(v) for v in value if v is not None]
+        if isinstance(value, str):
+            return [p.strip() for p in value.split(",") if p.strip()]
+        return [str(value)]
 
     return LaboratoryResponse(
         id=record.get("id", ""),
@@ -24,6 +32,9 @@ def _to_response(record: dict) -> LaboratoryResponse:
         is_active=bool(record.get("is_active", True)),
         area_id=record.get("area_id", ""),
         area_name=area_name,
+        allowed_roles=_normalize_list_field(record.get("allowed_roles")),
+        allowed_user_ids=_normalize_list_field(record.get("allowed_user_ids")),
+        required_permissions=_normalize_list_field(record.get("required_permissions")),
         created=record.get("created", ""),
         updated=record.get("updated", ""),
     )

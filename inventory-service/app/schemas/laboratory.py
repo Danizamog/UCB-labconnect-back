@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LaboratoryCreate(BaseModel):
@@ -29,5 +29,9 @@ class LaboratoryResponse(BaseModel):
     is_active: bool
     area_id: str
     area_name: str | None = None
+    # Access control metadata (optional)
+    allowed_roles: list[str] = Field(default_factory=list)
+    allowed_user_ids: list[str] = Field(default_factory=list)
+    required_permissions: list[str] = Field(default_factory=list)
     created: str
     updated: str

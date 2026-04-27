@@ -210,10 +210,16 @@ async def enroll_in_tutorial_session(
             student_name=current_user.get("name") or current_user.get("username") or "Estudiante",
             student_email=current_user.get("email") or "",
         )
-    except KeyError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except Exception as exc:
+        from app.core.exceptions import ConflictError
+
+        if isinstance(exc, KeyError):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        if isinstance(exc, ConflictError):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise
 
     await realtime_manager.broadcast(
         {

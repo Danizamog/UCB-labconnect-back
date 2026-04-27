@@ -138,7 +138,7 @@ def _validate_reservation_time_rules(
     for block in lab_block_repo.list_for_laboratory_day(laboratory_id, day):
         if _has_schedule_overlap(start_at, end_at, block.start_at, block.end_at):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_409_CONFLICT,
                 detail="El bloque seleccionado no esta disponible porque el laboratorio se encuentra bloqueado o en mantenimiento",
             )
 
@@ -149,14 +149,14 @@ def _validate_reservation_time_rules(
             continue
         if _has_schedule_overlap(start_at, end_at, reservation.start_at, reservation.end_at):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_409_CONFLICT,
                 detail="Ese bloque ya no esta disponible porque existe otra reserva activa en el mismo horario",
             )
 
     for tutorial_session in tutorial_session_repo.list_public_for_laboratory_day(laboratory_id, day):
         if _has_schedule_overlap(start_at, end_at, tutorial_session.start_at, tutorial_session.end_at):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_409_CONFLICT,
                 detail="Ese bloque ya no esta disponible porque existe una tutoria publicada en el mismo horario",
             )
 
@@ -652,8 +652,15 @@ async def create_reservation(body: LabReservationCreate, current_user: dict = De
 
     try:
         created = lab_reservation_repo.create(body, current_user=current_user)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except Exception as exc:
+        # ConflictError -> 409, other ValueError -> 422
+        from app.core.exceptions import ConflictError
+
+        if isinstance(exc, ConflictError):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise
 
     await realtime_manager.broadcast(
         {
@@ -721,8 +728,14 @@ async def create_walk_in_reservation(
             recorded_by=str(current_user.get("name") or current_user.get("username") or "Encargado"),
             notes=body.notes,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except Exception as exc:
+        from app.core.exceptions import ConflictError
+
+        if isinstance(exc, ConflictError):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise
 
     enriched = _serialize_reservation(updated)
     await realtime_manager.broadcast(
@@ -782,8 +795,14 @@ async def update_reservation(
 
     try:
         updated = lab_reservation_repo.update(reservation_id, payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except Exception as exc:
+        from app.core.exceptions import ConflictError
+
+        if isinstance(exc, ConflictError):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise
 
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")

@@ -84,6 +84,13 @@ class PocketBaseClient:
             self._authenticate()
 
         extra_headers = kwargs.pop("headers", None)
+        # Normalize sort parameter if present in params
+        params = kwargs.get("params")
+        if params and "sort" in params and params.get("sort"):
+            params = dict(params)
+            params["sort"] = self._normalize_sort_param(params.get("sort"))
+            kwargs["params"] = params
+
         response = self._client.request(method, url, headers=self._headers(extra_headers), **kwargs)
         if response.status_code == 401 and self._has_credentials():
             self._authenticate()
@@ -136,7 +143,7 @@ class PocketBaseClient:
         while True:
             params: dict[str, Any] = {"page": page, "perPage": per_page}
             if sort:
-                params["sort"] = sort
+                params["sort"] = self._normalize_sort_param(sort)
             if filter:
                 params["filter"] = filter
             payload = self._request(
@@ -159,6 +166,32 @@ class PocketBaseClient:
             page += 1
 
         return records
+
+    def _normalize_sort_param(self, raw: str | None) -> str | None:
+        if not raw:
+            return None
+        tokens = [t.strip() for t in str(raw).split(",") if t.strip()]
+        normalized: list[str] = []
+        for token in tokens:
+            if token.startswith("-") or token.startswith("+"):
+                direction = "desc" if token.startswith("-") else "asc"
+                field = token.lstrip("+-").strip()
+            elif ":" in token:
+                parts = token.split(":", 1)
+                field = parts[0].strip()
+                direction = parts[1].strip().lower()
+            else:
+                field = token
+                direction = "asc"
+
+            if not field:
+                continue
+            if direction == "desc":
+                normalized.append(f"-{field}")
+            else:
+                normalized.append(field)
+
+        return ",".join(normalized) if normalized else None
 
     def get_record(self, collection_name: str, record_id: str) -> dict[str, Any] | None:
         try:
