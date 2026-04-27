@@ -11,6 +11,7 @@ class HourlyItem(BaseModel):
 
 class HourlyStatsResponse(BaseModel):
     laboratory_id: str | None = None
+    area_id: str | None = None
     from_date: str
     to_date: str
     data: List[HourlyItem]

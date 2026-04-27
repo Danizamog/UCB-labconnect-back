@@ -621,6 +621,7 @@ def get_occupancy_dashboard(
 @router.get("/stats/hourly", response_model=HourlyStatsResponse)
 def get_hourly_stats(
     laboratory_id: str | None = Query(default=None),
+    area_id: str | None = Query(default=None),
     from_date: str | None = Query(default=None),
     to_date: str | None = Query(default=None),
     current_user: dict = Depends(get_current_user),
@@ -634,12 +635,22 @@ def get_hourly_stats(
     try:
         today = now_local_naive().date()
         to_d = datetime.fromisoformat(to_date).date() if to_date else today
-        from_d = datetime.fromisoformat(from_date).date() if from_date else (to_d - timedelta(days=13))
+        from_d = (
+            datetime.fromisoformat(from_date).date()
+            if from_date
+            else (to_d - timedelta(days=13))
+        )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Formato de fecha invalido. Usa YYYY-MM-DD") from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Formato de fecha invalido. Usa YYYY-MM-DD",
+        ) from exc
 
     if from_d > to_d:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="'from' no puede ser posterior a 'to'")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'from' no puede ser posterior a 'to'",
+        )
 
     start_dt = datetime(from_d.year, from_d.month, from_d.day, 0, 0)
     end_dt = datetime(to_d.year, to_d.month, to_d.day, 0, 0) + timedelta(days=1)
@@ -654,7 +665,9 @@ def get_hourly_stats(
             continue
         if s < start_dt or s >= end_dt:
             continue
-        if laboratory_id and reservation.laboratory_id != laboratory_id:
+        if laboratory_id and str(reservation.laboratory_id) != str(laboratory_id):
+            continue
+        if area_id and str(reservation.area_id) != str(area_id):
             continue
         if reservation.status in _FINAL_RESERVATION_STATUSES:
             continue
@@ -662,12 +675,19 @@ def get_hourly_stats(
         counts[hour_label] = counts.get(hour_label, 0) + 1
 
     data = [{"hour": h, "count": counts[h]} for h in sorted(counts.keys())]
-    return HourlyStatsResponse(laboratory_id=laboratory_id, from_date=from_d.isoformat(), to_date=to_d.isoformat(), data=data)
+    return HourlyStatsResponse(
+        laboratory_id=laboratory_id,
+        area_id=area_id,
+        from_date=from_d.isoformat(),
+        to_date=to_d.isoformat(),
+        data=data,
+    )
 
 
 @router.get("/stats/top-slots", response_model=TopSlotsResponse)
 def get_top_slots(
     laboratory_id: str | None = Query(default=None),
+    area_id: str | None = Query(default=None),
     from_date: str | None = Query(default=None),
     to_date: str | None = Query(default=None),
     limit: int = Query(default=10),
@@ -682,12 +702,22 @@ def get_top_slots(
     try:
         today = now_local_naive().date()
         to_d = datetime.fromisoformat(to_date).date() if to_date else today
-        from_d = datetime.fromisoformat(from_date).date() if from_date else (to_d - timedelta(days=13))
+        from_d = (
+            datetime.fromisoformat(from_date).date()
+            if from_date
+            else (to_d - timedelta(days=13))
+        )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Formato de fecha invalido. Usa YYYY-MM-DD") from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Formato de fecha invalido. Usa YYYY-MM-DD",
+        ) from exc
 
     if from_d > to_d:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="'from' no puede ser posterior a 'to'")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'from' no puede ser posterior a 'to'",
+        )
 
     start_dt = datetime(from_d.year, from_d.month, from_d.day, 0, 0)
     end_dt = datetime(to_d.year, to_d.month, to_d.day, 0, 0) + timedelta(days=1)
@@ -695,7 +725,9 @@ def get_top_slots(
     slot_counts: dict[str, int] = {}
 
     for reservation in lab_reservation_repo.list_all():
-        if laboratory_id and reservation.laboratory_id != laboratory_id:
+        if laboratory_id and str(reservation.laboratory_id) != str(laboratory_id):
+            continue
+        if area_id and str(reservation.area_id) != str(area_id):
             continue
         if reservation.status in _FINAL_RESERVATION_STATUSES:
             continue
@@ -708,14 +740,20 @@ def get_top_slots(
 
         # Attempt to align slot to lab schedule; fallback to rounding by minutes
         try:
-            day_start, day_end, slot_minutes = _resolve_schedule_window(reservation.laboratory_id, s.date())
+            day_start, day_end, slot_minutes = _resolve_schedule_window(
+                reservation.laboratory_id, s.date()
+            )
         except Exception:
             day_start = combine_date_time(s.date(), "08:00")
             slot_minutes = 60
 
         offset = int((s - day_start).total_seconds() // 60)
         if offset < 0:
-            slot_start = s.replace(minute=(s.minute // slot_minutes) * slot_minutes, second=0, microsecond=0)
+            slot_start = s.replace(
+                minute=(s.minute // slot_minutes) * slot_minutes,
+                second=0,
+                microsecond=0,
+            )
         else:
             index = offset // slot_minutes
             slot_start = day_start + timedelta(minutes=index * slot_minutes)
@@ -723,13 +761,16 @@ def get_top_slots(
         slot_label = f"{slot_start.strftime('%H:%M')}-{slot_end.strftime('%H:%M')}"
         slot_counts[slot_label] = slot_counts.get(slot_label, 0) + 1
 
-    sorted_slots = sorted(slot_counts.items(), key=lambda kv: kv[1], reverse=True)[: max(0, int(limit))]
+    sorted_slots = sorted(slot_counts.items(), key=lambda kv: kv[1], reverse=True)[
+        : max(0, int(limit))
+    ]
     return TopSlotsResponse(data=[{"slot": k, "count": v} for k, v in sorted_slots])
 
 
 @router.get("/stats/heatmap", response_model=HeatmapResponse)
 def get_heatmap(
     laboratory_id: str | None = Query(default=None),
+    area_id: str | None = Query(default=None),
     from_date: str | None = Query(default=None),
     to_date: str | None = Query(default=None),
     current_user: dict = Depends(get_current_user),
@@ -743,12 +784,22 @@ def get_heatmap(
     try:
         today = now_local_naive().date()
         to_d = datetime.fromisoformat(to_date).date() if to_date else today
-        from_d = datetime.fromisoformat(from_date).date() if from_date else (to_d - timedelta(days=13))
+        from_d = (
+            datetime.fromisoformat(from_date).date()
+            if from_date
+            else (to_d - timedelta(days=13))
+        )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Formato de fecha invalido. Usa YYYY-MM-DD") from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Formato de fecha invalido. Usa YYYY-MM-DD",
+        ) from exc
 
     if from_d > to_d:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="'from' no puede ser posterior a 'to'")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'from' no puede ser posterior a 'to'",
+        )
 
     start_dt = datetime(from_d.year, from_d.month, from_d.day, 0, 0)
     end_dt = datetime(to_d.year, to_d.month, to_d.day, 0, 0) + timedelta(days=1)
@@ -761,6 +812,7 @@ def get_heatmap(
         cursor = cursor + timedelta(days=1)
 
     hours = [f"{h:02d}:00" for h in range(24)]
+    # matrix[day_index][hour_index]
     matrix = [[0 for _ in hours] for _ in days]
     day_index = {days[i]: i for i in range(len(days))}
 
@@ -771,13 +823,21 @@ def get_heatmap(
             continue
         if s < start_dt or s >= end_dt:
             continue
-        if laboratory_id and reservation.laboratory_id != laboratory_id:
+        if laboratory_id and str(reservation.laboratory_id) != str(laboratory_id):
+            continue
+        if area_id and str(reservation.area_id) != str(area_id):
             continue
         if reservation.status in _FINAL_RESERVATION_STATUSES:
             continue
         d = s.date().isoformat()
         if d not in day_index:
             continue
+        matrix[day_index[d]][s.hour] += 1
+
+    # Return transposed matrix for easier frontend rendering (rows=hours, cols=days)
+    transposed = [[matrix[d_idx][h_idx] for d_idx in range(len(days))] for h_idx in range(len(hours))]
+    return HeatmapResponse(days=days, hours=hours, matrix=transposed)
+
         matrix[day_index[d]][s.hour] += 1
 
     return HeatmapResponse(days=days, hours=hours, matrix=matrix)
