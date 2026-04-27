@@ -29,6 +29,10 @@ def _to_response(record: dict) -> LaboratoryResponse:
     )
 
 
+def _escape_filter_value(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
 class LaboratoryRepository:
     def __init__(self, client: PocketBaseClient) -> None:
         self._client = client
@@ -40,19 +44,34 @@ class LaboratoryRepository:
         self._list_cache.invalidate()
         self._detail_cache.invalidate()
 
-    def list_all(self, page: int = 1, per_page: int = 200) -> list[LaboratoryResponse]:
-        cache_key = ("list_all", page, per_page)
+    def list_all(
+        self,
+        page: int = 1,
+        per_page: int = 200,
+        name: str | None = None,
+        area_id: str | None = None,
+        is_active: bool | None = None,
+        sort: str | None = "name",
+    ) -> list[LaboratoryResponse]:
+        cache_key = ("list_all", page, per_page, name, area_id, is_active, sort)
 
         def load() -> list[LaboratoryResponse]:
             items: list[LaboratoryResponse] = []
             current_page = page
 
             while True:
-                data = self._client.request(
-                    "GET",
-                    self._base,
-                    params={"page": current_page, "perPage": per_page, "sort": "name", "expand": "area_id"},
-                )
+                params = {"page": current_page, "perPage": per_page, "sort": sort, "expand": "area_id"}
+                clauses: list[str] = []
+                if name:
+                    clauses.append(f'name~"{_escape_filter_value(name)}"')
+                if area_id:
+                    clauses.append(f'area_id="{_escape_filter_value(area_id)}"')
+                if is_active is not None:
+                    clauses.append(f'is_active={"true" if is_active else "false"}')
+                if clauses:
+                    params["filter"] = " && ".join(clauses)
+
+                data = self._client.request("GET", self._base, params=params)
                 if not isinstance(data, dict):
                     break
                 records = data.get("items", [])

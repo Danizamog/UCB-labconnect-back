@@ -299,6 +299,34 @@ class TutorialSessionRepository:
     def list_public(self) -> list[TutorialSessionResponse]:
         return [session for session in self.list_all() if session.is_published]
 
+    def list_public_filtered(
+        self,
+        *,
+        topic: str | None = None,
+        laboratory_id: str | None = None,
+        session_date: str | None = None,
+        is_published: bool | None = None,
+        sort: str | None = "session_date,start_time",
+    ) -> list[TutorialSessionResponse]:
+        clauses: list[str] = []
+        if topic:
+            clauses.append(f'topic~"{_escape_filter_value(topic)}"')
+        if laboratory_id:
+            clauses.append(f'laboratory_id="{_escape_filter_value(laboratory_id)}"')
+        if session_date:
+            clauses.append(f'session_date="{_escape_filter_value(session_date)}"')
+        if is_published is not None:
+            clauses.append(f'is_published={"true" if is_published else "false"}')
+
+        filter_expression = " && ".join(clauses) if clauses else None
+        session_records = self._list_records(self._sessions_base, filter_expression=filter_expression, sort=sort)
+        enrollment_map = self._build_enrollment_map(session_records)
+        now = now_local_naive()
+        sessions = [self._map_session(record, enrollment_map.get(str(record.get("id") or ""), [])) for record in session_records]
+        if is_published is None:
+            return [s for s in sessions if s.is_published and parse_datetime(s.end_at) >= now]
+        return [s for s in sessions if s.is_published == bool(is_published) and parse_datetime(s.end_at) >= now]
+
     def list_for_tutor(self, tutor_id: str) -> list[TutorialSessionResponse]:
         normalized_tutor_id = str(tutor_id or "").strip()
         return [session for session in self.list_all(include_past=True) if session.tutor_id == normalized_tutor_id]
