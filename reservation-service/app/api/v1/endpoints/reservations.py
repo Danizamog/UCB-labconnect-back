@@ -49,6 +49,21 @@ _SUPPORTED_SORT_FIELDS = {
 }
 
 
+def _is_history_reservation(reservation: LabReservationResponse, reference_now: datetime | None = None) -> bool:
+    now = reference_now or now_local_naive()
+
+    try:
+        start_at = parse_datetime(reservation.start_at)
+        end_at = parse_datetime(reservation.end_at)
+    except Exception:
+        return False
+
+    if end_at <= now:
+        return True
+
+    return reservation.status in _FINAL_RESERVATION_STATUSES and start_at <= now
+
+
 def _max_allowed_reservation_date(base_day):
     next_month = base_day.month + 1
     year = base_day.year
@@ -684,6 +699,43 @@ def get_my_agenda_summary(
         total_count=len(upcoming_reservations) + len(upcoming_tutorials),
         upcoming_reservations=upcoming_reservations[:limit],
         upcoming_tutorials=upcoming_tutorials[:limit],
+    )
+
+
+@router.get("/mine/history/search", response_model=PaginatedLabReservationResponse)
+def search_my_reservation_history(
+    page_number: int = Query(default=0, ge=0, alias="pageNumber"),
+    page_size: int = Query(default=10, ge=1, le=100, alias="pageSize"),
+    sort_by: str = Query(default="start_at", alias="sortBy"),
+    sort_type: str = Query(default="DESC", alias="sortType"),
+    current_user: dict = Depends(get_current_user),
+) -> PaginatedLabReservationResponse:
+    normalized_sort_by, normalized_sort_type = _validate_sort_params(sort_by, sort_type)
+    requester = str(current_user.get("user_id") or "")
+
+    source_items = [item for item in lab_reservation_repo.list_all() if item.requested_by == requester]
+    serialized = [
+        LabReservationResponse.model_validate(item)
+        for item in lab_access_session_repo.enrich_reservations(source_items)
+    ]
+    history_items = [item for item in serialized if _is_history_reservation(item)]
+    ordered = _sort_reservations(history_items, normalized_sort_by, normalized_sort_type)
+
+    total_elements = len(ordered)
+    start_index = page_number * page_size
+    end_index = start_index + page_size
+    paginated_items = ordered[start_index:end_index]
+    total_pages = math.ceil(total_elements / page_size) if total_elements > 0 else 0
+
+    return PaginatedLabReservationResponse(
+        items=paginated_items,
+        pageNumber=page_number,
+        pageSize=page_size,
+        totalElements=total_elements,
+        totalPages=total_pages,
+        sortBy=normalized_sort_by,
+        sortType=normalized_sort_type,
+        where="",
     )
 
 

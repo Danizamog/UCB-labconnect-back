@@ -4,7 +4,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
-from app.application.container import stock_item_repo
+from app.application.container import stock_item_repo, stock_movement_repo
 from app.core.dependencies import get_current_user
 from app.schemas.stock_item import StockItemCreate, StockItemResponse, StockItemUpdate
 
@@ -40,7 +40,21 @@ def list_movements(
     stock_item_id: str | None = Query(default=None),
     _: dict = Depends(get_current_user),
 ) -> list[StockMovementResponse]:
-    return []
+    records = stock_movement_repo.list_recent(limit=limit, stock_item_id=stock_item_id)
+    return [
+        StockMovementResponse(
+            id=r.id,
+            stock_item_id=r.stock_item_id,
+            stock_item_name=r.stock_item_name,
+            movement_type=r.movement_type,
+            quantity_change=r.quantity_change,
+            quantity_after=r.quantity_after,
+            performed_by=r.performed_by,
+            notes=r.notes,
+            created_at=r.created_at,
+        )
+        for r in records
+    ]
 
 
 @router.post("/{item_id}/movements", response_model=StockMovementResponse, status_code=status.HTTP_201_CREATED)
@@ -52,22 +66,37 @@ def create_movement(
     item = stock_item_repo.get_by_id(item_id)
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stock item no encontrado")
+
     if body.movement_type in ("entry", "return"):
         change = body.quantity
     else:
         change = -body.quantity
+
     new_qty = max(0, item.quantity_available + change)
     stock_item_repo.update(item_id, StockItemUpdate(quantity_available=new_qty))
-    return StockMovementResponse(
-        id=str(uuid.uuid4()),
+
+    performed_by = str(current_user.get("username") or "sistema")
+
+    record = stock_movement_repo.create(
         stock_item_id=item_id,
         stock_item_name=item.name,
         movement_type=body.movement_type,
         quantity_change=change,
         quantity_after=new_qty,
-        performed_by=current_user.get("email", "sistema"),
+        performed_by=performed_by,
         notes=body.notes or "",
-        created_at=datetime.datetime.utcnow().isoformat() + "Z",
+    )
+
+    return StockMovementResponse(
+        id=record.id,
+        stock_item_id=record.stock_item_id,
+        stock_item_name=record.stock_item_name,
+        movement_type=record.movement_type,
+        quantity_change=record.quantity_change,
+        quantity_after=record.quantity_after,
+        performed_by=record.performed_by,
+        notes=record.notes,
+        created_at=record.created_at,
     )
 
 
