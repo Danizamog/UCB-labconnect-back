@@ -1,10 +1,16 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 
+import anyio.to_thread
+
 from app.api.v1.router import api_router
 from app.core.dependencies import auth_validation_client
 from app.reminders.scheduler import reservation_reminder_scheduler
+
+
+_THREADPOOL_TOKENS = 200
 
 
 class _SkipHealthAccessLogFilter(logging.Filter):
@@ -14,7 +20,20 @@ class _SkipHealthAccessLogFilter(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_SkipHealthAccessLogFilter())
 
-app = FastAPI(title="LabConnect Reservation Service", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    limiter.total_tokens = max(limiter.total_tokens, _THREADPOOL_TOKENS)
+    reservation_reminder_scheduler.start()
+    try:
+        yield
+    finally:
+        await reservation_reminder_scheduler.stop()
+        auth_validation_client.close()
+
+
+app = FastAPI(title="LabConnect Reservation Service", version="1.0.0", lifespan=lifespan)
 
 origins = [
     "http://localhost:5173",
@@ -35,17 +54,6 @@ app.add_middleware(
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "service": "reservation-service"}
-
-
-@app.on_event("startup")
-async def on_startup() -> None:
-    reservation_reminder_scheduler.start()
-
-
-@app.on_event("shutdown")
-async def on_shutdown() -> None:
-    await reservation_reminder_scheduler.stop()
-    auth_validation_client.close()
 
 
 app.include_router(api_router)

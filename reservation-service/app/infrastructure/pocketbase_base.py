@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from urllib.parse import urlsplit, parse_qsl
@@ -140,6 +141,23 @@ class PocketBaseClient:
         if not raw_body:
             return None
         return json.loads(raw_body.decode("utf-8"))
+
+    async def arequest(
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        params: dict | None = None,
+        retry_on_auth_error: bool = True,
+    ) -> dict | list | None:
+        return await asyncio.to_thread(
+            self.request,
+            method,
+            path,
+            payload=payload,
+            params=params,
+            retry_on_auth_error=retry_on_auth_error,
+        )
 
     def close(self) -> None:
         self._client.close()

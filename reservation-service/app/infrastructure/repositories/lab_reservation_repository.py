@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 
 from app.core.config import settings
@@ -350,6 +352,24 @@ class LabReservationRepository:
         raise NotImplementedError(
             "No se pueden borrar reservas. Use update() con status='cancelled' en lugar de delete()."
         )
+
+    async def alist_filtered(self, **kwargs) -> list[LabReservationResponse]:
+        return await asyncio.to_thread(self.list_filtered, **kwargs)
+
+    async def alist_for_laboratory_day(self, laboratory_id: str, day: str, per_page: int = 200) -> list[LabReservationResponse]:
+        return await asyncio.to_thread(self.list_for_laboratory_day, laboratory_id, day, per_page)
+
+    async def asearch_page(self, **kwargs) -> tuple[list[LabReservationResponse], int]:
+        return await asyncio.to_thread(self.search_page, **kwargs)
+
+    async def aget_by_id(self, reservation_id: str) -> LabReservationResponse | None:
+        return await asyncio.to_thread(self.get_by_id, reservation_id)
+
+    async def acreate(self, body: LabReservationCreate, current_user: dict | None = None) -> LabReservationResponse:
+        return await asyncio.to_thread(self.create, body, current_user)
+
+    async def aupdate(self, reservation_id: str, body: LabReservationUpdate) -> LabReservationResponse | None:
+        return await asyncio.to_thread(self.update, reservation_id, body)
         # Código antiguo mantenido por referencia pero NUNCA ejecutado:
         # try:
         #     self._client.request("DELETE", f"{self._base}/{reservation_id}")

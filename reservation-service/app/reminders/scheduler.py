@@ -59,7 +59,8 @@ class ReservationReminderScheduler:
 
         window_start = now.isoformat()
         window_end = (now + MAX_REMINDER_WINDOW).isoformat()
-        candidates = lab_reservation_repo.list_active_approved_with_start_before(
+        candidates = await asyncio.to_thread(
+            lab_reservation_repo.list_active_approved_with_start_before,
             start_before=window_end,
             start_after=window_start,
         )
@@ -94,7 +95,8 @@ class ReservationReminderScheduler:
             if now < reminder_at:
                 continue
 
-            notification = notification_store.create(
+            notification = await asyncio.to_thread(
+                notification_store.create,
                 recipient_user_id=reservation.requested_by,
                 notification_type="reservation_reminder",
                 title=title,

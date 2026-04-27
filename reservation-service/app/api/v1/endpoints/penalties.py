@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import httpx
@@ -55,7 +56,8 @@ async def _broadcast_penalty_event(action: str, penalty: PenaltyResponse) -> Non
 
 
 async def _notify_penalty_applied(penalty: PenaltyResponse) -> None:
-    notification = notification_store.create(
+    notification = await asyncio.to_thread(
+        notification_store.create,
         recipient_user_id=penalty.user_id,
         notification_type="penalty_applied",
         title="Cuenta suspendida temporalmente",
@@ -74,7 +76,8 @@ async def _notify_penalty_applied(penalty: PenaltyResponse) -> None:
 
 
 async def _notify_penalty_lifted(penalty: PenaltyResponse) -> None:
-    notification = notification_store.create(
+    notification = await asyncio.to_thread(
+        notification_store.create,
         recipient_user_id=penalty.user_id,
         notification_type="penalty_lifted",
         title="Penalizacion levantada",
@@ -248,7 +251,7 @@ async def _execute_reactivation(
     action_source: str,
 ) -> PenaltyReactivationResponse:
     authorization = _authorization_header(request)
-    existing_penalty = user_penalty_repo.get_by_id(penalty_id)
+    existing_penalty = await asyncio.to_thread(user_penalty_repo.get_by_id, penalty_id)
     if existing_penalty is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Penalizacion no encontrada")
     if not existing_penalty.is_active:
@@ -266,9 +269,10 @@ async def _execute_reactivation(
             detail=regularization.summary,
         )
 
+    other_penalties = await asyncio.to_thread(user_penalty_repo.list_for_user, existing_penalty.user_id)
     other_active_penalties = [
         item
-        for item in user_penalty_repo.list_for_user(existing_penalty.user_id)
+        for item in other_penalties
         if item.is_active and item.id != existing_penalty.id
     ]
     if other_active_penalties:
@@ -281,7 +285,8 @@ async def _execute_reactivation(
     if user_was_inactive:
         await _set_user_active(existing_penalty.user_id, authorization, is_active=True)
 
-    lifted = user_penalty_repo.lift(
+    lifted = await asyncio.to_thread(
+        user_penalty_repo.lift,
         penalty_id,
         current_user=current_user,
         lift_reason=lift_reason,
@@ -292,14 +297,17 @@ async def _execute_reactivation(
     await _notify_penalty_lifted(lifted)
     await _broadcast_penalty_event("lift", lifted)
 
-    email_sent = send_penalty_reactivation_email(
+    email_sent = await asyncio.to_thread(
+        send_penalty_reactivation_email,
         penalty=lifted,
         actor_name=str(current_user.get("name") or "").strip(),
     )
-    active_penalty_count_after = len([item for item in user_penalty_repo.list_for_user(lifted.user_id) if item.is_active])
+    user_penalties_after = await asyncio.to_thread(user_penalty_repo.list_for_user, lifted.user_id)
+    active_penalty_count_after = len([item for item in user_penalties_after if item.is_active])
     privileges_restored = active_penalty_count_after == 0
 
-    history_record = penalty_reactivation_history_store.create(
+    history_record = await asyncio.to_thread(
+        penalty_reactivation_history_store.create,
         PenaltyReactivationHistoryRecordCreate(
             penalty_id=lifted.id,
             user_id=lifted.user_id,
@@ -379,13 +387,13 @@ async def create_penalty(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Debes registrar el motivo de la penalizacion")
 
     try:
-        penalty = user_penalty_repo.create(body, current_user=current_user, email_sent=False)
+        penalty = await asyncio.to_thread(user_penalty_repo.create, body, current_user=current_user, email_sent=False)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    email_sent = send_penalty_email(penalty=penalty)
+    email_sent = await asyncio.to_thread(send_penalty_email, penalty=penalty)
     if email_sent:
-        penalty = user_penalty_repo.update_email_delivery(penalty.id, email_sent=True) or penalty
+        penalty = await asyncio.to_thread(user_penalty_repo.update_email_delivery, penalty.id, email_sent=True) or penalty
 
     await _notify_penalty_applied(penalty)
     await _broadcast_penalty_event("create", penalty)
