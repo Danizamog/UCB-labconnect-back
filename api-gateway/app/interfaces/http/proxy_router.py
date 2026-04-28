@@ -1,10 +1,20 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import Response
 
 from app.core.config import settings
 from app.infrastructure.http.proxy import forward_request
+from app.infrastructure.http.ws_proxy import _build_target_ws_url, proxy_websocket
 
 router = APIRouter()
+
+
+# Reservation Service - Realtime WebSocket
+@router.websocket("/api/v1/ws/reservations")
+async def proxy_reservations_ws(websocket: WebSocket) -> None:
+    target_url = _build_target_ws_url(
+        settings.reservations_service_url, "/v1/ws/reservations"
+    )
+    await proxy_websocket(websocket, target_url)
 
 
 # Auth Service
