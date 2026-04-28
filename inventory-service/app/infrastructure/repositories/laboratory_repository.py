@@ -14,6 +14,14 @@ def _to_response(record: dict) -> LaboratoryResponse:
         area_record = expand.get("area_id")
         if isinstance(area_record, dict):
             area_name = area_record.get("name") or None
+    def _normalize_list_field(value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(v) for v in value if v is not None]
+        if isinstance(value, str):
+            return [p.strip() for p in value.split(",") if p.strip()]
+        return [str(value)]
 
     return LaboratoryResponse(
         id=record.get("id", ""),
@@ -24,9 +32,16 @@ def _to_response(record: dict) -> LaboratoryResponse:
         is_active=bool(record.get("is_active", True)),
         area_id=record.get("area_id", ""),
         area_name=area_name,
+        allowed_roles=_normalize_list_field(record.get("allowed_roles")),
+        allowed_user_ids=_normalize_list_field(record.get("allowed_user_ids")),
+        required_permissions=_normalize_list_field(record.get("required_permissions")),
         created=record.get("created", ""),
         updated=record.get("updated", ""),
     )
+
+
+def _escape_filter_value(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
 
 
 class LaboratoryRepository:
@@ -40,19 +55,34 @@ class LaboratoryRepository:
         self._list_cache.invalidate()
         self._detail_cache.invalidate()
 
-    def list_all(self, page: int = 1, per_page: int = 200) -> list[LaboratoryResponse]:
-        cache_key = ("list_all", page, per_page)
+    def list_all(
+        self,
+        page: int = 1,
+        per_page: int = 200,
+        name: str | None = None,
+        area_id: str | None = None,
+        is_active: bool | None = None,
+        sort: str | None = "name",
+    ) -> list[LaboratoryResponse]:
+        cache_key = ("list_all", page, per_page, name, area_id, is_active, sort)
 
         def load() -> list[LaboratoryResponse]:
             items: list[LaboratoryResponse] = []
             current_page = page
 
             while True:
-                data = self._client.request(
-                    "GET",
-                    self._base,
-                    params={"page": current_page, "perPage": per_page, "sort": "name", "expand": "area_id"},
-                )
+                params = {"page": current_page, "perPage": per_page, "sort": sort, "expand": "area_id"}
+                clauses: list[str] = []
+                if name:
+                    clauses.append(f'name~"{_escape_filter_value(name)}"')
+                if area_id:
+                    clauses.append(f'area_id="{_escape_filter_value(area_id)}"')
+                if is_active is not None:
+                    clauses.append(f'is_active={"true" if is_active else "false"}')
+                if clauses:
+                    params["filter"] = " && ".join(clauses)
+
+                data = self._client.request("GET", self._base, params=params)
                 if not isinstance(data, dict):
                     break
                 records = data.get("items", [])

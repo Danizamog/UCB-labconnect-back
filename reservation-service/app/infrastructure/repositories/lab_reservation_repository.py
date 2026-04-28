@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.core.datetime_utils import parse_datetime
 from app.infrastructure.pocketbase_base import PocketBaseClient
 from app.schemas.lab_reservation import RESERVATION_STATUSES, LabReservationCreate, LabReservationResponse, LabReservationUpdate
+from app.core.exceptions import ConflictError
 
 _COLLECTION = settings.pb_lab_reservation_collection
 
@@ -288,7 +289,7 @@ class LabReservationRepository:
             if item.status in {"rejected", "cancelled", "completed", "absent"}:
                 continue
             if _has_overlap(start_at, end_at, item.start_at, item.end_at):
-                raise ValueError("Existe una reserva activa que se cruza con ese horario")
+                raise ConflictError("Existe una reserva activa que se cruza con ese horario")
 
     def create(self, body: LabReservationCreate, current_user: dict | None = None) -> LabReservationResponse:
         start_at = parse_datetime(body.start_at)

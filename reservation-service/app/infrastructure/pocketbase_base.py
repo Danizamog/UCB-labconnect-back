@@ -105,6 +105,11 @@ class PocketBaseClient:
 
         self._ensure_authenticated()
 
+        # Normalize sort parameter if provided (accepts 'field', 'field:asc', 'field:desc', 'field,-other')
+        if params and "sort" in params and params.get("sort"):
+            params = dict(params)
+            params["sort"] = self._normalize_sort_param(params.get("sort"))
+
         url = f"{self._base_url}{path}"
         if params:
             url = f"{url}?{urlencode(params)}"
@@ -161,3 +166,30 @@ class PocketBaseClient:
 
     def close(self) -> None:
         self._client.close()
+
+    def _normalize_sort_param(self, raw: str | None) -> str | None:
+        if not raw:
+            return None
+        tokens = [t.strip() for t in str(raw).split(",") if t.strip()]
+        normalized: list[str] = []
+        for token in tokens:
+            # support prefix -field or +field
+            if token.startswith("-") or token.startswith("+"):
+                direction = "desc" if token.startswith("-") else "asc"
+                field = token.lstrip("+-").strip()
+            elif ":" in token:
+                parts = token.split(":", 1)
+                field = parts[0].strip()
+                direction = parts[1].strip().lower()
+            else:
+                field = token
+                direction = "asc"
+
+            if not field:
+                continue
+            if direction == "desc":
+                normalized.append(f"-{field}")
+            else:
+                normalized.append(field)
+
+        return ",".join(normalized) if normalized else None

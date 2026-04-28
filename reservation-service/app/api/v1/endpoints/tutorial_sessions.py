@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Query
 
 from app.application.container import tutorial_session_repo
 from app.core.dependencies import ensure_any_permission, get_current_user
@@ -43,8 +43,21 @@ async def _broadcast_tutorial_notification(
 
 
 @router.get("", response_model=list[TutorialSessionResponse])
-def list_public_tutorial_sessions(_: dict = Depends(get_current_user)) -> list[TutorialSessionResponse]:
-    return tutorial_session_repo.list_public()
+def list_public_tutorial_sessions(
+    q: str | None = Query(default=None, description="Buscar por tema (topic)"),
+    laboratory_id: str | None = Query(default=None),
+    session_date: str | None = Query(default=None, description="Fecha en formato YYYY-MM-DD"),
+    is_published: bool | None = Query(default=None),
+    sort: str | None = Query(default=None, description="Campo(s) para ordenar, coma-separados"),
+    _: dict = Depends(get_current_user),
+) -> list[TutorialSessionResponse]:
+    return tutorial_session_repo.list_public_filtered(
+        topic=q,
+        laboratory_id=laboratory_id,
+        session_date=session_date,
+        is_published=is_published,
+        sort=sort,
+    )
 
 
 @router.get("/mine", response_model=list[TutorialSessionResponse])
@@ -200,10 +213,16 @@ async def enroll_in_tutorial_session(
             student_name=current_user.get("name") or current_user.get("username") or "Estudiante",
             student_email=current_user.get("email") or current_user.get("username") or "",
         )
-    except KeyError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except Exception as exc:
+        from app.core.exceptions import ConflictError
+
+        if isinstance(exc, KeyError):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        if isinstance(exc, ConflictError):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise
 
     await realtime_manager.broadcast(
         {
