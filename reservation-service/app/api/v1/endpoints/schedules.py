@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -23,7 +24,7 @@ async def create_schedule(body: LabScheduleCreate, current_user: dict = Depends(
         "No tienes permisos para crear horarios",
     )
     try:
-        created = lab_schedule_repo.create(body)
+        created = await asyncio.to_thread(lab_schedule_repo.create, body)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
@@ -51,7 +52,7 @@ async def update_schedule(
         "No tienes permisos para actualizar horarios",
     )
     try:
-        updated = lab_schedule_repo.update(schedule_id, body)
+        updated = await asyncio.to_thread(lab_schedule_repo.update, schedule_id, body)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     if updated is None:
@@ -75,7 +76,7 @@ async def delete_schedule(schedule_id: str, current_user: dict = Depends(get_cur
         {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
         "No tienes permisos para eliminar horarios",
     )
-    deleted = lab_schedule_repo.delete(schedule_id)
+    deleted = await asyncio.to_thread(lab_schedule_repo.delete, schedule_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Horario no encontrado")
 

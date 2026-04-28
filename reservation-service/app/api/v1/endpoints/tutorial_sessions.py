@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status, Query
@@ -21,7 +22,8 @@ async def _broadcast_tutorial_notification(
     message: str,
     payload: dict,
 ) -> None:
-    notification = notification_store.create(
+    notification = await asyncio.to_thread(
+        notification_store.create,
         recipient_user_id=recipient_user_id,
         notification_type=notification_type,
         title=title,
@@ -112,7 +114,7 @@ async def create_tutorial_session(
     )
 
     try:
-        created = tutorial_session_repo.create(payload)
+        created = await asyncio.to_thread(tutorial_session_repo.create, payload)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
@@ -139,7 +141,7 @@ async def update_tutorial_session(
         "No tienes permisos para actualizar tutorias",
     )
 
-    existing = tutorial_session_repo.get_by_id(session_id)
+    existing = await asyncio.to_thread(tutorial_session_repo.get_by_id, session_id)
     if existing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
 
@@ -157,7 +159,7 @@ async def update_tutorial_session(
     )
 
     try:
-        updated = tutorial_session_repo.update(session_id, payload)
+        updated = await asyncio.to_thread(tutorial_session_repo.update, session_id, payload)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
@@ -204,11 +206,12 @@ async def enroll_in_tutorial_session(
     current_user: dict = Depends(get_current_user),
 ) -> TutorialSessionResponse:
     try:
-        updated = tutorial_session_repo.enroll(
+        updated = await asyncio.to_thread(
+            tutorial_session_repo.enroll,
             session_id,
             student_id=current_user.get("user_id") or "",
             student_name=current_user.get("name") or current_user.get("username") or "Estudiante",
-            student_email=current_user.get("email") or "",
+            student_email=current_user.get("email") or current_user.get("username") or "",
         )
     except Exception as exc:
         from app.core.exceptions import ConflictError
@@ -238,7 +241,8 @@ async def cancel_tutorial_enrollment(
     current_user: dict = Depends(get_current_user),
 ) -> TutorialSessionResponse:
     try:
-        updated = tutorial_session_repo.cancel_enrollment(
+        updated = await asyncio.to_thread(
+            tutorial_session_repo.cancel_enrollment,
             session_id,
             student_id=current_user.get("user_id") or "",
         )
@@ -269,7 +273,7 @@ async def delete_tutorial_session(
         "No tienes permisos para eliminar tutorias",
     )
 
-    existing = tutorial_session_repo.get_by_id(session_id)
+    existing = await asyncio.to_thread(tutorial_session_repo.get_by_id, session_id)
     if existing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
 
@@ -277,7 +281,7 @@ async def delete_tutorial_session(
     if not is_admin and existing.tutor_id != (current_user.get("user_id") or ""):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No puedes eliminar una tutoria de otro tutor")
 
-    deleted_result = tutorial_session_repo.delete(session_id)
+    deleted_result = await asyncio.to_thread(tutorial_session_repo.delete, session_id)
     if deleted_result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
 

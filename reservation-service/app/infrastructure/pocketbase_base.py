@@ -1,10 +1,13 @@
+import asyncio
 import json
 import logging
+from urllib.parse import urlsplit, parse_qsl
 from urllib.parse import urlencode
 
 import httpx
 
 from app.core.config import settings
+from app.infrastructure.local_pocketbase import LocalPocketBaseFallback
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +20,11 @@ class PocketBaseClient:
         self._auth_collection = settings.pocketbase_auth_collection
         self._timeout = settings.pocketbase_timeout_seconds
         self._auth_token: str | None = None
+        self._fallback = LocalPocketBaseFallback(
+            postgres_url=settings.postgres_url,
+            namespace=settings.local_data_namespace,
+            enabled=settings.data_mode in {"hybrid", "postgres", "local"} or not bool(self._base_url),
+        )
         self._client = httpx.Client(
             timeout=httpx.Timeout(self._timeout, connect=min(self._timeout, 5.0)),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
@@ -67,6 +75,21 @@ class PocketBaseClient:
         if self._has_credentials() and not self._auth_token:
             self._authenticate()
 
+    def _fallback_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict | None = None,
+        params: dict | None = None,
+    ) -> dict | list | None:
+        merged_params = dict(params or {})
+        parsed = urlsplit(path)
+        normalized_path = parsed.path or path
+        if parsed.query:
+            merged_params.update(dict(parse_qsl(parsed.query, keep_blank_values=True)))
+        return self._fallback.handle(method, normalized_path, payload=payload, params=merged_params)
+
     def request(
         self,
         method: str,
@@ -75,6 +98,11 @@ class PocketBaseClient:
         params: dict | None = None,
         retry_on_auth_error: bool = True,
     ) -> dict | list | None:
+        if not self._base_url:
+            if self._fallback.enabled:
+                return self._fallback_request(method, path, payload=payload, params=params)
+            raise ValueError("No se pudo conectar con PocketBase")
+
         self._ensure_authenticated()
 
         # Normalize sort parameter if provided (accepts 'field', 'field:asc', 'field:desc', 'field,-other')
@@ -86,28 +114,55 @@ class PocketBaseClient:
         if params:
             url = f"{url}?{urlencode(params)}"
 
-        # LOGGING: Registrar todas las solicitudes a PocketBase
-        logger.info(f"[POCKETBASE] {method} {url} | Payload: {payload}")
+        if settings.pocketbase_verbose_request_logs:
+            logger.debug("[POCKETBASE] %s %s", method, url)
 
         try:
             response = self._client.request(method, url, json=payload, headers=self._headers())
             response.raise_for_status()
             raw_body = response.content
-            logger.info(f"[POCKETBASE SUCCESS] {method} {url} | Status: {response.status_code}")
+            if settings.pocketbase_verbose_request_logs:
+                logger.debug("[POCKETBASE SUCCESS] %s %s | Status: %s", method, url, response.status_code)
         except httpx.HTTPStatusError as exc:
-            logger.error(f"[POCKETBASE ERROR] {method} {url} | Status: {exc.response.status_code} | Response: {exc.response.text}")
+            logger.error(
+                "[POCKETBASE ERROR] %s %s | Status: %s",
+                method,
+                url,
+                exc.response.status_code,
+            )
             if exc.response.status_code == 401 and retry_on_auth_error and self._has_credentials():
                 self._auth_token = None
                 self._authenticate()
                 return self.request(method, path, payload=payload, params=params, retry_on_auth_error=False)
+            if self._fallback.enabled and exc.response.status_code >= 500:
+                return self._fallback_request(method, path, payload=payload, params=params)
             raise
         except httpx.HTTPError as exc:
-            logger.error(f"[POCKETBASE CONNECTION ERROR] {method} {url} | Error: {str(exc)}")
+            logger.error("[POCKETBASE CONNECTION ERROR] %s %s | Error: %s", method, url, str(exc))
+            if self._fallback.enabled:
+                return self._fallback_request(method, path, payload=payload, params=params)
             raise ValueError("No se pudo conectar con PocketBase") from exc
 
         if not raw_body:
             return None
         return json.loads(raw_body.decode("utf-8"))
+
+    async def arequest(
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        params: dict | None = None,
+        retry_on_auth_error: bool = True,
+    ) -> dict | list | None:
+        return await asyncio.to_thread(
+            self.request,
+            method,
+            path,
+            payload=payload,
+            params=params,
+            retry_on_auth_error=retry_on_auth_error,
+        )
 
     def close(self) -> None:
         self._client.close()

@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.api.v1.endpoints.analytics import router as analytics_router
 from app.api.v1.endpoints.availability import router as availability_router
 from app.api.v1.endpoints.blocks import router as blocks_router
 from app.api.v1.endpoints.notifications import router as notifications_router
@@ -11,6 +12,7 @@ from app.api.v1.endpoints.tutorial_sessions import router as tutorial_sessions_r
 
 api_router = APIRouter(prefix="/v1")
 
+api_router.include_router(analytics_router)
 api_router.include_router(reservations_router)
 api_router.include_router(schedules_router)
 api_router.include_router(blocks_router)

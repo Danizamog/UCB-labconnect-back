@@ -31,10 +31,10 @@ services:
       - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2)"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
 
   inventory-service:
     build:
@@ -54,10 +54,10 @@ services:
       - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=2)"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
 
   role-service:
     build:
@@ -105,11 +105,13 @@ services:
       - TUTORIAL_SESSIONS_STORAGE_PATH=/app/data/tutorial_sessions.json
       - DATA_MODE=${DATA_MODE:-pocketbase}
       - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
+      - POSTGRES_URL=${POSTGRES_URL:-postgresql://labconnect:labconnect@labconnect-postgres:5432/labconnect}
       - SMTP_HOST=mailpit
       - SMTP_PORT=1025
       - SMTP_SENDER=${SMTP_SENDER:-labconnect@ucb.edu.bo}
       - SMTP_USE_TLS=false
       - SMTP_USE_SSL=false
+      - RESERVATION_REMINDER_CHECK_INTERVAL_SECONDS=${RESERVATION_REMINDER_CHECK_INTERVAL_SECONDS:-60}
     depends_on:
       mailpit:
         condition: service_started
@@ -138,11 +140,15 @@ services:
       - "${API_GATEWAY_PORT:-8000}:8000"
     depends_on:
       auth-service:
-        condition: service_healthy
+        condition: service_started
       inventory-service:
-        condition: service_healthy
+        condition: service_started
       role-service:
-        condition: service_healthy
+        condition: service_started
       reservation-service:
-        condition: service_healthy
+        condition: service_started
+
+networks:
+  default:
+    name: labconnect-backend-network
 
