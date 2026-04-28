@@ -1,9 +1,12 @@
+import asyncio
+
 import httpx
 
 from app.core.config import settings
 from app.core.datetime_utils import parse_datetime
 from app.infrastructure.pocketbase_base import PocketBaseClient
 from app.schemas.lab_reservation import RESERVATION_STATUSES, LabReservationCreate, LabReservationResponse, LabReservationUpdate
+from app.core.exceptions import ConflictError
 
 _COLLECTION = settings.pb_lab_reservation_collection
 
@@ -99,6 +102,50 @@ class LabReservationRepository:
                 "GET",
                 self._base,
                 params={"page": current_page, "perPage": per_page, "sort": "start_at"},
+            )
+            if not isinstance(data, dict):
+                break
+            records = data.get("items", [])
+            if not isinstance(records, list) or not records:
+                break
+            items.extend(_to_response(r) for r in records if isinstance(r, dict))
+            total_pages = int(data.get("totalPages", current_page))
+            if current_page >= total_pages:
+                break
+            current_page += 1
+
+        return items
+
+    def list_active_approved_with_start_before(
+        self,
+        *,
+        start_before: str,
+        start_after: str | None = None,
+        page: int = 1,
+        per_page: int = 200,
+    ) -> list[LabReservationResponse]:
+        items: list[LabReservationResponse] = []
+        current_page = page
+
+        clauses = [
+            'status="approved"',
+            'is_active=true',
+            f'start_at<="{_escape_filter_value(start_before)}"',
+        ]
+        if start_after:
+            clauses.append(f'start_at>"{_escape_filter_value(start_after)}"')
+        filter_expression = " && ".join(clauses)
+
+        while True:
+            data = self._client.request(
+                "GET",
+                self._base,
+                params={
+                    "page": current_page,
+                    "perPage": per_page,
+                    "sort": "start_at",
+                    "filter": filter_expression,
+                },
             )
             if not isinstance(data, dict):
                 break
@@ -242,7 +289,7 @@ class LabReservationRepository:
             if item.status in {"rejected", "cancelled", "completed", "absent"}:
                 continue
             if _has_overlap(start_at, end_at, item.start_at, item.end_at):
-                raise ValueError("Existe una reserva activa que se cruza con ese horario")
+                raise ConflictError("Existe una reserva activa que se cruza con ese horario")
 
     def create(self, body: LabReservationCreate, current_user: dict | None = None) -> LabReservationResponse:
         start_at = parse_datetime(body.start_at)
@@ -306,6 +353,24 @@ class LabReservationRepository:
         raise NotImplementedError(
             "No se pueden borrar reservas. Use update() con status='cancelled' en lugar de delete()."
         )
+
+    async def alist_filtered(self, **kwargs) -> list[LabReservationResponse]:
+        return await asyncio.to_thread(self.list_filtered, **kwargs)
+
+    async def alist_for_laboratory_day(self, laboratory_id: str, day: str, per_page: int = 200) -> list[LabReservationResponse]:
+        return await asyncio.to_thread(self.list_for_laboratory_day, laboratory_id, day, per_page)
+
+    async def asearch_page(self, **kwargs) -> tuple[list[LabReservationResponse], int]:
+        return await asyncio.to_thread(self.search_page, **kwargs)
+
+    async def aget_by_id(self, reservation_id: str) -> LabReservationResponse | None:
+        return await asyncio.to_thread(self.get_by_id, reservation_id)
+
+    async def acreate(self, body: LabReservationCreate, current_user: dict | None = None) -> LabReservationResponse:
+        return await asyncio.to_thread(self.create, body, current_user)
+
+    async def aupdate(self, reservation_id: str, body: LabReservationUpdate) -> LabReservationResponse | None:
+        return await asyncio.to_thread(self.update, reservation_id, body)
         # Código antiguo mantenido por referencia pero NUNCA ejecutado:
         # try:
         #     self._client.request("DELETE", f"{self._base}/{reservation_id}")

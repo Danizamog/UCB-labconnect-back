@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -24,7 +25,7 @@ async def create_block(body: LabBlockCreate, current_user: dict = Depends(get_cu
     )
     payload = body.model_copy(update={"created_by": body.created_by or current_user.get("user_id") or ""})
     try:
-        created = lab_block_repo.create(payload)
+        created = await asyncio.to_thread(lab_block_repo.create, payload)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
@@ -48,7 +49,7 @@ async def update_block(block_id: str, body: LabBlockUpdate, current_user: dict =
         "No tienes permisos para actualizar bloqueos",
     )
     try:
-        updated = lab_block_repo.update(block_id, body)
+        updated = await asyncio.to_thread(lab_block_repo.update, block_id, body)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     if updated is None:
@@ -72,7 +73,7 @@ async def delete_block(block_id: str, current_user: dict = Depends(get_current_u
         {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
         "No tienes permisos para eliminar bloqueos",
     )
-    deleted = lab_block_repo.delete(block_id)
+    deleted = await asyncio.to_thread(lab_block_repo.delete, block_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bloqueo no encontrado")
 

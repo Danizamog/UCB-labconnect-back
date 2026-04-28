@@ -84,13 +84,6 @@ class PocketBaseClient:
             self._authenticate()
 
         extra_headers = kwargs.pop("headers", None)
-        # Normalize sort parameter if present in params
-        params = kwargs.get("params")
-        if params and "sort" in params and params.get("sort"):
-            params = dict(params)
-            params["sort"] = self._normalize_sort_param(params.get("sort"))
-            kwargs["params"] = params
-
         response = self._client.request(method, url, headers=self._headers(extra_headers), **kwargs)
         if response.status_code == 401 and self._has_credentials():
             self._authenticate()
@@ -143,7 +136,7 @@ class PocketBaseClient:
         while True:
             params: dict[str, Any] = {"page": page, "perPage": per_page}
             if sort:
-                params["sort"] = self._normalize_sort_param(sort)
+                params["sort"] = sort
             if filter:
                 params["filter"] = filter
             payload = self._request(
@@ -167,41 +160,6 @@ class PocketBaseClient:
 
         return records
 
-    def _normalize_sort_param(self, raw: str | None) -> str | None:
-        if not raw:
-            return None
-        tokens = [t.strip() for t in str(raw).split(",") if t.strip()]
-        normalized: list[str] = []
-        for token in tokens:
-            if token.startswith("-") or token.startswith("+"):
-                direction = "desc" if token.startswith("-") else "asc"
-                field = token.lstrip("+-").strip()
-            elif ":" in token:
-                parts = token.split(":", 1)
-                field = parts[0].strip()
-                direction = parts[1].strip().lower()
-            else:
-                field = token
-                direction = "asc"
-
-            if not field:
-                continue
-            if direction == "desc":
-                normalized.append(f"-{field}")
-            else:
-                normalized.append(field)
-
-        return ",".join(normalized) if normalized else None
-
-    def get_record(self, collection_name: str, record_id: str) -> dict[str, Any] | None:
-        try:
-            payload = self._request("GET", f"{self._base_url}/api/collections/{collection_name}/records/{record_id}")
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return None
-            raise
-        return payload if isinstance(payload, dict) else None
-
     def create_record(self, collection_name: str, payload: dict[str, Any]) -> dict[str, Any]:
         result = self._request(
             "POST",
@@ -212,23 +170,3 @@ class PocketBaseClient:
             raise ValueError("PocketBase devolvio una respuesta invalida al crear el registro")
         return result
 
-    def update_record(self, collection_name: str, record_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        result = self._request(
-            "PATCH",
-            f"{self._base_url}/api/collections/{collection_name}/records/{record_id}",
-            json=payload,
-        )
-        if not isinstance(result, dict):
-            raise ValueError("PocketBase devolvio una respuesta invalida al actualizar el registro")
-        return result
-
-    def clear_collection_records(self, collection_name: str) -> None:
-        for record in self.list_records(collection_name, sort=None):
-            record_id = record.get("id")
-            if isinstance(record_id, str) and record_id:
-                self._request("DELETE", f"{self._base_url}/api/collections/{collection_name}/records/{record_id}")
-
-    def replace_collection_records(self, collection_name: str, records: list[dict[str, Any]]) -> None:
-        self.clear_collection_records(collection_name)
-        for payload in records:
-            self._request("POST", f"{self._base_url}/api/collections/{collection_name}/records", json=payload)

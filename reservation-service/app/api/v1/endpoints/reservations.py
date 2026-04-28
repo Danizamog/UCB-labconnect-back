@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import math
 import re
@@ -15,6 +16,7 @@ from app.core.datetime_utils import combine_date_time, iter_time_ranges, now_loc
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
 from app.realtime.manager import realtime_manager
+from app.schemas.agenda_summary import AgendaSummaryResponse
 from app.schemas.lab_reservation import (
     LabReservationCreate,
     PaginatedLabReservationResponse,
@@ -26,6 +28,7 @@ from app.schemas.lab_reservation import (
     WalkInReservationCreate,
 )
 from app.schemas.reservation_stats import HourlyStatsResponse, TopSlotsResponse, HeatmapResponse
+from app.schemas.tutorial_session import TutorialSessionResponse
 
 router = APIRouter(prefix="/reservations", tags=["reservations"])
 _USER_RESERVATION_MODIFICATION_WINDOW_SECONDS = 2 * 60 * 60
@@ -46,6 +49,21 @@ _SUPPORTED_SORT_FIELDS = {
     "updated",
     "date",
 }
+
+
+def _is_history_reservation(reservation: LabReservationResponse, reference_now: datetime | None = None) -> bool:
+    now = reference_now or now_local_naive()
+
+    try:
+        start_at = parse_datetime(reservation.start_at)
+        end_at = parse_datetime(reservation.end_at)
+    except Exception:
+        return False
+
+    if end_at <= now:
+        return True
+
+    return reservation.status in _FINAL_RESERVATION_STATUSES and start_at <= now
 
 
 def _max_allowed_reservation_date(base_day):
@@ -139,7 +157,7 @@ def _validate_reservation_time_rules(
     for block in lab_block_repo.list_for_laboratory_day(laboratory_id, day):
         if _has_schedule_overlap(start_at, end_at, block.start_at, block.end_at):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_409_CONFLICT,
                 detail="El bloque seleccionado no esta disponible porque el laboratorio se encuentra bloqueado o en mantenimiento",
             )
 
@@ -150,14 +168,14 @@ def _validate_reservation_time_rules(
             continue
         if _has_schedule_overlap(start_at, end_at, reservation.start_at, reservation.end_at):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_409_CONFLICT,
                 detail="Ese bloque ya no esta disponible porque existe otra reserva activa en el mismo horario",
             )
 
     for tutorial_session in tutorial_session_repo.list_public_for_laboratory_day(laboratory_id, day):
         if _has_schedule_overlap(start_at, end_at, tutorial_session.start_at, tutorial_session.end_at):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_409_CONFLICT,
                 detail="Ese bloque ya no esta disponible porque existe una tutoria publicada en el mismo horario",
             )
 
@@ -200,6 +218,25 @@ def _reservation_field_value(reservation: LabReservationResponse, field: str) ->
     return str(value)
 
 
+def _reservation_field_value_for_where(reservation: LabReservationResponse, field: str):
+    if field == "date":
+        return str(reservation.start_at).split("T", 1)[0]
+
+    value = getattr(reservation, field, None)
+    if field in {"attendees_count", "user_modification_count"}:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    if field == "is_walk_in":
+        return bool(value)
+
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _apply_where_filter(items: list[LabReservationResponse], where: str | None) -> list[LabReservationResponse]:
     if not where:
         return items
@@ -231,16 +268,38 @@ def _apply_where_filter(items: list[LabReservationResponse], where: str | None) 
             )
 
         def _matches(item: LabReservationResponse) -> bool:
-            actual = _reservation_field_value(item, field).strip()
-            actual_lower = actual.lower()
+            actual_value = _reservation_field_value_for_where(item, field)
             expected_lower = expected.lower()
 
             if operator == "~":
-                return expected_lower in actual_lower
+                return expected_lower in str(actual_value).lower()
             if operator == "=":
-                return actual_lower == expected_lower
+                if isinstance(actual_value, bool):
+                    return actual_value == (expected_lower in {"true", "1", "yes", "si", "sí"})
+                return str(actual_value).lower() == expected_lower
             if operator == "!=":
-                return actual_lower != expected_lower
+                if isinstance(actual_value, bool):
+                    return actual_value != (expected_lower in {"true", "1", "yes", "si", "sí"})
+                return str(actual_value).lower() != expected_lower
+
+            if isinstance(actual_value, (int, float)):
+                try:
+                    expected_value = float(expected)
+                except ValueError:
+                    return False
+
+                if operator == ">":
+                    return actual_value > expected_value
+                if operator == ">=":
+                    return actual_value >= expected_value
+                if operator == "<":
+                    return actual_value < expected_value
+                if operator == "<=":
+                    return actual_value <= expected_value
+                return False
+
+            actual = str(actual_value)
+            actual_lower = actual.lower()
             if operator == ">":
                 return actual > expected
             if operator == ">=":
@@ -399,7 +458,8 @@ async def _notify_schedule_change(
         return
 
     title, message, payload = notification_data
-    notification = notification_store.create(
+    notification = await asyncio.to_thread(
+        notification_store.create,
         recipient_user_id=recipient_user_id,
         notification_type="reservation_schedule_change",
         title=title,
@@ -442,7 +502,8 @@ async def _notify_status_change(
     else:
         return
 
-    notification = notification_store.create(
+    notification = await asyncio.to_thread(
+        notification_store.create,
         recipient_user_id=recipient_user_id,
         notification_type="reservation_status_update",
         title=title,
@@ -480,7 +541,8 @@ async def _notify_operations_reservation_cancelled(
     
     message = f"{actor_name} canceló una reserva aprobada programada para {start_time}. Propósito: {reservation.purpose}"
     
-    notification = notification_store.create(
+    notification = await asyncio.to_thread(
+        notification_store.create,
         recipient_user_id=OPERATIONS_RECIPIENT_ID,
         notification_type="reservation_cancelled_by_user",
         title="⚠️ Reserva Cancelada por Usuario",
@@ -517,18 +579,16 @@ def list_reservations(
     status_filter: str | None = Query(default=None, alias="status"),
     current_user: dict = Depends(get_current_user),
 ) -> list[LabReservationResponse]:
-    data = lab_reservation_repo.list_all()
+    requester = None if _can_manage_reservations(current_user) else (current_user.get("user_id") or "")
 
-    if not _can_manage_reservations(current_user):
-        requester = current_user.get("user_id") or ""
-        data = [item for item in data if item.requested_by == requester]
-
-    if laboratory_id:
-        data = [item for item in data if item.laboratory_id == laboratory_id]
-    if status_filter:
-        data = [item for item in data if item.status == status_filter]
-    if day:
-        data = [item for item in data if item.start_at.startswith(day)]
+    data = lab_reservation_repo.list_filtered(
+        laboratory_id=laboratory_id,
+        day=day,
+        status_filter=status_filter,
+        requested_by=requester,
+        sort_by="start_at",
+        sort_type="ASC",
+    )
 
     return [_serialize_reservation(item) for item in data]
 
@@ -601,8 +661,103 @@ def search_reservations(
 
 @router.get("/mine", response_model=list[LabReservationResponse])
 def list_my_reservations(current_user: dict = Depends(get_current_user)) -> list[LabReservationResponse]:
-    requester = current_user.get("user_id") or ""
-    return [_serialize_reservation(item) for item in lab_reservation_repo.list_all() if item.requested_by == requester]
+    requester = str(current_user.get("user_id") or "").strip()
+    if not requester:
+        return []
+    items = lab_reservation_repo.list_filtered(requested_by=requester, sort_by="start_at", sort_type="ASC")
+    return [_serialize_reservation(item) for item in items]
+
+
+@router.get("/summary", response_model=AgendaSummaryResponse)
+def get_my_agenda_summary(
+    current_user: dict = Depends(get_current_user),
+    limit: int = Query(default=5, ge=1, le=12),
+) -> AgendaSummaryResponse:
+    requester = str(current_user.get("user_id") or "").strip()
+    now = now_local_naive()
+
+    if requester:
+        my_reservations = lab_reservation_repo.list_filtered(
+            requested_by=requester,
+            sort_by="start_at",
+            sort_type="ASC",
+        )
+    else:
+        my_reservations = []
+    upcoming_reservations = [
+        _serialize_reservation(item)
+        for item in my_reservations
+        if parse_datetime(item.end_at) >= now
+    ]
+    upcoming_reservations.sort(key=lambda item: (item.start_at, item.end_at, item.id))
+
+    combined_tutorials: dict[str, TutorialSessionResponse] = {}
+    if requester:
+        for session in tutorial_session_repo.list_for_student(requester):
+            if parse_datetime(session.end_at) >= now:
+                combined_tutorials[session.id] = session
+
+        for session in tutorial_session_repo.list_for_tutor(requester):
+            if parse_datetime(session.end_at) >= now:
+                combined_tutorials[session.id] = session
+
+    upcoming_tutorials = sorted(
+        combined_tutorials.values(),
+        key=lambda item: (item.start_at, item.end_at, item.id),
+    )
+
+    return AgendaSummaryResponse(
+        generated_at=datetime.utcnow().isoformat(),
+        reservation_count=len(upcoming_reservations),
+        tutorial_count=len(upcoming_tutorials),
+        total_count=len(upcoming_reservations) + len(upcoming_tutorials),
+        upcoming_reservations=upcoming_reservations[:limit],
+        upcoming_tutorials=upcoming_tutorials[:limit],
+    )
+
+
+@router.get("/mine/history/search", response_model=PaginatedLabReservationResponse)
+def search_my_reservation_history(
+    page_number: int = Query(default=0, ge=0, alias="pageNumber"),
+    page_size: int = Query(default=10, ge=1, le=100, alias="pageSize"),
+    sort_by: str = Query(default="start_at", alias="sortBy"),
+    sort_type: str = Query(default="DESC", alias="sortType"),
+    current_user: dict = Depends(get_current_user),
+) -> PaginatedLabReservationResponse:
+    normalized_sort_by, normalized_sort_type = _validate_sort_params(sort_by, sort_type)
+    requester = str(current_user.get("user_id") or "")
+
+    if not requester:
+        source_items = []
+    else:
+        source_items = lab_reservation_repo.list_filtered(
+            requested_by=requester,
+            sort_by=normalized_sort_by,
+            sort_type=normalized_sort_type,
+        )
+    serialized = [
+        LabReservationResponse.model_validate(item)
+        for item in lab_access_session_repo.enrich_reservations(source_items)
+    ]
+    history_items = [item for item in serialized if _is_history_reservation(item)]
+    ordered = _sort_reservations(history_items, normalized_sort_by, normalized_sort_type)
+
+    total_elements = len(ordered)
+    start_index = page_number * page_size
+    end_index = start_index + page_size
+    paginated_items = ordered[start_index:end_index]
+    total_pages = math.ceil(total_elements / page_size) if total_elements > 0 else 0
+
+    return PaginatedLabReservationResponse(
+        items=paginated_items,
+        pageNumber=page_number,
+        pageSize=page_size,
+        totalElements=total_elements,
+        totalPages=total_pages,
+        sortBy=normalized_sort_by,
+        sortType=normalized_sort_type,
+        where="",
+    )
 
 
 @router.get("/occupancy", response_model=OccupancyDashboardResponse)
@@ -877,7 +1032,7 @@ async def create_reservation(body: LabReservationCreate, current_user: dict = De
     )
 
     try:
-        created = lab_reservation_repo.create(body, current_user=current_user)
+        created = await lab_reservation_repo.acreate(body, current_user=current_user)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
@@ -911,7 +1066,7 @@ async def create_walk_in_reservation(
         )
 
     try:
-        created = lab_reservation_repo.create(
+        created = await lab_reservation_repo.acreate(
             LabReservationCreate(
                 laboratory_id=body.laboratory_id,
                 area_id=body.area_id,
@@ -923,7 +1078,7 @@ async def create_walk_in_reservation(
             ),
             current_user=current_user,
         )
-        updated = lab_reservation_repo.update(
+        updated = await lab_reservation_repo.aupdate(
             created.id,
             LabReservationUpdate(
                 status="in_progress",
@@ -933,7 +1088,8 @@ async def create_walk_in_reservation(
         )
         if updated is None:
             raise ValueError("No se pudo registrar el walk-in")
-        lab_access_session_repo.create(
+        await asyncio.to_thread(
+            lab_access_session_repo.create,
             reservation_id=updated.id,
             laboratory_id=updated.laboratory_id,
             requested_by=updated.requested_by,
@@ -947,8 +1103,14 @@ async def create_walk_in_reservation(
             recorded_by=str(current_user.get("name") or current_user.get("username") or "Encargado"),
             notes=body.notes,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except Exception as exc:
+        from app.core.exceptions import ConflictError
+
+        if isinstance(exc, ConflictError):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise
 
     enriched = _serialize_reservation(updated)
     await realtime_manager.broadcast(
@@ -970,7 +1132,7 @@ async def update_reservation(
     body: LabReservationUpdate,
     current_user: dict = Depends(get_current_user),
 ) -> LabReservationResponse:
-    existing_reservation = lab_reservation_repo.get_by_id(reservation_id)
+    existing_reservation = await lab_reservation_repo.aget_by_id(reservation_id)
     if existing_reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
@@ -1007,7 +1169,7 @@ async def update_reservation(
     )
 
     try:
-        updated = lab_reservation_repo.update(reservation_id, payload)
+        updated = await lab_reservation_repo.aupdate(reservation_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
@@ -1039,7 +1201,7 @@ async def update_reservation_status(
         "No tienes permisos para actualizar estados de reserva",
     )
 
-    existing_reservation = lab_reservation_repo.get_by_id(reservation_id)
+    existing_reservation = await lab_reservation_repo.aget_by_id(reservation_id)
     if existing_reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
@@ -1063,7 +1225,7 @@ async def update_reservation_status(
     )
 
     try:
-        updated = lab_reservation_repo.update(reservation_id, payload)
+        updated = await lab_reservation_repo.aupdate(reservation_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
@@ -1095,21 +1257,22 @@ async def register_reservation_entry(
         "No tienes permisos para registrar ingresos",
     )
 
-    reservation = lab_reservation_repo.get_by_id(reservation_id)
+    reservation = await lab_reservation_repo.aget_by_id(reservation_id)
     if reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
     if reservation.status not in {"approved", "in_progress"}:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Solo puedes registrar entrada sobre reservas aprobadas")
-    if lab_access_session_repo.get_open_by_reservation(reservation_id):
+    if await asyncio.to_thread(lab_access_session_repo.get_open_by_reservation, reservation_id):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="La reserva ya tiene una entrada registrada")
 
     updated = reservation
     if reservation.status != "in_progress":
-        updated = lab_reservation_repo.update(reservation_id, LabReservationUpdate(status="in_progress"))
+        updated = await lab_reservation_repo.aupdate(reservation_id, LabReservationUpdate(status="in_progress"))
         if updated is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
-    lab_access_session_repo.create(
+    await asyncio.to_thread(
+        lab_access_session_repo.create,
         reservation_id=updated.id,
         laboratory_id=updated.laboratory_id,
         requested_by=updated.requested_by,
@@ -1148,16 +1311,16 @@ async def register_reservation_exit(
         "No tienes permisos para registrar salidas",
     )
 
-    reservation = lab_reservation_repo.get_by_id(reservation_id)
+    reservation = await lab_reservation_repo.aget_by_id(reservation_id)
     if reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
-    session = lab_access_session_repo.get_open_by_reservation(reservation_id)
+    session = await asyncio.to_thread(lab_access_session_repo.get_open_by_reservation, reservation_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="La reserva no tiene una entrada activa")
 
-    lab_access_session_repo.close(session.id)
-    updated = lab_reservation_repo.update(reservation_id, LabReservationUpdate(status="completed"))
+    await asyncio.to_thread(lab_access_session_repo.close, session.id)
+    updated = await lab_reservation_repo.aupdate(reservation_id, LabReservationUpdate(status="completed"))
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
@@ -1185,12 +1348,12 @@ async def mark_reservation_absent(
         "No tienes permisos para marcar ausencias",
     )
 
-    reservation = lab_reservation_repo.get_by_id(reservation_id)
+    reservation = await lab_reservation_repo.aget_by_id(reservation_id)
     if reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
     if reservation.status != "approved":
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Solo las reservas aprobadas pueden marcarse como ausentes")
-    if lab_access_session_repo.get_open_by_reservation(reservation_id):
+    if await asyncio.to_thread(lab_access_session_repo.get_open_by_reservation, reservation_id):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="La reserva ya registro entrada y no puede marcarse como ausente")
 
     now = now_local_naive()
@@ -1200,7 +1363,7 @@ async def mark_reservation_absent(
             detail="Solo puedes marcar ausente cuando hayan pasado al menos 15 minutos del inicio",
         )
 
-    updated = lab_reservation_repo.update(reservation_id, LabReservationUpdate(status="absent"))
+    updated = await lab_reservation_repo.aupdate(reservation_id, LabReservationUpdate(status="absent"))
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
@@ -1221,7 +1384,7 @@ async def mark_reservation_absent(
 async def cancel_reservation(reservation_id: str, current_user: dict = Depends(get_current_user)) -> LabReservationResponse:
     logger.warning(f"🛑 [CANCEL RESERVATION] Starting cancellation of reservation: {reservation_id}")
     
-    reservation = lab_reservation_repo.get_by_id(reservation_id)
+    reservation = await lab_reservation_repo.aget_by_id(reservation_id)
     if reservation is None:
         logger.error(f"❌ [CANCEL RESERVATION] Reservation not found: {reservation_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
@@ -1237,7 +1400,7 @@ async def cancel_reservation(reservation_id: str, current_user: dict = Depends(g
 
     # IMPORTANTE: Solo actualizar status a 'cancelled', SIN BORRAR el registro
     logger.warning(f"🔄 [CANCEL RESERVATION] Updating reservation {reservation_id} status to 'cancelled' (NOT deleting)")
-    cancelled = lab_reservation_repo.update(
+    cancelled = await lab_reservation_repo.aupdate(
         reservation_id,
         LabReservationUpdate(status="cancelled", is_active=False),
     )
@@ -1249,9 +1412,10 @@ async def cancel_reservation(reservation_id: str, current_user: dict = Depends(g
 
     # Limpiar notificaciones antiguas ANTES de crear la nueva notificación de cancelación
     # Pero NO borrar las notificaciones de cancelación si existen
-    notification_store.delete_for_reservation(
+    await asyncio.to_thread(
+        notification_store.delete_for_reservation,
         reservation_id=reservation_id,
-        exclude_types=["reservation_cancelled_by_user"]
+        exclude_types=["reservation_cancelled_by_user"],
     )
 
     # Enviar notificación al encargado SIEMPRE que se cancele una reserva aprobada

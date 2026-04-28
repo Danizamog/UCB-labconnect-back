@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 
 from app.application.container import laboratory_repo
 from app.core.dependencies import get_current_user
@@ -13,8 +13,15 @@ def list_laboratories_all() -> list[LaboratoryResponse]:
 
 
 @router.get("", response_model=list[LaboratoryResponse])
-def list_laboratories() -> list[LaboratoryResponse]:
-    return laboratory_repo.list_all()
+def list_laboratories(
+    name: str | None = Query(default=None, description="Filter by laboratory name (contains)"),
+    area_id: str | None = Query(default=None),
+    is_active: bool | None = Query(default=None),
+    sort: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=200, ge=1, le=1000),
+) -> list[LaboratoryResponse]:
+    return laboratory_repo.list_all(page=page, per_page=per_page, name=name, area_id=area_id, is_active=is_active, sort=sort)
 
 
 @router.get("/{lab_id}", response_model=LaboratoryResponse)

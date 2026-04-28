@@ -77,6 +77,7 @@ class LoginWithGoogle:
                 "role": user.role or "user",
                 "user_id": user.id,
                 "name": google_user["name"],
+                "email": google_user["email"],
                 "picture": google_user["picture"],
                 "auth_provider": "institutional_sso",
                 "identity_provider": settings.institutional_sso_provider or "google_oidc",

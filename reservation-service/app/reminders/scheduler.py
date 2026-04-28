@@ -5,16 +5,18 @@ import contextlib
 from datetime import datetime, timedelta
 
 from app.application.container import lab_reservation_repo
+from app.core.config import settings
 from app.core.datetime_utils import parse_datetime
 from app.notifications.store import notification_store
 from app.realtime.manager import realtime_manager
 from app.schemas.lab_reservation import LabReservationResponse
 
-CHECK_INTERVAL_SECONDS = 15
+CHECK_INTERVAL_SECONDS = settings.reservation_reminder_check_interval_seconds
 REMINDER_RULES = (
     ("24h", timedelta(hours=24), "Recordatorio de Reserva", "Tu reserva aprobada comienza en 24 horas."),
     ("30m", timedelta(minutes=30), "Recordatorio Cercano", "Tu reserva aprobada comienza en 30 minutos."),
 )
+MAX_REMINDER_WINDOW = max(delta for _, delta, _, _ in REMINDER_RULES)
 
 
 class ReservationReminderScheduler:
@@ -55,7 +57,15 @@ class ReservationReminderScheduler:
     async def _tick(self, now: datetime) -> None:
         self._prune_sent_reminders(now)
 
-        for reservation in lab_reservation_repo.list_all():
+        window_start = now.isoformat()
+        window_end = (now + MAX_REMINDER_WINDOW).isoformat()
+        candidates = await asyncio.to_thread(
+            lab_reservation_repo.list_active_approved_with_start_before,
+            start_before=window_end,
+            start_after=window_start,
+        )
+
+        for reservation in candidates:
             await self._process_reservation(reservation, now)
 
     def _prune_sent_reminders(self, now: datetime) -> None:
@@ -85,7 +95,8 @@ class ReservationReminderScheduler:
             if now < reminder_at:
                 continue
 
-            notification = notification_store.create(
+            notification = await asyncio.to_thread(
+                notification_store.create,
                 recipient_user_id=reservation.requested_by,
                 notification_type="reservation_reminder",
                 title=title,
