@@ -198,7 +198,7 @@ async def enroll_in_tutorial_session(
             session_id,
             student_id=current_user.get("user_id") or "",
             student_name=current_user.get("name") or current_user.get("username") or "Estudiante",
-            student_email=current_user.get("email") or "",
+            student_email=current_user.get("email") or current_user.get("username") or "",
         )
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
