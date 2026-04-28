@@ -51,15 +51,29 @@ async def proxy_websocket(websocket: WebSocket, target_url: str) -> None:
     subprotocols = _extract_subprotocols(websocket)
     upstream_headers = _build_upstream_headers(websocket)
 
+    connect_kwargs = dict(
+        subprotocols=subprotocols or None,
+        open_timeout=10,
+        ping_interval=None,
+        max_size=None,
+    )
     try:
         upstream = await websockets.connect(
             target_url,
-            subprotocols=subprotocols or None,
             additional_headers=upstream_headers,
-            open_timeout=10,
-            ping_interval=None,
-            max_size=None,
+            **connect_kwargs,
         )
+    except TypeError:
+        try:
+            upstream = await websockets.connect(
+                target_url,
+                extra_headers=upstream_headers,
+                **connect_kwargs,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("WS upstream connect failed (%s): %s", target_url, exc)
+            await websocket.close(code=1011)
+            return
     except Exception as exc:  # noqa: BLE001
         logger.warning("WS upstream connect failed (%s): %s", target_url, exc)
         await websocket.close(code=1011)
