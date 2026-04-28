@@ -191,10 +191,10 @@ def _occupant_email_for_access(reservation: LabReservationResponse, body: Reserv
     return str(body.occupant_email or reservation.requested_by_email or "").strip()
 
 
-async def _broadcast_access_event(action: str, reservation: LabReservationResponse) -> None:
+async def _broadcast_reservation_event(action: str, reservation: LabReservationResponse) -> None:
     await realtime_manager.broadcast(
         {
-            "topic": "lab_access",
+            "topic": "lab_reservation",
             "action": action,
             "record": reservation.model_dump(),
             "at": datetime.utcnow().isoformat(),
@@ -806,25 +806,30 @@ async def create_reservation(body: LabReservationCreate, current_user: dict = De
 
     ensure_user_can_reserve_laboratory(body.laboratory_id, current_user)
 
-    _validate_reservation_time_rules(
+    await asyncio.to_thread(
+        _validate_reservation_time_rules,
         laboratory_id=body.laboratory_id,
         start_at_raw=body.start_at,
         end_at_raw=body.end_at,
     )
 
+    sanitized = LabReservationCreate(
+        laboratory_id=body.laboratory_id,
+        area_id=body.area_id,
+        requested_by=str(current_user.get("user_id") or ""),
+        purpose=body.purpose,
+        start_at=body.start_at,
+        end_at=body.end_at,
+        attendees_count=body.attendees_count,
+        notes=body.notes,
+    )
+
     try:
-        created = await lab_reservation_repo.acreate(body, current_user=current_user)
+        created = await lab_reservation_repo.acreate(sanitized, current_user=current_user)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    await realtime_manager.broadcast(
-        {
-            "topic": "lab_reservation",
-            "action": "create",
-            "record": _serialize_reservation(created).model_dump(),
-            "at": datetime.utcnow().isoformat(),
-        }
-    )
+    await _broadcast_reservation_event("create", _serialize_reservation(created))
     return _serialize_reservation(created)
 
 
@@ -888,15 +893,7 @@ async def create_walk_in_reservation(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     enriched = _serialize_reservation(updated)
-    await realtime_manager.broadcast(
-        {
-            "topic": "lab_reservation",
-            "action": "create",
-            "record": enriched.model_dump(),
-            "at": datetime.utcnow().isoformat(),
-        }
-    )
-    await _broadcast_access_event("check_in", enriched)
+    await _broadcast_reservation_event("check_in", enriched)
     return enriched
 
 
@@ -927,16 +924,27 @@ async def update_reservation(
         ]
     )
     payload = body
-    if not can_manage and has_meaningful_schedule_change:
-        payload = body.model_copy(
-            update={
-                "user_modification_count": int(existing_reservation.user_modification_count or 0) + 1,
-            }
+    if not can_manage:
+        payload = LabReservationUpdate(
+            laboratory_id=body.laboratory_id,
+            area_id=body.area_id,
+            purpose=body.purpose,
+            start_at=body.start_at,
+            end_at=body.end_at,
+            attendees_count=body.attendees_count,
+            notes=body.notes,
         )
+        if has_meaningful_schedule_change:
+            payload = payload.model_copy(
+                update={
+                    "user_modification_count": int(existing_reservation.user_modification_count or 0) + 1,
+                }
+            )
 
-        ensure_user_can_reserve_laboratory(str(payload.laboratory_id or existing_reservation.laboratory_id), current_user)
+            ensure_user_can_reserve_laboratory(str(payload.laboratory_id or existing_reservation.laboratory_id), current_user)
 
-    _validate_reservation_time_rules(
+    await asyncio.to_thread(
+        _validate_reservation_time_rules,
         laboratory_id=str(payload.laboratory_id or existing_reservation.laboratory_id),
         start_at_raw=str(payload.start_at or existing_reservation.start_at),
         end_at_raw=str(payload.end_at or existing_reservation.end_at),
@@ -953,15 +961,9 @@ async def update_reservation(
 
     await _notify_schedule_change(existing_reservation, updated, current_user)
 
-    await realtime_manager.broadcast(
-        {
-            "topic": "lab_reservation",
-            "action": "update",
-            "record": _serialize_reservation(updated).model_dump(),
-            "at": datetime.utcnow().isoformat(),
-        }
-    )
-    return _serialize_reservation(updated)
+    enriched = _serialize_reservation(updated)
+    await _broadcast_reservation_event("update", enriched)
+    return enriched
 
 
 @router.patch("/{reservation_id}/status", response_model=LabReservationResponse)
@@ -1009,15 +1011,9 @@ async def update_reservation_status(
 
     await _notify_status_change(existing_reservation, updated, current_user)
 
-    await realtime_manager.broadcast(
-        {
-            "topic": "lab_reservation",
-            "action": "update",
-            "record": _serialize_reservation(updated).model_dump(),
-            "at": datetime.utcnow().isoformat(),
-        }
-    )
-    return _serialize_reservation(updated)
+    enriched = _serialize_reservation(updated)
+    await _broadcast_reservation_event("update", enriched)
+    return enriched
 
 
 @router.patch("/{reservation_id}/check-in", response_model=LabReservationResponse)
@@ -1063,15 +1059,7 @@ async def register_reservation_entry(
     )
 
     enriched = _serialize_reservation(updated)
-    await realtime_manager.broadcast(
-        {
-            "topic": "lab_reservation",
-            "action": "update",
-            "record": enriched.model_dump(),
-            "at": datetime.utcnow().isoformat(),
-        }
-    )
-    await _broadcast_access_event("check_in", enriched)
+    await _broadcast_reservation_event("check_in", enriched)
     return enriched
 
 
@@ -1100,15 +1088,7 @@ async def register_reservation_exit(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
     enriched = _serialize_reservation(updated)
-    await realtime_manager.broadcast(
-        {
-            "topic": "lab_reservation",
-            "action": "update",
-            "record": enriched.model_dump(),
-            "at": datetime.utcnow().isoformat(),
-        }
-    )
-    await _broadcast_access_event("check_out", enriched)
+    await _broadcast_reservation_event("check_out", enriched)
     return enriched
 
 
@@ -1143,73 +1123,44 @@ async def mark_reservation_absent(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
     enriched = _serialize_reservation(updated)
-    await realtime_manager.broadcast(
-        {
-            "topic": "lab_reservation",
-            "action": "update",
-            "record": enriched.model_dump(),
-            "at": datetime.utcnow().isoformat(),
-        }
-    )
-    await _broadcast_access_event("absent", enriched)
+    await _broadcast_reservation_event("absent", enriched)
     return enriched
 
 
 @router.patch("/{reservation_id}/cancel", response_model=LabReservationResponse)
 async def cancel_reservation(reservation_id: str, current_user: dict = Depends(get_current_user)) -> LabReservationResponse:
-    logger.warning(f"🛑 [CANCEL RESERVATION] Starting cancellation of reservation: {reservation_id}")
-    
     reservation = await lab_reservation_repo.aget_by_id(reservation_id)
     if reservation is None:
-        logger.error(f"❌ [CANCEL RESERVATION] Reservation not found: {reservation_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
-    
-    logger.info(f"📋 [CANCEL RESERVATION] Current reservation status: {reservation.status}")
 
     can_manage = _can_manage_reservations(current_user)
     if not can_manage and reservation.requested_by != (current_user.get("user_id") or ""):
-        logger.warning(f"🚫 [CANCEL RESERVATION] User {current_user.get('user_id')} denied access to cancel reservation {reservation_id}")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta reserva")
+
+    if reservation.status in _FINAL_RESERVATION_STATUSES:
+        return _serialize_reservation(reservation)
 
     _ensure_user_can_change_reservation(reservation, current_user=current_user, operation="cancel")
 
-    # IMPORTANTE: Solo actualizar status a 'cancelled', SIN BORRAR el registro
-    logger.warning(f"🔄 [CANCEL RESERVATION] Updating reservation {reservation_id} status to 'cancelled' (NOT deleting)")
     cancelled = await lab_reservation_repo.aupdate(
         reservation_id,
         LabReservationUpdate(status="cancelled", is_active=False),
     )
     if cancelled is None:
-        logger.error(f"❌ [CANCEL RESERVATION] Failed to update reservation {reservation_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
-    logger.info(f"✅ [CANCEL RESERVATION] Successfully updated reservation {reservation_id} to cancelled status")
-
-    # Limpiar notificaciones antiguas ANTES de crear la nueva notificación de cancelación
-    # Pero NO borrar las notificaciones de cancelación si existen
     await asyncio.to_thread(
         notification_store.delete_for_reservation,
         reservation_id=reservation_id,
         exclude_types=["reservation_cancelled_by_user"],
     )
 
-    # Enviar notificación al encargado SIEMPRE que se cancele una reserva aprobada
-    # (Ya sea por usuario regular o por admin)
     if reservation.status == "approved":
-        logger.info(f"📢 [CANCEL RESERVATION] Notifying operations about cancellation of approved reservation {reservation_id}")
         await _notify_operations_reservation_cancelled(cancelled, current_user)
-    else:
-        logger.info(f"ℹ️ [CANCEL RESERVATION] No notification sent (reservation wasn't approved, status: {reservation.status})")
 
-    await realtime_manager.broadcast(
-        {
-            "topic": "lab_reservation",
-            "action": "update",
-            "record": cancelled.model_dump(),
-            "at": datetime.utcnow().isoformat(),
-        }
-    )
-    return _serialize_reservation(cancelled)
+    enriched = _serialize_reservation(cancelled)
+    await _broadcast_reservation_event("update", enriched)
+    return enriched
 
 
 # Mantener DELETE para compatibilidad, pero redirige a cancel

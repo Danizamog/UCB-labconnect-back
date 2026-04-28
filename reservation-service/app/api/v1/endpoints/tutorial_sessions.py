@@ -152,8 +152,8 @@ async def update_tutorial_session(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    for enrollment in existing.enrolled_students:
-        await _broadcast_tutorial_notification(
+    await asyncio.gather(*[
+        _broadcast_tutorial_notification(
             recipient_user_id=enrollment.student_id,
             notification_type="tutorial_session_updated",
             title="Tutoria actualizada",
@@ -175,6 +175,8 @@ async def update_tutorial_session(
                 "target_path": "/app/tutorias",
             },
         )
+        for enrollment in existing.enrolled_students
+    ])
 
     await realtime_manager.broadcast(
         {
@@ -267,8 +269,8 @@ async def delete_tutorial_session(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
 
     deleted_session, enrollments = deleted_result
-    for enrollment in enrollments:
-        await _broadcast_tutorial_notification(
+    await asyncio.gather(*[
+        _broadcast_tutorial_notification(
             recipient_user_id=enrollment.student_id,
             notification_type="tutorial_session_cancelled",
             title="Tutoria Cancelada",
@@ -287,6 +289,8 @@ async def delete_tutorial_session(
                 "target_path": "/app/tutorias",
             },
         )
+        for enrollment in enrollments
+    ])
 
     await realtime_manager.broadcast(
         {

@@ -12,6 +12,7 @@ OPERATIONS_RECIPIENT_ID = "__operations__"
 class NotificationStore:
     def __init__(self, max_notifications_per_user: int = 100) -> None:
         self._notifications_by_user: dict[str, list[UserNotificationResponse]] = {}
+        self._users_by_reservation: dict[str, set[str]] = {}
         self._lock = Lock()
         self._max_notifications_per_user = max_notifications_per_user
 
@@ -40,6 +41,10 @@ class NotificationStore:
             bucket.insert(0, notification)
             if len(bucket) > self._max_notifications_per_user:
                 del bucket[self._max_notifications_per_user :]
+
+            reservation_id = str((payload or {}).get("reservation_id") or "").strip()
+            if reservation_id:
+                self._users_by_reservation.setdefault(reservation_id, set()).add(recipient_user_id)
 
         return notification
 
@@ -125,20 +130,35 @@ class NotificationStore:
             Number of notifications deleted
         """
         deleted_count = 0
-        exclude_types = exclude_types or []
+        exclude_types_set = set(exclude_types or [])
 
         with self._lock:
-            for recipient_user_id, bucket in self._notifications_by_user.items():
+            recipient_ids = list(self._users_by_reservation.get(reservation_id, set()))
+            still_has_notif: set[str] = set()
+            for recipient_user_id in recipient_ids:
+                bucket = self._notifications_by_user.get(recipient_user_id)
+                if not bucket:
+                    continue
                 original_count = len(bucket)
-                self._notifications_by_user[recipient_user_id] = [
-                    n for n in bucket
-                    if not (
-                        n.payload and 
-                        n.payload.get("reservation_id") == reservation_id and
-                        n.notification_type not in exclude_types
+                kept: list[UserNotificationResponse] = []
+                for n in bucket:
+                    is_target = (
+                        n.payload
+                        and n.payload.get("reservation_id") == reservation_id
+                        and n.notification_type not in exclude_types_set
                     )
-                ]
-                deleted_count += original_count - len(self._notifications_by_user[recipient_user_id])
+                    if is_target:
+                        continue
+                    kept.append(n)
+                    if n.payload and n.payload.get("reservation_id") == reservation_id:
+                        still_has_notif.add(recipient_user_id)
+                self._notifications_by_user[recipient_user_id] = kept
+                deleted_count += original_count - len(kept)
+
+            if still_has_notif:
+                self._users_by_reservation[reservation_id] = still_has_notif
+            else:
+                self._users_by_reservation.pop(reservation_id, None)
 
         return deleted_count
 

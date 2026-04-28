@@ -81,11 +81,44 @@ class LabAccessSessionRepository:
         self._ensure_collection()
         return [self._to_response(record) for record in self._client.list_records(self._collection, sort="-check_in_at")]
 
+    def list_by_reservation_ids(self, reservation_ids: list[str]) -> list[LabAccessSessionResponse]:
+        self._ensure_collection()
+        ids = [str(rid).strip() for rid in reservation_ids if str(rid or "").strip()]
+        if not ids:
+            return []
+        escaped = [str(rid).replace("\\", "\\\\").replace('"', '\\"') for rid in ids]
+        filter_expression = " || ".join(f'reservation_id="{rid}"' for rid in escaped)
+        records = self._client.list_records(self._collection, sort="-check_in_at", filter=filter_expression)
+        return [self._to_response(record) for record in records]
+
+    def list_active_sessions(self, laboratory_id: str | None = None) -> list[LabAccessSessionResponse]:
+        self._ensure_collection()
+        clauses = ['status="open"', 'check_out_at=""']
+        if laboratory_id:
+            escaped_lab = str(laboratory_id).replace("\\", "\\\\").replace('"', '\\"')
+            clauses.append(f'laboratory_id="{escaped_lab}"')
+        records = self._client.list_records(
+            self._collection,
+            sort="-check_in_at",
+            filter=" && ".join(clauses),
+        )
+        return [self._to_response(record) for record in records]
+
     def get_open_by_reservation(self, reservation_id: str) -> LabAccessSessionResponse | None:
-        for item in self.list_all():
-            if item.reservation_id == reservation_id and item.status == "open" and not item.check_out_at:
-                return item
-        return None
+        self._ensure_collection()
+        normalized = str(reservation_id or "").strip()
+        if not normalized:
+            return None
+        escaped = normalized.replace("\\", "\\\\").replace('"', '\\"')
+        records = self._client.list_records(
+            self._collection,
+            sort="-check_in_at",
+            filter=f'reservation_id="{escaped}" && status="open" && check_out_at=""',
+            per_page=1,
+        )
+        if not records:
+            return None
+        return self._to_response(records[0])
 
     def create(
         self,
@@ -159,22 +192,22 @@ class LabAccessSessionRepository:
         if not reservations:
             return []
 
-        reservation_ids = {str(item.id) for item in reservations if getattr(item, "id", "")}
+        reservation_ids = [str(item.id) for item in reservations if getattr(item, "id", "")]
         if not reservation_ids:
             return [item.model_dump() for item in reservations]
 
-        sessions = self.list_all()
+        sessions = self.list_by_reservation_ids(reservation_ids)
         indexed_sessions: dict[str, LabAccessSessionResponse] = {}
         for session in sessions:
             reservation_id = str(session.reservation_id or "")
-            if reservation_id not in reservation_ids or reservation_id in indexed_sessions:
+            if reservation_id in indexed_sessions:
                 continue
             indexed_sessions[reservation_id] = session
 
         open_sessions = {
             str(session.reservation_id or ""): session
             for session in sessions
-            if str(session.reservation_id or "") in reservation_ids and session.status == "open" and not session.check_out_at
+            if session.status == "open" and not session.check_out_at
         }
 
         enriched_items: list[dict] = []
@@ -195,9 +228,7 @@ class LabAccessSessionRepository:
         return enriched_items
 
     def get_dashboard(self, *, laboratory_id: str | None = None) -> OccupancyDashboardResponse:
-        active_sessions = [item for item in self.list_all() if item.status == "open" and not item.check_out_at]
-        if laboratory_id:
-            active_sessions = [item for item in active_sessions if item.laboratory_id == laboratory_id]
+        active_sessions = self.list_active_sessions(laboratory_id=laboratory_id)
 
         counts = Counter(item.laboratory_id for item in active_sessions)
         return OccupancyDashboardResponse(

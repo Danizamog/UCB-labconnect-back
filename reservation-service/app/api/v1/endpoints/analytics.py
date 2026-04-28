@@ -79,6 +79,9 @@ def get_laboratory_usage_analytics(
     today = now_local_naive().date()
     start_date, end_date, period_label = _resolve_period_window(period, today)
 
+    window_start_iso = combine_date_time(start_date, "00:00").isoformat()
+    window_end_iso = combine_date_time(end_date + timedelta(days=1), "00:00").isoformat()
+
     laboratories = [
         lab for lab in laboratory_access_repo.list_all()
         if bool(lab.get("is_active", True))
@@ -87,14 +90,15 @@ def get_laboratory_usage_analytics(
         schedule for schedule in lab_schedule_repo.list_all()
         if bool(getattr(schedule, "is_active", True))
     ]
-    active_blocks = [
-        block for block in lab_block_repo.list_all()
-        if bool(getattr(block, "is_active", True))
-    ]
-    reservations = [
-        reservation for reservation in lab_reservation_repo.list_all()
-        if reservation.status in _COUNTED_RESERVATION_STATUSES
-    ]
+    active_blocks = lab_block_repo.list_active_in_window(
+        start_from=window_start_iso,
+        end_to=window_end_iso,
+    )
+    reservations = lab_reservation_repo.list_in_window_by_statuses(
+        statuses=list(_COUNTED_RESERVATION_STATUSES),
+        start_from=window_start_iso,
+        end_to=window_end_iso,
+    )
 
     schedules_by_lab_weekday: dict[tuple[str, int], object] = {
         (str(schedule.laboratory_id), int(schedule.weekday)): schedule

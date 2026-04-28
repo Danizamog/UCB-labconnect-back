@@ -64,6 +64,39 @@ class LabBlockRepository:
 
         return items
 
+    def list_active_in_window(self, *, start_from: str, end_to: str, per_page: int = 200) -> list[LabBlockResponse]:
+        clauses = [
+            'is_active=true',
+            f'end_at>="{_escape_filter_value(start_from)}"',
+            f'start_at<="{_escape_filter_value(end_to)}"',
+        ]
+        filter_expression = " && ".join(clauses)
+
+        items: list[LabBlockResponse] = []
+        current_page = 1
+        while True:
+            data = self._client.request(
+                "GET",
+                self._base,
+                params={
+                    "page": current_page,
+                    "perPage": per_page,
+                    "sort": "start_at",
+                    "filter": filter_expression,
+                },
+            )
+            if not isinstance(data, dict):
+                break
+            records = data.get("items", [])
+            if not isinstance(records, list) or not records:
+                break
+            items.extend(_to_response(r) for r in records if isinstance(r, dict))
+            total_pages = int(data.get("totalPages", current_page))
+            if current_page >= total_pages:
+                break
+            current_page += 1
+        return items
+
     def list_all(self, page: int = 1, per_page: int = 200) -> list[LabBlockResponse]:
         items: list[LabBlockResponse] = []
         current_page = page

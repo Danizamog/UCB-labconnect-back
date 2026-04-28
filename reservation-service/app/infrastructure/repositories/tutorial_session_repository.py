@@ -222,14 +222,16 @@ class TutorialSessionRepository:
         if not session_ids:
             return {}
 
-        enrollments = self._list_enrollment_records()
+        filter_expression = " || ".join(
+            f'session_id="{_escape_filter_value(session_id)}"' for session_id in session_ids
+        )
+        enrollments = self._list_records(self._enrollments_base, filter_expression=filter_expression, sort=None)
         grouped: dict[str, list[TutorialEnrollmentResponse]] = {session_id: [] for session_id in session_ids}
-        known_ids = set(session_ids)
         for record in enrollments:
             session_id = str(record.get("session_id") or "").strip()
-            if session_id not in known_ids:
+            if session_id not in grouped:
                 continue
-            grouped.setdefault(session_id, []).append(self._map_enrollment(record))
+            grouped[session_id].append(self._map_enrollment(record))
         return grouped
 
     def _get_session_record(self, session_id: str) -> dict | None:
@@ -283,7 +285,21 @@ class TutorialSessionRepository:
                 )
 
     def list_all(self, *, include_past: bool = False) -> list[TutorialSessionResponse]:
-        session_records = self._list_session_records()
+        return self._list_sessions_with(filter_expression=None, include_past=include_past)
+
+    def _list_sessions_with(
+        self,
+        *,
+        filter_expression: str | None,
+        include_past: bool,
+    ) -> list[TutorialSessionResponse]:
+        session_records = self._list_records(
+            self._sessions_base,
+            filter_expression=filter_expression,
+            sort="session_date,start_time",
+        )
+        if not session_records:
+            return []
         enrollment_map = self._build_enrollment_map(session_records)
         now = now_local_naive()
 
@@ -301,29 +317,34 @@ class TutorialSessionRepository:
         return sorted(sessions, key=lambda item: (item.session_date, item.start_time, item.topic))
 
     def list_public(self) -> list[TutorialSessionResponse]:
-        return [session for session in self.list_all() if session.is_published]
+        return self._list_sessions_with(filter_expression='is_published=true', include_past=False)
 
     def list_for_tutor(self, tutor_id: str) -> list[TutorialSessionResponse]:
         normalized_tutor_id = str(tutor_id or "").strip()
-        return [session for session in self.list_all(include_past=True) if session.tutor_id == normalized_tutor_id]
+        if not normalized_tutor_id:
+            return []
+        return self._list_sessions_with(
+            filter_expression=f'tutor_id="{_escape_filter_value(normalized_tutor_id)}"',
+            include_past=True,
+        )
 
     def list_for_student(self, student_id: str) -> list[TutorialSessionResponse]:
         normalized_student_id = str(student_id or "").strip()
         if not normalized_student_id:
             return []
 
-        enrolled_session_ids = {
+        enrolled_session_ids = [
             str(record.get("session_id") or "").strip()
             for record in self._list_enrollment_records(student_id=normalized_student_id)
             if str(record.get("session_id") or "").strip()
-        }
+        ]
         if not enrolled_session_ids:
             return []
 
-        return [
-            session for session in self.list_all(include_past=True)
-            if session.id in enrolled_session_ids
-        ]
+        filter_expression = " || ".join(
+            f'id="{_escape_filter_value(session_id)}"' for session_id in set(enrolled_session_ids)
+        )
+        return self._list_sessions_with(filter_expression=filter_expression, include_past=True)
 
     def get_by_id(self, session_id: str) -> TutorialSessionResponse | None:
         record = self._get_session_record(session_id)

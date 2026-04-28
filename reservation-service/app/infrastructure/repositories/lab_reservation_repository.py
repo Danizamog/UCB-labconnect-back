@@ -115,6 +115,54 @@ class LabReservationRepository:
 
         return items
 
+    def list_in_window_by_statuses(
+        self,
+        *,
+        statuses: list[str],
+        start_from: str,
+        end_to: str,
+        per_page: int = 200,
+    ) -> list[LabReservationResponse]:
+        normalized_statuses = [str(s).strip() for s in statuses if str(s or "").strip()]
+        if not normalized_statuses:
+            return []
+
+        status_clause = "(" + " || ".join(
+            f'status="{_escape_filter_value(s)}"' for s in normalized_statuses
+        ) + ")"
+        clauses = [
+            status_clause,
+            'is_active=true',
+            f'end_at>="{_escape_filter_value(start_from)}"',
+            f'start_at<="{_escape_filter_value(end_to)}"',
+        ]
+        filter_expression = " && ".join(clauses)
+
+        items: list[LabReservationResponse] = []
+        current_page = 1
+        while True:
+            data = self._client.request(
+                "GET",
+                self._base,
+                params={
+                    "page": current_page,
+                    "perPage": per_page,
+                    "sort": "start_at",
+                    "filter": filter_expression,
+                },
+            )
+            if not isinstance(data, dict):
+                break
+            records = data.get("items", [])
+            if not isinstance(records, list) or not records:
+                break
+            items.extend(_to_response(r) for r in records if isinstance(r, dict))
+            total_pages = int(data.get("totalPages", current_page))
+            if current_page >= total_pages:
+                break
+            current_page += 1
+        return items
+
     def list_active_approved_with_start_before(
         self,
         *,
@@ -280,15 +328,34 @@ class LabReservationRepository:
         return _to_response(data)
 
     def _validate_no_overlap(self, laboratory_id: str, start_at: str, end_at: str, skip_id: str | None = None) -> None:
-        for item in self.list_all():
-            if item.laboratory_id != laboratory_id:
-                continue
-            if skip_id and item.id == skip_id:
-                continue
-            if item.status in {"rejected", "cancelled", "completed", "absent"}:
-                continue
-            if _has_overlap(start_at, end_at, item.start_at, item.end_at):
-                raise ValueError("Existe una reserva activa que se cruza con ese horario")
+        normalized_lab = _escape_filter_value(str(laboratory_id or "").strip())
+        if not normalized_lab:
+            return
+
+        clauses = [
+            f'laboratory_id="{normalized_lab}"',
+            'status!="rejected"',
+            'status!="cancelled"',
+            'status!="completed"',
+            'status!="absent"',
+            f'start_at<"{_escape_filter_value(end_at)}"',
+            f'end_at>"{_escape_filter_value(start_at)}"',
+        ]
+        if skip_id:
+            clauses.append(f'id!="{_escape_filter_value(skip_id)}"')
+
+        data = self._client.request(
+            "GET",
+            self._base,
+            params={
+                "page": 1,
+                "perPage": 1,
+                "filter": " && ".join(clauses),
+                "fields": "id",
+            },
+        )
+        if isinstance(data, dict) and data.get("items"):
+            raise ValueError("Existe una reserva activa que se cruza con ese horario")
 
     def create(self, body: LabReservationCreate, current_user: dict | None = None) -> LabReservationResponse:
         start_at = parse_datetime(body.start_at)

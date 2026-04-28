@@ -19,7 +19,10 @@ _MANAGEMENT_PERMISSIONS = {
 }
 
 _PERSONAL_TOPICS = {"user_notification", "user_penalty"}
-_OPERATIONS_TOPICS = {"lab_access", "lab_block", "lab_schedule"}
+_OPERATIONS_TOPICS = {"lab_block", "lab_schedule"}
+_LAB_SCOPED_TOPICS = {"lab_reservation", "lab_block", "lab_schedule"}
+
+_BROADCAST_SEND_TIMEOUT = 1.0
 
 
 @dataclass
@@ -29,6 +32,7 @@ class ClientContext:
     role: str = "user"
     permissions: frozenset[str] = field(default_factory=frozenset)
     topics: frozenset[str] = field(default_factory=frozenset)
+    laboratory_ids: frozenset[str] = field(default_factory=frozenset)
 
     def is_manager(self) -> bool:
         if self.role == "admin":
@@ -44,6 +48,13 @@ def _user_can_receive(client: ClientContext, payload: dict) -> bool:
     if client.topics and topic and topic not in client.topics:
         return False
 
+    record = payload.get("record") if isinstance(payload.get("record"), dict) else {}
+    record_lab_id = str(record.get("laboratory_id") or "")
+
+    if client.laboratory_ids and topic in _LAB_SCOPED_TOPICS:
+        if record_lab_id and record_lab_id not in client.laboratory_ids:
+            return False
+
     recipients = payload.get("recipients")
     if isinstance(recipients, list) and recipients:
         recipient_ids = {str(r) for r in recipients if r}
@@ -54,7 +65,6 @@ def _user_can_receive(client: ClientContext, payload: dict) -> bool:
         return False
 
     if topic in _PERSONAL_TOPICS:
-        record = payload.get("record") if isinstance(payload.get("record"), dict) else {}
         owner = (
             str(record.get("recipient_user_id") or "")
             or str(record.get("user_id") or "")
@@ -64,21 +74,26 @@ def _user_can_receive(client: ClientContext, payload: dict) -> bool:
         return client.is_manager()
 
     if topic in _OPERATIONS_TOPICS:
+        if client.laboratory_ids and record_lab_id and record_lab_id in client.laboratory_ids:
+            return True
         return client.is_manager()
 
     if topic == "lab_reservation":
-        record = payload.get("record") if isinstance(payload.get("record"), dict) else {}
-        requested_by = str(record.get("requested_by") or "")
         if client.is_manager():
             return True
+        if client.laboratory_ids and record_lab_id and record_lab_id in client.laboratory_ids:
+            return True
+        requested_by = str(record.get("requested_by") or "")
         if client.user_id and requested_by and client.user_id == requested_by:
             return True
-        return True
+        return False
 
     if topic == "tutorial_session":
+        if client.laboratory_ids and record_lab_id and record_lab_id not in client.laboratory_ids:
+            return False
         return True
 
-    return True
+    return client.is_manager()
 
 
 class RealtimeManager:
@@ -103,18 +118,33 @@ class RealtimeManager:
         async with self._lock:
             self._clients.pop(websocket, None)
 
-    async def update_topics(self, websocket: WebSocket, topics: Iterable[str]) -> None:
-        normalized = frozenset(str(t).strip() for t in topics if str(t).strip())
+    async def update_subscription(
+        self,
+        websocket: WebSocket,
+        topics: Iterable[str] | None = None,
+        laboratory_ids: Iterable[str] | None = None,
+    ) -> None:
         async with self._lock:
             ctx = self._clients.get(websocket)
-            if ctx is not None:
-                self._clients[websocket] = ClientContext(
-                    websocket=ctx.websocket,
-                    user_id=ctx.user_id,
-                    role=ctx.role,
-                    permissions=ctx.permissions,
-                    topics=normalized,
-                )
+            if ctx is None:
+                return
+            next_topics = ctx.topics
+            next_labs = ctx.laboratory_ids
+            if topics is not None:
+                next_topics = frozenset(str(t).strip() for t in topics if str(t).strip())
+            if laboratory_ids is not None:
+                next_labs = frozenset(str(l).strip() for l in laboratory_ids if str(l).strip())
+            self._clients[websocket] = ClientContext(
+                websocket=ctx.websocket,
+                user_id=ctx.user_id,
+                role=ctx.role,
+                permissions=ctx.permissions,
+                topics=next_topics,
+                laboratory_ids=next_labs,
+            )
+
+    async def update_topics(self, websocket: WebSocket, topics: Iterable[str]) -> None:
+        await self.update_subscription(websocket, topics=topics)
 
     async def broadcast(self, payload: dict) -> None:
         async with self._lock:
@@ -139,7 +169,7 @@ class RealtimeManager:
 
 async def _safe_send(websocket: WebSocket, payload: dict) -> bool:
     try:
-        await asyncio.wait_for(websocket.send_json(payload), timeout=5.0)
+        await asyncio.wait_for(websocket.send_json(payload), timeout=_BROADCAST_SEND_TIMEOUT)
         return True
     except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
         logger.debug("Realtime send failed for client: %s", exc)

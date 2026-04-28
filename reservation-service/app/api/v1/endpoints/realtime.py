@@ -77,9 +77,13 @@ async def _handle_client_message(websocket: WebSocket, raw: str) -> None:
         return
 
     if msg_type == "subscribe":
-        topics = message.get("topics") or []
-        if isinstance(topics, list):
-            await realtime_manager.update_topics(websocket, topics)
+        topics = message.get("topics")
+        labs = message.get("laboratory_ids")
+        await realtime_manager.update_subscription(
+            websocket,
+            topics=topics if isinstance(topics, list) else None,
+            laboratory_ids=labs if isinstance(labs, list) else None,
+        )
         return
 
 
