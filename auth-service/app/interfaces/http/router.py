@@ -129,6 +129,7 @@ def _build_live_session_payload(payload: dict) -> dict:
         "user_id": user.id,
         "role": role,
         "name": user.name,
+        "email": user.username,
         "permissions": permissions,
         "picture": payload.get("picture"),
         "auth_provider": payload.get("auth_provider"),
