@@ -154,6 +154,28 @@ def _require_profile_manager(payload: dict = Depends(_get_current_payload)) -> d
     )
 
 
+_USER_DIRECTORY_PERMISSIONS = {
+    "gestionar_roles_permisos",
+    "reactivar_cuentas",
+    "gestionar_inventario",
+    "gestionar_estado_equipos",
+    "gestionar_mantenimiento",
+    "gestionar_prestamos",
+    "gestionar_stock",
+    "gestionar_reactivos_quimicos",
+    "gestionar_reservas_materiales",
+}
+
+
+def _require_user_directory_reader(payload: dict = Depends(_get_current_payload)) -> dict:
+    if _has_any_permission(payload, _USER_DIRECTORY_PERMISSIONS):
+        return payload
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="No autorizado para consultar el directorio de usuarios",
+    )
+
+
 def _require_profile_editor(payload: dict = Depends(_get_current_payload)) -> dict:
     if _has_any_permission(payload, {"gestionar_roles_permisos"}):
         return payload
@@ -278,12 +300,12 @@ def validate_token(
 
 
 @users_router.get("/", response_model=list[UserProfileResponse])
-def list_users(_: dict = Depends(_require_profile_manager)) -> list[UserProfileResponse]:
+def list_users(_: dict = Depends(_require_user_directory_reader)) -> list[UserProfileResponse]:
     return [_to_user_response(user) for user in user_repository.list_all()]
 
 
 @users_router.get("/{user_id}", response_model=UserProfileResponse)
-def get_user(user_id: str, _: dict = Depends(_require_profile_manager)) -> UserProfileResponse:
+def get_user(user_id: str, _: dict = Depends(_require_user_directory_reader)) -> UserProfileResponse:
     user = user_repository.get_by_id(user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
