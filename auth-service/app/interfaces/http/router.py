@@ -142,7 +142,7 @@ def _build_live_session_payload(payload: dict) -> dict:
 def _has_any_permission(payload: dict, required_permissions: set[str]) -> bool:
     role = str(payload.get("role") or "user").strip().lower()
     permissions = payload.get("permissions") if isinstance(payload.get("permissions"), list) else []
-    return role == "admin" or "*" in permissions or bool(required_permissions.intersection(permissions))
+    return role in {"admin", "administrador"} or "*" in permissions or bool(required_permissions.intersection(permissions))
 
 
 def _require_profile_manager(payload: dict = Depends(_get_current_payload)) -> dict:

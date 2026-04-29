@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.application.container import stock_item_repo, supply_reservation_repo
-from app.core.dependencies import get_current_user
+from app.core.dependencies import ensure_any_permission, get_current_user
 from app.schemas.supply_reservation import (
     SupplyReservationCreate,
     SupplyReservationResponse,
@@ -11,13 +11,16 @@ from app.schemas.supply_reservation import (
 router = APIRouter(prefix="/supply-reservations", tags=["supply-reservations"])
 
 _ALLOWED_STATUSES = {"pending", "approved", "delivered", "cancelled"}
+_VIEW_SUPPLY_RESERVATIONS = {"gestionar_reservas_materiales", "gestionar_stock", "gestionar_reactivos_quimicos"}
+_MANAGE_SUPPLY_RESERVATIONS = {"gestionar_reservas_materiales", "gestionar_stock", "gestionar_reactivos_quimicos"}
 
 
 @router.get("", response_model=list[SupplyReservationResponse])
 def list_supply_reservations(
     status_filter: str | None = Query(default=None, alias="status"),
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ) -> list[SupplyReservationResponse]:
+    ensure_any_permission(current_user, _VIEW_SUPPLY_RESERVATIONS, "No tienes permisos para consultar reservas de insumos")
     reservations = supply_reservation_repo.list_all()
     if not status_filter:
         return reservations
@@ -25,7 +28,8 @@ def list_supply_reservations(
 
 
 @router.get("/{reservation_id}", response_model=SupplyReservationResponse)
-def get_supply_reservation(reservation_id: str, _: dict = Depends(get_current_user)) -> SupplyReservationResponse:
+def get_supply_reservation(reservation_id: str, current_user: dict = Depends(get_current_user)) -> SupplyReservationResponse:
+    ensure_any_permission(current_user, _VIEW_SUPPLY_RESERVATIONS, "No tienes permisos para consultar reservas de insumos")
     reservation = supply_reservation_repo.get_by_id(reservation_id)
     if reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva de insumo no encontrada")
@@ -73,8 +77,9 @@ def create_supply_reservation(
 def update_supply_reservation_status(
     reservation_id: str,
     body: SupplyReservationStatusUpdate,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ) -> SupplyReservationResponse:
+    ensure_any_permission(current_user, _MANAGE_SUPPLY_RESERVATIONS, "No tienes permisos para gestionar reservas de insumos")
     new_status = body.status.strip().lower()
     if new_status not in _ALLOWED_STATUSES:
         raise HTTPException(

@@ -35,7 +35,7 @@ class ClientContext:
     laboratory_ids: frozenset[str] = field(default_factory=frozenset)
 
     def is_manager(self) -> bool:
-        if self.role == "admin":
+        if str(self.role or "").strip().lower() in {"admin", "administrador"}:
             return True
         if "*" in self.permissions:
             return True

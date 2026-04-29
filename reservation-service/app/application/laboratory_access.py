@@ -29,8 +29,9 @@ def _normalize_bool(value: Any, *, default: bool = True) -> bool:
 
 def can_manage_laboratory_reservations(current_user: dict) -> bool:
     permissions = set(current_user.get("permissions") or [])
+    role = str(current_user.get("role") or "").strip().lower()
     return (
-        str(current_user.get("role") or "").strip().lower() == "admin"
+        role in {"admin", "administrador"}
         or "*" in permissions
         or bool(permissions.intersection(_MANAGEMENT_PERMISSIONS))
     )

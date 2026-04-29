@@ -3,7 +3,7 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.application.container import lab_reservation_repo, tutorial_session_repo
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_user, is_admin_role
 from app.core.datetime_utils import now_local_naive, parse_datetime, parse_timestamp_to_local_naive
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
 from app.schemas.notification import MarkAllNotificationsReadResponse, UserNotificationResponse
@@ -70,7 +70,7 @@ def _notification_buckets_for_user(current_user: dict) -> list[str]:
     buckets = [recipient_user_id]
     permissions = set(current_user.get("permissions") or [])
     if (
-        current_user.get("role") == "admin"
+        is_admin_role(current_user)
         or "*" in permissions
         or permissions.intersection({"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"})
     ):

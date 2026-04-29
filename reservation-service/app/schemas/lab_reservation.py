@@ -81,6 +81,12 @@ class PaginatedLabReservationResponse(BaseModel):
     where: str = ""
 
 
+class LabReservationStatsResponse(BaseModel):
+    total: int
+    pending: int
+    walk_in: int
+
+
 class ReservationAccessUpdate(BaseModel):
     station_label: str = ""
     occupant_name: str = ""

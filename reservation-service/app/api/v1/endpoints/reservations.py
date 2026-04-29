@@ -13,7 +13,7 @@ from app.application.container import lab_access_session_repo, lab_reservation_r
 from app.application.container import lab_block_repo, lab_schedule_repo, laboratory_access_repo
 from app.application.laboratory_access import ensure_user_can_reserve_laboratory
 from app.core.datetime_utils import combine_date_time, iter_time_ranges, now_local_naive, parse_datetime
-from app.core.dependencies import ensure_any_permission, get_current_user
+from app.core.dependencies import ensure_any_permission, get_current_user, is_admin_role
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
 from app.realtime.manager import realtime_manager
 from app.schemas.agenda_summary import AgendaSummaryResponse
@@ -21,6 +21,7 @@ from app.schemas.lab_reservation import (
     LabReservationCreate,
     PaginatedLabReservationResponse,
     LabReservationResponse,
+    LabReservationStatsResponse,
     LabReservationStatusUpdate,
     LabReservationUpdate,
     OccupancyDashboardResponse,
@@ -204,7 +205,7 @@ async def _broadcast_reservation_event(action: str, reservation: LabReservationR
 
 def _can_manage_reservations(current_user: dict) -> bool:
     permissions = set(current_user.get("permissions") or [])
-    return current_user.get("role") == "admin" or "*" in permissions or bool(permissions.intersection(_MANAGEMENT_PERMISSIONS))
+    return is_admin_role(current_user) or "*" in permissions or bool(permissions.intersection(_MANAGEMENT_PERMISSIONS))
 
 
 def _reservation_field_value(reservation: LabReservationResponse, field: str) -> str:
@@ -592,6 +593,28 @@ def list_reservations(
     return [_serialize_reservation(item) for item in data]
 
 
+@router.get("/stats", response_model=LabReservationStatsResponse)
+def get_reservation_stats(
+    current_user: dict = Depends(get_current_user),
+) -> LabReservationStatsResponse:
+    requester = None if _can_manage_reservations(current_user) else str(current_user.get("user_id") or "")
+    items = lab_reservation_repo.list_filtered(requested_by=requester)
+
+    pending = 0
+    walk_in = 0
+    for item in items:
+        if item.status == "pending":
+            pending += 1
+        if bool(item.is_walk_in):
+            walk_in += 1
+
+    return LabReservationStatsResponse(
+        total=len(items),
+        pending=pending,
+        walk_in=walk_in,
+    )
+
+
 @router.get("/search", response_model=PaginatedLabReservationResponse)
 def search_reservations(
     laboratory_id: str | None = Query(default=None),
@@ -693,7 +716,7 @@ def get_my_agenda_summary(
     upcoming_reservations = [
         _serialize_reservation(item)
         for item in my_reservations
-        if _is_upcoming(item.end_at)
+        if _is_upcoming(item.end_at) and item.status not in _FINAL_RESERVATION_STATUSES
     ]
     upcoming_reservations.sort(key=lambda item: (item.start_at, item.end_at, item.id))
 

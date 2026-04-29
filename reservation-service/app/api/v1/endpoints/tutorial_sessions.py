@@ -6,7 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.application.container import tutorial_session_repo
-from app.core.dependencies import ensure_any_permission, get_current_user
+from app.core.dependencies import ensure_any_permission, get_current_user, is_admin_role
 from app.notifications.store import notification_store
 from app.realtime.manager import realtime_manager
 from app.schemas.tutorial_session import TutorialSessionCreate, TutorialSessionResponse
@@ -71,7 +71,7 @@ def get_tutorial_session(
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
 
-    is_admin = current_user.get("role") == "admin"
+    is_admin = is_admin_role(current_user)
     can_manage = "gestionar_tutorias" in set(current_user.get("permissions") or [])
     is_owner = session.tutor_id == (current_user.get("user_id") or "")
 
@@ -132,7 +132,7 @@ async def update_tutorial_session(
     if existing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
 
-    is_admin = current_user.get("role") == "admin"
+    is_admin = is_admin_role(current_user)
     if not is_admin and existing.tutor_id != (current_user.get("user_id") or ""):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No puedes editar una tutoria de otro tutor")
 
@@ -260,7 +260,7 @@ async def delete_tutorial_session(
     if existing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
 
-    is_admin = current_user.get("role") == "admin"
+    is_admin = is_admin_role(current_user)
     if not is_admin and existing.tutor_id != (current_user.get("user_id") or ""):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No puedes eliminar una tutoria de otro tutor")
 

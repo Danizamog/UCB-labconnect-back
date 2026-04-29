@@ -5,10 +5,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from app.application.container import stock_item_repo, stock_movement_repo
-from app.core.dependencies import get_current_user
+from app.core.dependencies import ensure_any_permission, get_current_user
 from app.schemas.stock_item import StockItemCreate, StockItemResponse, StockItemUpdate
 
 router = APIRouter(prefix="/stock-items", tags=["stock-items"])
+
+_VIEW_STOCK = {"gestionar_stock", "gestionar_reactivos_quimicos", "gestionar_reservas_materiales"}
+_MANAGE_STOCK = {"gestionar_stock", "gestionar_reactivos_quimicos"}
+_MOVE_STOCK = {"gestionar_stock", "gestionar_reactivos_quimicos", "gestionar_reservas_materiales"}
 
 
 class StockMovementCreate(BaseModel):
@@ -30,7 +34,8 @@ class StockMovementResponse(BaseModel):
 
 
 @router.get("", response_model=list[StockItemResponse])
-def list_stock_items() -> list[StockItemResponse]:
+def list_stock_items(current_user: dict = Depends(get_current_user)) -> list[StockItemResponse]:
+    ensure_any_permission(current_user, _VIEW_STOCK, "No tienes permisos para consultar el inventario de materiales")
     return stock_item_repo.list_all()
 
 
@@ -38,8 +43,9 @@ def list_stock_items() -> list[StockItemResponse]:
 def list_movements(
     limit: int = Query(default=40, ge=1, le=200),
     stock_item_id: str | None = Query(default=None),
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ) -> list[StockMovementResponse]:
+    ensure_any_permission(current_user, _VIEW_STOCK, "No tienes permisos para consultar movimientos de materiales")
     records = stock_movement_repo.list_recent(limit=limit, stock_item_id=stock_item_id)
     return [
         StockMovementResponse(
@@ -63,6 +69,7 @@ def create_movement(
     body: StockMovementCreate,
     current_user: dict = Depends(get_current_user),
 ) -> StockMovementResponse:
+    ensure_any_permission(current_user, _MOVE_STOCK, "No tienes permisos para registrar movimientos de stock")
     item = stock_item_repo.get_by_id(item_id)
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stock item no encontrado")
@@ -101,7 +108,8 @@ def create_movement(
 
 
 @router.get("/{item_id}", response_model=StockItemResponse)
-def get_stock_item(item_id: str, _: dict = Depends(get_current_user)) -> StockItemResponse:
+def get_stock_item(item_id: str, current_user: dict = Depends(get_current_user)) -> StockItemResponse:
+    ensure_any_permission(current_user, _VIEW_STOCK, "No tienes permisos para consultar materiales")
     item = stock_item_repo.get_by_id(item_id)
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stock item no encontrado")
@@ -109,13 +117,15 @@ def get_stock_item(item_id: str, _: dict = Depends(get_current_user)) -> StockIt
 
 
 @router.post("", response_model=StockItemResponse, status_code=status.HTTP_201_CREATED)
-def create_stock_item(body: StockItemCreate, _: dict = Depends(get_current_user)) -> StockItemResponse:
+def create_stock_item(body: StockItemCreate, current_user: dict = Depends(get_current_user)) -> StockItemResponse:
+    ensure_any_permission(current_user, _MANAGE_STOCK, "No tienes permisos para registrar materiales")
     return stock_item_repo.create(body)
 
 
 @router.patch("/{item_id}", response_model=StockItemResponse)
 @router.put("/{item_id}", response_model=StockItemResponse)
-def update_stock_item(item_id: str, body: StockItemUpdate, _: dict = Depends(get_current_user)) -> StockItemResponse:
+def update_stock_item(item_id: str, body: StockItemUpdate, current_user: dict = Depends(get_current_user)) -> StockItemResponse:
+    ensure_any_permission(current_user, _MANAGE_STOCK, "No tienes permisos para modificar materiales")
     item = stock_item_repo.update(item_id, body)
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stock item no encontrado")
@@ -123,7 +133,8 @@ def update_stock_item(item_id: str, body: StockItemUpdate, _: dict = Depends(get
 
 
 @router.patch("/{item_id}/quantity", response_model=StockItemResponse)
-def update_stock_item_quantity(item_id: str, body: dict, _: dict = Depends(get_current_user)) -> StockItemResponse:
+def update_stock_item_quantity(item_id: str, body: dict, current_user: dict = Depends(get_current_user)) -> StockItemResponse:
+    ensure_any_permission(current_user, _MOVE_STOCK, "No tienes permisos para ajustar cantidades de stock")
     qty = body.get("quantity_available")
     if qty is None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Se requiere quantity_available")
@@ -134,7 +145,8 @@ def update_stock_item_quantity(item_id: str, body: dict, _: dict = Depends(get_c
 
 
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_stock_item(item_id: str, _: dict = Depends(get_current_user)) -> None:
+def delete_stock_item(item_id: str, current_user: dict = Depends(get_current_user)) -> None:
+    ensure_any_permission(current_user, _MANAGE_STOCK, "No tienes permisos para eliminar materiales")
     deleted = stock_item_repo.delete(item_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stock item no encontrado")

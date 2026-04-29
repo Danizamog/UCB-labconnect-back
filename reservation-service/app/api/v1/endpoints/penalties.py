@@ -27,6 +27,7 @@ from app.schemas.penalty import (
 router = APIRouter(prefix="/penalties", tags=["penalties"])
 _MANAGE_PENALTIES = {"gestionar_penalizaciones"}
 _REACTIVATE_ACCOUNT = {"gestionar_penalizaciones", "reactivar_cuentas"}
+_VIEW_PENALTIES = {"gestionar_penalizaciones", "reactivar_cuentas", "gestionar_roles_permisos"}
 
 
 def _notify_payload(penalty: PenaltyResponse) -> dict:
@@ -346,6 +347,11 @@ def list_penalties(
     active_only: bool = Query(default=False),
     current_user: dict = Depends(get_current_user),
 ) -> list[PenaltyResponse]:
+    ensure_any_permission(
+        current_user,
+        _VIEW_PENALTIES,
+        "No tienes permisos para consultar el listado de penalizaciones",
+    )
     items = user_penalty_repo.list_all()
     if active_only:
         items = [item for item in items if item.is_active]

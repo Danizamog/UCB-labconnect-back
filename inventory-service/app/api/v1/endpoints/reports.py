@@ -6,9 +6,12 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query
 
 from app.application.container import stock_item_repo, loan_record_repo
-from app.core.dependencies import get_current_user
+from app.core.dependencies import ensure_any_permission, get_current_user
 from app.schemas.stock_report import StockReportItem, StockReportResponse, UsageReportItem, UsageReportResponse
 router = APIRouter(prefix="/reports", tags=["reports"])
+
+_VIEW_REPORTS = {"generar_reportes", "consultar_estadisticas", "gestionar_inventario", "gestionar_stock", "gestionar_reactivos_quimicos"}
+
 
 @router.get("/usage", response_model=UsageReportResponse)
 def get_usage_report(
@@ -16,8 +19,9 @@ def get_usage_report(
     practice: str | None = Query(default=None),
     date_from: str | None = Query(default=None),
     date_to: str | None = Query(default=None),
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ) -> UsageReportResponse:
+    ensure_any_permission(current_user, _VIEW_REPORTS, "No tienes permisos para consultar reportes")
     """
     Reporte de uso de insumos agrupado por práctica y usuario.
     Filtros opcionales: usuario, práctica, rango de fechas (prestamo).
@@ -68,8 +72,9 @@ def get_stock_items_report(
     only_low_or_out: bool = Query(default=False),
     status_filter: Literal["out_of_stock", "low_stock", "ok"] | None = Query(default=None),
     search: str | None = Query(default=None, min_length=1, max_length=80),
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ) -> StockReportResponse:
+    ensure_any_permission(current_user, _VIEW_REPORTS, "No tienes permisos para consultar reportes")
     items = stock_item_repo.list_all()
     normalized_search = (search or "").strip().lower()
 

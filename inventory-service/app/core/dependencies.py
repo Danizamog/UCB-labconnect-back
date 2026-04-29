@@ -99,6 +99,7 @@ def get_current_user(
 
 def ensure_any_permission(current_user: dict, required_permissions: set[str], detail: str) -> None:
     permissions = set(current_user.get("permissions") or [])
-    if current_user.get("role") == "admin" or "*" in permissions or permissions.intersection(required_permissions):
+    role = str(current_user.get("role") or "").strip().lower()
+    if role in {"admin", "administrador"} or "*" in permissions or permissions.intersection(required_permissions):
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)

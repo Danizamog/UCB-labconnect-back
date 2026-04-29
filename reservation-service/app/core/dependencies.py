@@ -147,8 +147,13 @@ def validate_token(token: str) -> dict:
     return _resolve_live_payload(token, fallback_payload)
 
 
+def is_admin_role(current_user: dict) -> bool:
+    role = str(current_user.get("role") or "").strip().lower()
+    return role in {"admin", "administrador"}
+
+
 def ensure_any_permission(current_user: dict, required_permissions: set[str], detail: str) -> None:
     permissions = set(current_user.get("permissions") or [])
-    if current_user.get("role") == "admin" or "*" in permissions or permissions.intersection(required_permissions):
+    if is_admin_role(current_user) or "*" in permissions or permissions.intersection(required_permissions):
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)

@@ -95,3 +95,11 @@ def get_current_user(
 
     fallback_payload = _decode_token_payload(credentials.credentials)
     return _resolve_live_payload(credentials.credentials, fallback_payload)
+
+
+def ensure_any_permission(current_user: dict, required_permissions: set[str], detail: str) -> None:
+    permissions = set(current_user.get("permissions") or [])
+    role = str(current_user.get("role") or "").strip().lower()
+    if role in {"admin", "administrador"} or "*" in permissions or permissions.intersection(required_permissions):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
