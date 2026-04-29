@@ -15,16 +15,19 @@ class PocketBaseUserRepository:
         auth_identity: str | None = None,
         auth_password: str | None = None,
         auth_collection: str = "_superusers",
+        roles_collection: str = "role",
         timeout_seconds: float = 10,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._users_collection = users_collection
+        self._roles_collection = roles_collection
         self._timeout = timeout_seconds
         self._auth_identity = auth_identity
         self._auth_password = auth_password
         self._auth_collection = auth_collection
         self._auth_token = auth_token
         self._supported_fields: set[str] | None = None
+        self._role_id_cache: dict[str, str] = {}
         self._client = httpx.Client(
             timeout=httpx.Timeout(self._timeout, connect=min(self._timeout, 5.0)),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
@@ -225,6 +228,48 @@ class PocketBaseUserRepository:
         self._supported_fields = fields
         return fields
 
+    def _resolve_role_id(self, role_name: str) -> str | None:
+        normalized = (role_name or "").strip()
+        if not normalized:
+            return None
+
+        cache_key = normalized.lower()
+        if cache_key in self._role_id_cache:
+            return self._role_id_cache[cache_key] or None
+
+        self._ensure_authenticated()
+        roles_url = f"{self._base_url}/api/collections/{self._roles_collection}/records"
+        params = urlencode(
+            {
+                "page": 1,
+                "perPage": 1,
+                "filter": f'name="{self._escape_filter_value(normalized)}"',
+            }
+        )
+
+        try:
+            payload = self._request("GET", f"{roles_url}?{params}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {400, 404}:
+                self._role_id_cache[cache_key] = ""
+                return None
+            raise
+        except httpx.RequestError:
+            return None
+
+        role_id = ""
+        if isinstance(payload, dict):
+            items = payload.get("items", [])
+            if isinstance(items, list) and items:
+                first = items[0]
+                if isinstance(first, dict):
+                    raw_id = first.get("id")
+                    if isinstance(raw_id, str):
+                        role_id = raw_id.strip()
+
+        self._role_id_cache[cache_key] = role_id
+        return role_id or None
+
     def _build_payload(self, user: User, password: str | None = None) -> dict:
         name = user.name or user.username.split("@")[0]
         payload = {
@@ -253,6 +298,11 @@ class PocketBaseUserRepository:
             if key not in supported_fields:
                 continue
             payload[key] = value
+
+        if "role" in supported_fields and user.role:
+            role_id = self._resolve_role_id(user.role)
+            if role_id:
+                payload["role"] = role_id
 
         return payload
 
@@ -359,6 +409,12 @@ class PocketBaseUserRepository:
 
         if not isinstance(data, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al guardar el usuario")
+
+        record_id = data.get("id") if isinstance(data.get("id"), str) else None
+        if record_id:
+            expanded = self._fetch_record_by_id(record_id)
+            if expanded is not None:
+                return expanded
         return self._to_user(data)
 
     def save_with_password(self, user: User, password: str) -> User:
@@ -400,6 +456,12 @@ class PocketBaseUserRepository:
 
         if not isinstance(data, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al guardar el usuario")
+
+        record_id = data.get("id") if isinstance(data.get("id"), str) else None
+        if record_id:
+            expanded = self._fetch_record_by_id(record_id)
+            if expanded is not None:
+                return expanded
         return self._to_user(data)
 
     def authenticate(self, username: str, password: str) -> User | None:

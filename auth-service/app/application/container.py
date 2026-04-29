@@ -19,6 +19,7 @@ def _build_user_repository() -> InMemoryUserRepository | PocketBaseUserRepositor
             auth_identity=settings.pocketbase_auth_identity,
             auth_password=settings.pocketbase_auth_password,
             auth_collection=settings.pocketbase_auth_collection,
+            roles_collection=settings.pocketbase_roles_collection,
             timeout_seconds=settings.pocketbase_timeout_seconds,
         )
     return InMemoryUserRepository()

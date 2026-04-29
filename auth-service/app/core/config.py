@@ -42,6 +42,8 @@ class Settings:
     pocketbase_auth_password: str = os.getenv("POCKETBASE_AUTH_PASSWORD", "").strip()
     pocketbase_auth_collection: str = os.getenv("POCKETBASE_AUTH_COLLECTION", "_superusers").strip() or "_superusers"
     pocketbase_timeout_seconds: float = float(os.getenv("POCKETBASE_TIMEOUT_SECONDS", "10"))
+    pocketbase_roles_collection: str = os.getenv("POCKETBASE_ROLES_COLLECTION", "role").strip() or "role"
+    default_sso_role_name: str = os.getenv("DEFAULT_SSO_ROLE_NAME", "Estudiante").strip() or "Estudiante"
 
 
 settings = Settings()

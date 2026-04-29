@@ -44,7 +44,7 @@ class LoginWithGoogle:
                 User(
                     username=username,
                     name=google_user["name"],
-                    role="user",
+                    role=settings.default_sso_role_name,
                     profile_type="student",
                 ),
                 secrets.token_urlsafe(24),
