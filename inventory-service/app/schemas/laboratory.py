@@ -29,5 +29,6 @@ class LaboratoryResponse(BaseModel):
     is_active: bool
     area_id: str
     area_name: str | None = None
+    manager: str = ""
     created: str
     updated: str

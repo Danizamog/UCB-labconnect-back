@@ -24,6 +24,7 @@ def _to_response(record: dict) -> LaboratoryResponse:
         is_active=bool(record.get("is_active", True)),
         area_id=record.get("area_id", ""),
         area_name=area_name,
+        manager=str(record.get("manager") or ""),
         created=record.get("created", ""),
         updated=record.get("updated", ""),
     )
