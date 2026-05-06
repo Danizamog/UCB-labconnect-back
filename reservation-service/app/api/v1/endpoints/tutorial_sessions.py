@@ -6,10 +6,20 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.application.container import tutorial_session_repo
+from app.core.datetime_utils import now_local_naive, parse_timestamp_to_local_naive
 from app.core.dependencies import ensure_any_permission, get_current_user, is_admin_role
 from app.notifications.store import notification_store
 from app.realtime.manager import realtime_manager
 from app.schemas.tutorial_session import TutorialSessionCreate, TutorialSessionResponse
+
+
+def _session_has_started(session: TutorialSessionResponse) -> bool:
+    try:
+        start = parse_timestamp_to_local_naive(session.start_at)
+    except ValueError:
+        return False
+    return start <= now_local_naive()
+
 
 router = APIRouter(prefix="/tutorial-sessions", tags=["tutorial-sessions"])
 
@@ -135,6 +145,12 @@ async def update_tutorial_session(
     is_admin = is_admin_role(current_user)
     if not is_admin and existing.tutor_id != (current_user.get("user_id") or ""):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No puedes editar una tutoria de otro tutor")
+
+    if _session_has_started(existing):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No puedes editar una tutoria que ya inicio o ya termino.",
+        )
 
     payload = body.model_copy(
         update={

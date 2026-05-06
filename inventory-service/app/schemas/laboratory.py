@@ -9,6 +9,7 @@ class LaboratoryCreate(BaseModel):
     description: str = ""
     is_active: bool = True
     area_id: str = ""
+    manager: str = ""
 
 
 class LaboratoryUpdate(BaseModel):
@@ -18,6 +19,7 @@ class LaboratoryUpdate(BaseModel):
     description: str | None = None
     is_active: bool | None = None
     area_id: str | None = None
+    manager: str | None = None
 
 
 class LaboratoryResponse(BaseModel):
