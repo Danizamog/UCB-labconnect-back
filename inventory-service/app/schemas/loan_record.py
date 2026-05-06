@@ -57,3 +57,14 @@ class LoanDashboardResponse(BaseModel):
     returned_count: int
     damaged_returns_count: int
     active_loans: list[LoanRecordResponse]
+    active_loans_page: int = 1
+    active_loans_per_page: int = 50
+    active_loans_total_pages: int = 1
+
+
+class PaginatedLoanRecordResponse(BaseModel):
+    items: list[LoanRecordResponse]
+    page: int
+    per_page: int
+    total_items: int
+    total_pages: int

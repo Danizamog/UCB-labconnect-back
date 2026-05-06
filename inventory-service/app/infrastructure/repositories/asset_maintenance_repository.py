@@ -44,6 +44,8 @@ class AssetMaintenanceRepository:
         self._collection_ready = False
         self._collection_lock = Lock()
         self._records_cache = TTLCache[list[dict[str, Any]]](ttl_seconds=3.0)
+        self._laboratory_backfill_done = False
+        self._laboratory_backfill_lock = Lock()
 
     def _invalidate_cache(self) -> None:
         self._records_cache.invalidate()
@@ -61,6 +63,7 @@ class AssetMaintenanceRepository:
                 [
                     {"name": "asset_id", "type": "text", "required": True, "max": 80},
                     {"name": "asset_name", "type": "text", "required": True, "max": 160},
+                    {"name": "laboratory_id", "type": "text", "required": False, "max": 80},
                     {"name": "ticket_type", "type": "text", "required": True, "max": 20},
                     {"name": "title", "type": "text", "required": True, "max": 160},
                     {"name": "description", "type": "text", "required": True, "max": 4000},
@@ -91,6 +94,7 @@ class AssetMaintenanceRepository:
             id=record.get("id", ""),
             asset_id=record.get("asset_id", ""),
             asset_name=record.get("asset_name", ""),
+            laboratory_id=record.get("laboratory_id", ""),
             ticket_type=record.get("ticket_type", "maintenance"),
             title=record.get("title", ""),
             description=record.get("description", ""),
@@ -116,8 +120,31 @@ class AssetMaintenanceRepository:
             updated=record.get("updated", ""),
         )
 
+    def _build_filter(
+        self,
+        *,
+        status_filter: str | None = None,
+        asset_id: str | None = None,
+        lab_ids: list[str] | None = None,
+    ) -> str | None:
+        clauses: list[str] = []
+        if status_filter:
+            clauses.append(f'status="{_escape_filter_value(status_filter)}"')
+        if asset_id:
+            clauses.append(f'asset_id="{_escape_filter_value(str(asset_id).strip())}"')
+        if lab_ids is not None:
+            ids = [str(lab_id).strip() for lab_id in lab_ids if str(lab_id or "").strip()]
+            # Convencion: tickets sin laboratory_id (legados o sueltos) son
+            # visibles para cualquier usuario con permiso, igual que el resto
+            # del directorio de inventario.
+            parts = ['laboratory_id=""']
+            parts.extend(f'laboratory_id="{_escape_filter_value(value)}"' for value in ids)
+            clauses.append(f"({' || '.join(parts)})")
+        return " && ".join(clauses) if clauses else None
+
     def _list_raw(self, *, filter_expression: str | None = None) -> list[dict[str, Any]]:
         self._ensure_collection()
+        self._ensure_laboratory_backfilled()
         cache_key = ("raw", filter_expression or "")
         return self._records_cache.get_or_set(
             cache_key,
@@ -129,15 +156,77 @@ class AssetMaintenanceRepository:
             ),
         )
 
-    def list_all(self, *, status_filter: str | None = None) -> list[AssetMaintenanceTicketResponse]:
-        filter_expression = f'status="{_escape_filter_value(status_filter)}"' if status_filter else None
+    def _ensure_laboratory_backfilled(self) -> None:
+        """Backfill perezoso (idempotente, una vez por proceso) que rellena
+        `laboratory_id` en tickets antiguos creados antes de la denormalizacion.
+        Sin esto, los tickets legados serian invisibles para Encargados con
+        scope por laboratorio si su asset tiene un lab asignado distinto."""
+        if self._laboratory_backfill_done or not self._admin_client.enabled:
+            return
+        with self._laboratory_backfill_lock:
+            if self._laboratory_backfill_done:
+                return
+            try:
+                # Solo tomamos un cap razonable; si hay muchisimos tickets sin
+                # backfill conviene un job dedicado, pero el caso esperado es
+                # un universo acotado de tickets historicos.
+                legacy = self._admin_client.list_records(
+                    self._collection,
+                    sort=None,
+                    filter='laboratory_id=""',
+                    per_page=200,
+                    max_items=2000,
+                )
+            except Exception:
+                # No bloqueamos el listado si el backfill falla; lo reintentamos
+                # en el proximo arranque del proceso.
+                self._laboratory_backfill_done = True
+                return
+
+            if not legacy:
+                self._laboratory_backfill_done = True
+                return
+
+            # Cacheamos los lookups por asset para no pegarle 1:1.
+            asset_lab_cache: dict[str, str] = {}
+            for record in legacy:
+                asset_id = str(record.get("asset_id") or "").strip()
+                if not asset_id:
+                    continue
+                if asset_id in asset_lab_cache:
+                    laboratory_id = asset_lab_cache[asset_id]
+                else:
+                    asset = self._asset_repo.get_by_id(asset_id)
+                    laboratory_id = str(asset.laboratory_id or "") if asset else ""
+                    asset_lab_cache[asset_id] = laboratory_id
+                if not laboratory_id:
+                    continue
+                try:
+                    self._admin_client.update_record(
+                        self._collection,
+                        record["id"],
+                        {"laboratory_id": laboratory_id},
+                    )
+                except Exception:
+                    continue
+
+            self._records_cache.invalidate()
+            self._laboratory_backfill_done = True
+
+    def list_all(
+        self,
+        *,
+        status_filter: str | None = None,
+        lab_ids: list[str] | None = None,
+    ) -> list[AssetMaintenanceTicketResponse]:
+        filter_expression = self._build_filter(status_filter=status_filter, lab_ids=lab_ids)
         return [self._to_response(record) for record in self._list_raw(filter_expression=filter_expression)]
 
     def list_for_asset(self, asset_id: str) -> list[AssetMaintenanceTicketResponse]:
         normalized_asset_id = str(asset_id or "").strip()
         if not normalized_asset_id:
             return []
-        filter_expression = f'asset_id="{_escape_filter_value(normalized_asset_id)}"'
+        filter_expression = self._build_filter(asset_id=normalized_asset_id)
         return [self._to_response(record) for record in self._list_raw(filter_expression=filter_expression)]
 
     def get_by_id(self, ticket_id: str) -> AssetMaintenanceTicketResponse | None:
@@ -205,6 +294,7 @@ class AssetMaintenanceRepository:
         payload = {
             "asset_id": asset.id,
             "asset_name": asset.name,
+            "laboratory_id": str(asset.laboratory_id or ""),
             "ticket_type": body.ticket_type,
             "title": body.title.strip(),
             "description": body.description.strip(),
@@ -268,10 +358,14 @@ class AssetMaintenanceRepository:
         )
         return self._to_response(updated)
 
-    def list_user_responsibility_flags(self) -> list[AssetResponsibilityFlagResponse]:
+    def list_user_responsibility_flags(
+        self,
+        *,
+        lab_ids: list[str] | None = None,
+    ) -> list[AssetResponsibilityFlagResponse]:
         grouped: dict[str, AssetResponsibilityFlagResponse] = {}
 
-        for ticket in self.list_all():
+        for ticket in self.list_all(lab_ids=lab_ids):
             if not ticket.is_responsibility_flagged or not ticket.responsible_borrower_email:
                 continue
 

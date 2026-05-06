@@ -9,7 +9,13 @@ from app.infrastructure.pocketbase_base import PocketBaseClient as BasePocketBas
 from app.infrastructure.pocketbase_client import PocketBaseClient as AdminPocketBaseClient
 from app.schemas.asset import AssetUpdate
 from app.schemas.asset_maintenance import AssetMaintenanceTicketCreate
-from app.schemas.loan_record import LoanDashboardResponse, LoanRecordCreate, LoanRecordResponse, LoanRecordReturn
+from app.schemas.loan_record import (
+    LoanDashboardResponse,
+    LoanRecordCreate,
+    LoanRecordResponse,
+    LoanRecordReturn,
+    PaginatedLoanRecordResponse,
+)
 
 
 def _utcnow_iso() -> str:
@@ -103,6 +109,31 @@ class LoanRecordRepository:
             updated=record.get("updated", ""),
         )
 
+    def _build_filter(
+        self,
+        *,
+        status_filter: str | None = None,
+        asset_id: str | None = None,
+        serial_number: str | None = None,
+        lab_ids: list[str] | None = None,
+    ) -> str | None:
+        filter_clauses: list[str] = []
+        if status_filter:
+            filter_clauses.append(f'status="{_escape_filter_value(status_filter)}"')
+        if asset_id:
+            filter_clauses.append(f'asset_id="{_escape_filter_value(str(asset_id).strip())}"')
+        if serial_number:
+            filter_clauses.append(f'asset_serial_number~"{_escape_filter_value(str(serial_number).strip())}"')
+        if lab_ids is not None:
+            ids = [str(lab_id).strip() for lab_id in lab_ids if str(lab_id or "").strip()]
+            if not ids:
+                # User has no accessible labs: return a filter that matches nothing.
+                filter_clauses.append('id="__no_accessible_labs__"')
+            else:
+                quoted = " || ".join(f'laboratory_id="{_escape_filter_value(value)}"' for value in ids)
+                filter_clauses.append(f'({quoted})')
+        return " && ".join(filter_clauses) if filter_clauses else None
+
     def _list_raw(self, *, filter_expression: str | None = None) -> list[dict]:
         self._ensure_collection()
         cache_key = ("raw", filter_expression or "")
@@ -116,6 +147,28 @@ class LoanRecordRepository:
             ),
         )
 
+    def _list_page_raw(self, *, page: int, per_page: int, filter_expression: str | None) -> dict:
+        self._ensure_collection()
+        cache_key = ("page", page, per_page, filter_expression or "")
+        return self._records_cache.get_or_set(
+            cache_key,
+            lambda: self._admin_client.list_records_page(
+                self._collection,
+                page=page,
+                per_page=per_page,
+                sort="-loaned_at",
+                filter=filter_expression,
+            ),
+        )
+
+    def _count(self, filter_expression: str | None) -> int:
+        self._ensure_collection()
+        cache_key = ("count", filter_expression or "")
+        return self._records_cache.get_or_set(
+            cache_key,
+            lambda: self._admin_client.count_records(self._collection, filter=filter_expression),
+        )
+
     def list_all(
         self,
         *,
@@ -123,16 +176,14 @@ class LoanRecordRepository:
         asset_id: str | None = None,
         borrower_query: str | None = None,
         serial_number: str | None = None,
+        lab_ids: list[str] | None = None,
     ) -> list[LoanRecordResponse]:
-        filter_clauses: list[str] = []
-        if status_filter:
-            filter_clauses.append(f'status="{_escape_filter_value(status_filter)}"')
-        if asset_id:
-            filter_clauses.append(f'asset_id="{_escape_filter_value(str(asset_id).strip())}"')
-        if serial_number:
-            filter_clauses.append(f'asset_serial_number~"{_escape_filter_value(str(serial_number).strip())}"')
-
-        filter_expression = " && ".join(filter_clauses) if filter_clauses else None
+        filter_expression = self._build_filter(
+            status_filter=status_filter,
+            asset_id=asset_id,
+            serial_number=serial_number,
+            lab_ids=lab_ids,
+        )
         items = [self._to_response(record) for record in self._list_raw(filter_expression=filter_expression)]
 
         if borrower_query:
@@ -145,6 +196,61 @@ class LoanRecordRepository:
             ]
 
         return items
+
+    def list_paginated(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 50,
+        status_filter: str | None = None,
+        asset_id: str | None = None,
+        borrower_query: str | None = None,
+        serial_number: str | None = None,
+        lab_ids: list[str] | None = None,
+    ) -> PaginatedLoanRecordResponse:
+        normalized_page = max(int(page or 1), 1)
+        normalized_per_page = max(min(int(per_page or 50), 200), 1)
+
+        # When filtering by borrower text, PocketBase cannot help (multi-field search):
+        # fall back to load + filter + slice in Python. Otherwise, paginate server-side.
+        if borrower_query:
+            full = self.list_all(
+                status_filter=status_filter,
+                asset_id=asset_id,
+                borrower_query=borrower_query,
+                serial_number=serial_number,
+                lab_ids=lab_ids,
+            )
+            total_items = len(full)
+            total_pages = max((total_items + normalized_per_page - 1) // normalized_per_page, 1) if total_items else 0
+            offset = (normalized_page - 1) * normalized_per_page
+            page_items = full[offset:offset + normalized_per_page]
+            return PaginatedLoanRecordResponse(
+                items=page_items,
+                page=normalized_page,
+                per_page=normalized_per_page,
+                total_items=total_items,
+                total_pages=total_pages,
+            )
+
+        filter_expression = self._build_filter(
+            status_filter=status_filter,
+            asset_id=asset_id,
+            serial_number=serial_number,
+            lab_ids=lab_ids,
+        )
+        page_data = self._list_page_raw(
+            page=normalized_page,
+            per_page=normalized_per_page,
+            filter_expression=filter_expression,
+        )
+        return PaginatedLoanRecordResponse(
+            items=[self._to_response(record) for record in page_data.get("items", [])],
+            page=int(page_data.get("page", normalized_page) or normalized_page),
+            per_page=int(page_data.get("perPage", normalized_per_page) or normalized_per_page),
+            total_items=int(page_data.get("totalItems", 0) or 0),
+            total_pages=int(page_data.get("totalPages", 0) or 0),
+        )
 
     def list_for_asset(self, asset_id: str) -> list[LoanRecordResponse]:
         normalized_asset_id = str(asset_id or "").strip()
@@ -272,15 +378,49 @@ class LoanRecordRepository:
 
         return self._to_response(updated)
 
-    def get_dashboard(self) -> LoanDashboardResponse:
-        items = self.list_all()
-        active_loans = [item for item in items if item.status == "active"]
-        returned_loans = [item for item in items if item.status == "returned"]
-        damaged_returns = [item for item in returned_loans if item.return_condition == "damaged"]
+    def get_dashboard(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 50,
+        lab_ids: list[str] | None = None,
+    ) -> LoanDashboardResponse:
+        normalized_page = max(int(page or 1), 1)
+        normalized_per_page = max(min(int(per_page or 50), 200), 1)
+
+        base_filter = self._build_filter(lab_ids=lab_ids)
+        active_filter = self._build_filter(status_filter="active", lab_ids=lab_ids)
+        returned_filter = self._build_filter(status_filter="returned", lab_ids=lab_ids)
+        damaged_clauses = ['status="returned"', 'return_condition="damaged"']
+        if lab_ids is not None:
+            ids = [str(lab_id).strip() for lab_id in lab_ids if str(lab_id or "").strip()]
+            if not ids:
+                damaged_clauses.append('id="__no_accessible_labs__"')
+            else:
+                quoted = " || ".join(f'laboratory_id="{_escape_filter_value(value)}"' for value in ids)
+                damaged_clauses.append(f'({quoted})')
+        damaged_filter = " && ".join(damaged_clauses)
+
+        total_records = self._count(base_filter)
+        active_count = self._count(active_filter)
+        returned_count = self._count(returned_filter)
+        damaged_count = self._count(damaged_filter)
+
+        active_page = self._list_page_raw(
+            page=normalized_page,
+            per_page=normalized_per_page,
+            filter_expression=active_filter,
+        )
+        active_loans = [self._to_response(record) for record in active_page.get("items", [])]
+        active_total_pages = int(active_page.get("totalPages", 0) or 0)
+
         return LoanDashboardResponse(
-            total_records=len(items),
-            active_count=len(active_loans),
-            returned_count=len(returned_loans),
-            damaged_returns_count=len(damaged_returns),
+            total_records=total_records,
+            active_count=active_count,
+            returned_count=returned_count,
+            damaged_returns_count=damaged_count,
             active_loans=active_loans,
+            active_loans_page=normalized_page,
+            active_loans_per_page=normalized_per_page,
+            active_loans_total_pages=active_total_pages,
         )

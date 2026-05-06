@@ -25,6 +25,7 @@ class AssetMaintenanceTicketResponse(BaseModel):
     id: str
     asset_id: str
     asset_name: str
+    laboratory_id: str = ""
     ticket_type: MaintenanceTicketType
     title: str
     description: str

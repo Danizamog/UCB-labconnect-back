@@ -46,13 +46,13 @@ async def proxy_users_root(request: Request) -> Response:
     return await forward_request(target_url, request)
 
 
-# Users v1 - Role Service (rolesService)
+# Users v1 - Auth Service (directorio de usuarios visible para encargados)
 @router.api_route(
     "/api/v1/users/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
 async def proxy_users_v1_path(path: str, request: Request) -> Response:
-    target_url = f"{settings.role_service_url}/v1/roles/users/{path}"
+    target_url = f"{settings.auth_service_url}/v1/users/{path}"
     return await forward_request(target_url, request)
 
 
@@ -61,7 +61,7 @@ async def proxy_users_v1_path(path: str, request: Request) -> Response:
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
 async def proxy_users_v1_root(request: Request) -> Response:
-    target_url = f"{settings.role_service_url}/v1/roles/users"
+    target_url = f"{settings.auth_service_url}/v1/users/"
     return await forward_request(target_url, request)
 
 

@@ -160,6 +160,42 @@ class PocketBaseClient:
 
         return records
 
+    def list_records_page(
+        self,
+        collection_name: str,
+        *,
+        page: int = 1,
+        per_page: int = 50,
+        sort: str | None = None,
+        filter: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"page": max(int(page or 1), 1), "perPage": max(int(per_page or 1), 1)}
+        if sort:
+            params["sort"] = sort
+        if filter:
+            params["filter"] = filter
+        payload = self._request(
+            "GET",
+            f"{self._base_url}/api/collections/{collection_name}/records",
+            params=params,
+        )
+        if not isinstance(payload, dict):
+            return {"items": [], "page": 1, "perPage": per_page, "totalItems": 0, "totalPages": 0}
+        items = payload.get("items")
+        if not isinstance(items, list):
+            items = []
+        return {
+            "items": [item for item in items if isinstance(item, dict)],
+            "page": int(payload.get("page", page) or page),
+            "perPage": int(payload.get("perPage", per_page) or per_page),
+            "totalItems": int(payload.get("totalItems", 0) or 0),
+            "totalPages": int(payload.get("totalPages", 0) or 0),
+        }
+
+    def count_records(self, collection_name: str, *, filter: str | None = None) -> int:
+        page = self.list_records_page(collection_name, page=1, per_page=1, filter=filter)
+        return int(page.get("totalItems", 0) or 0)
+
     def get_record(self, collection_name: str, record_id: str) -> dict[str, Any] | None:
         try:
             payload = self._request("GET", f"{self._base_url}/api/collections/{collection_name}/records/{record_id}")

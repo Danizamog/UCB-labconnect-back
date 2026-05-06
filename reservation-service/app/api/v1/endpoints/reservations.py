@@ -33,6 +33,24 @@ from app.schemas.tutorial_session import TutorialSessionResponse
 router = APIRouter(prefix="/reservations", tags=["reservations"])
 _USER_RESERVATION_MODIFICATION_WINDOW_SECONDS = 2 * 60 * 60
 _ABSENT_GRACE_PERIOD_SECONDS = 15 * 60
+
+# Lock por laboratorio para serializar validacion+creacion/actualizacion y evitar
+# que dos solicitudes concurrentes pasen ambas la verificacion de overlap y
+# terminen creando reservas pisadas en el mismo bloque.
+_LABORATORY_LOCKS: dict[str, asyncio.Lock] = {}
+_LABORATORY_LOCKS_GUARD = asyncio.Lock()
+
+
+async def _laboratory_lock(laboratory_id: str) -> asyncio.Lock:
+    key = str(laboratory_id or "").strip()
+    async with _LABORATORY_LOCKS_GUARD:
+        lock = _LABORATORY_LOCKS.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _LABORATORY_LOCKS[key] = lock
+        return lock
+
+
 _MANAGEMENT_PERMISSIONS = {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"}
 _FINAL_RESERVATION_STATUSES = {"rejected", "cancelled", "completed", "absent"}
 _WHERE_PATTERN = re.compile(r"^(?P<field>[a-zA-Z_][a-zA-Z0-9_]*)(?P<operator>>=|<=|!=|=|~|>|<)(?P<value>.+)$")
@@ -829,13 +847,6 @@ async def create_reservation(body: LabReservationCreate, current_user: dict = De
 
     ensure_user_can_reserve_laboratory(body.laboratory_id, current_user)
 
-    await asyncio.to_thread(
-        _validate_reservation_time_rules,
-        laboratory_id=body.laboratory_id,
-        start_at_raw=body.start_at,
-        end_at_raw=body.end_at,
-    )
-
     sanitized = LabReservationCreate(
         laboratory_id=body.laboratory_id,
         area_id=body.area_id,
@@ -847,10 +858,19 @@ async def create_reservation(body: LabReservationCreate, current_user: dict = De
         notes=body.notes,
     )
 
-    try:
-        created = await lab_reservation_repo.acreate(sanitized, current_user=current_user)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    lab_lock = await _laboratory_lock(body.laboratory_id)
+    async with lab_lock:
+        await asyncio.to_thread(
+            _validate_reservation_time_rules,
+            laboratory_id=body.laboratory_id,
+            start_at_raw=body.start_at,
+            end_at_raw=body.end_at,
+        )
+
+        try:
+            created = await lab_reservation_repo.acreate(sanitized, current_user=current_user)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     await _broadcast_reservation_event("create", _serialize_reservation(created))
     return _serialize_reservation(created)
@@ -874,46 +894,48 @@ async def create_walk_in_reservation(
             detail="El usuario tiene una penalizacion activa y no puede ingresar mediante un walk-in",
         )
 
-    try:
-        created = await lab_reservation_repo.acreate(
-            LabReservationCreate(
-                laboratory_id=body.laboratory_id,
-                area_id=body.area_id,
-                requested_by=body.requested_by,
-                purpose=body.purpose.strip() or "Ingreso rapido sin reserva previa",
-                start_at=body.start_at,
-                end_at=body.end_at,
+    lab_lock = await _laboratory_lock(body.laboratory_id)
+    async with lab_lock:
+        try:
+            created = await lab_reservation_repo.acreate(
+                LabReservationCreate(
+                    laboratory_id=body.laboratory_id,
+                    area_id=body.area_id,
+                    requested_by=body.requested_by,
+                    purpose=body.purpose.strip() or "Ingreso rapido sin reserva previa",
+                    start_at=body.start_at,
+                    end_at=body.end_at,
+                    notes=body.notes,
+                ),
+                current_user=current_user,
+            )
+            updated = await lab_reservation_repo.aupdate(
+                created.id,
+                LabReservationUpdate(
+                    status="in_progress",
+                    approved_by=str(current_user.get("user_id") or ""),
+                    approved_at=datetime.utcnow().isoformat(),
+                ),
+            )
+            if updated is None:
+                raise ValueError("No se pudo registrar el walk-in")
+            await asyncio.to_thread(
+                lab_access_session_repo.create,
+                reservation_id=updated.id,
+                laboratory_id=updated.laboratory_id,
+                requested_by=updated.requested_by,
+                occupant_name=body.occupant_name.strip(),
+                occupant_email=body.occupant_email.strip(),
+                station_label=body.station_label.strip(),
+                purpose=updated.purpose,
+                start_at=updated.start_at,
+                end_at=updated.end_at,
+                is_walk_in=True,
+                recorded_by=str(current_user.get("name") or current_user.get("username") or "Encargado"),
                 notes=body.notes,
-            ),
-            current_user=current_user,
-        )
-        updated = await lab_reservation_repo.aupdate(
-            created.id,
-            LabReservationUpdate(
-                status="in_progress",
-                approved_by=str(current_user.get("user_id") or ""),
-                approved_at=datetime.utcnow().isoformat(),
-            ),
-        )
-        if updated is None:
-            raise ValueError("No se pudo registrar el walk-in")
-        await asyncio.to_thread(
-            lab_access_session_repo.create,
-            reservation_id=updated.id,
-            laboratory_id=updated.laboratory_id,
-            requested_by=updated.requested_by,
-            occupant_name=body.occupant_name.strip(),
-            occupant_email=body.occupant_email.strip(),
-            station_label=body.station_label.strip(),
-            purpose=updated.purpose,
-            start_at=updated.start_at,
-            end_at=updated.end_at,
-            is_walk_in=True,
-            recorded_by=str(current_user.get("name") or current_user.get("username") or "Encargado"),
-            notes=body.notes,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     enriched = _serialize_reservation(updated)
     await _broadcast_reservation_event("check_in", enriched)
@@ -966,18 +988,21 @@ async def update_reservation(
 
             ensure_user_can_reserve_laboratory(str(payload.laboratory_id or existing_reservation.laboratory_id), current_user)
 
-    await asyncio.to_thread(
-        _validate_reservation_time_rules,
-        laboratory_id=str(payload.laboratory_id or existing_reservation.laboratory_id),
-        start_at_raw=str(payload.start_at or existing_reservation.start_at),
-        end_at_raw=str(payload.end_at or existing_reservation.end_at),
-        skip_reservation_id=reservation_id,
-    )
+    target_lab_id = str(payload.laboratory_id or existing_reservation.laboratory_id)
+    lab_lock = await _laboratory_lock(target_lab_id)
+    async with lab_lock:
+        await asyncio.to_thread(
+            _validate_reservation_time_rules,
+            laboratory_id=target_lab_id,
+            start_at_raw=str(payload.start_at or existing_reservation.start_at),
+            end_at_raw=str(payload.end_at or existing_reservation.end_at),
+            skip_reservation_id=reservation_id,
+        )
 
-    try:
-        updated = await lab_reservation_repo.aupdate(reservation_id, payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        try:
+            updated = await lab_reservation_repo.aupdate(reservation_id, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")

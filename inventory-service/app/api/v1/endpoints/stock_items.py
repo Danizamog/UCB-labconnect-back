@@ -1,11 +1,9 @@
-import datetime
-import uuid
-
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from app.application.container import stock_item_repo, stock_movement_repo
 from app.core.dependencies import ensure_any_permission, get_current_user
+from app.core.laboratory_access import is_lab_in_scope, resolve_accessible_lab_ids
 from app.schemas.stock_item import StockItemCreate, StockItemResponse, StockItemUpdate
 
 router = APIRouter(prefix="/stock-items", tags=["stock-items"])
@@ -13,6 +11,9 @@ router = APIRouter(prefix="/stock-items", tags=["stock-items"])
 _VIEW_STOCK = {"gestionar_stock", "gestionar_reactivos_quimicos", "gestionar_reservas_materiales"}
 _MANAGE_STOCK = {"gestionar_stock", "gestionar_reactivos_quimicos"}
 _MOVE_STOCK = {"gestionar_stock", "gestionar_reactivos_quimicos", "gestionar_reservas_materiales"}
+
+_OUT_OF_SCOPE_DETAIL = "Stock item no encontrado"
+_OUT_OF_SCOPE_LAB_DETAIL = "Solo puedes operar sobre materiales de tus laboratorios asignados"
 
 
 class StockMovementCreate(BaseModel):
@@ -33,10 +34,17 @@ class StockMovementResponse(BaseModel):
     created_at: str
 
 
+def _filter_items_in_scope(items, accessible: list[str] | None) -> list[StockItemResponse]:
+    if accessible is None:
+        return items
+    return [item for item in items if is_lab_in_scope(item.laboratory_id, accessible)]
+
+
 @router.get("", response_model=list[StockItemResponse])
 def list_stock_items(current_user: dict = Depends(get_current_user)) -> list[StockItemResponse]:
     ensure_any_permission(current_user, _VIEW_STOCK, "No tienes permisos para consultar el inventario de materiales")
-    return stock_item_repo.list_all()
+    accessible = resolve_accessible_lab_ids(current_user)
+    return _filter_items_in_scope(stock_item_repo.list_all(), accessible)
 
 
 @router.get("/movements", response_model=list[StockMovementResponse])
@@ -46,7 +54,22 @@ def list_movements(
     current_user: dict = Depends(get_current_user),
 ) -> list[StockMovementResponse]:
     ensure_any_permission(current_user, _VIEW_STOCK, "No tienes permisos para consultar movimientos de materiales")
+    accessible = resolve_accessible_lab_ids(current_user)
+    if accessible is not None:
+        # Filtramos los movimientos a items dentro del alcance del usuario.
+        in_scope_ids = {
+            str(item.id)
+            for item in stock_item_repo.list_all()
+            if is_lab_in_scope(item.laboratory_id, accessible)
+        }
+        if stock_item_id is not None and str(stock_item_id) not in in_scope_ids:
+            return []
+    else:
+        in_scope_ids = None
+
     records = stock_movement_repo.list_recent(limit=limit, stock_item_id=stock_item_id)
+    if in_scope_ids is not None:
+        records = [r for r in records if str(r.stock_item_id) in in_scope_ids]
     return [
         StockMovementResponse(
             id=r.id,
@@ -72,7 +95,10 @@ def create_movement(
     ensure_any_permission(current_user, _MOVE_STOCK, "No tienes permisos para registrar movimientos de stock")
     item = stock_item_repo.get_by_id(item_id)
     if item is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stock item no encontrado")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+    accessible = resolve_accessible_lab_ids(current_user)
+    if not is_lab_in_scope(item.laboratory_id, accessible):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
 
     if body.movement_type in ("entry", "return"):
         change = body.quantity
@@ -112,13 +138,19 @@ def get_stock_item(item_id: str, current_user: dict = Depends(get_current_user))
     ensure_any_permission(current_user, _VIEW_STOCK, "No tienes permisos para consultar materiales")
     item = stock_item_repo.get_by_id(item_id)
     if item is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stock item no encontrado")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+    accessible = resolve_accessible_lab_ids(current_user)
+    if not is_lab_in_scope(item.laboratory_id, accessible):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
     return item
 
 
 @router.post("", response_model=StockItemResponse, status_code=status.HTTP_201_CREATED)
 def create_stock_item(body: StockItemCreate, current_user: dict = Depends(get_current_user)) -> StockItemResponse:
     ensure_any_permission(current_user, _MANAGE_STOCK, "No tienes permisos para registrar materiales")
+    accessible = resolve_accessible_lab_ids(current_user)
+    if not is_lab_in_scope(body.laboratory_id, accessible):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_OUT_OF_SCOPE_LAB_DETAIL)
     return stock_item_repo.create(body)
 
 
@@ -126,27 +158,47 @@ def create_stock_item(body: StockItemCreate, current_user: dict = Depends(get_cu
 @router.put("/{item_id}", response_model=StockItemResponse)
 def update_stock_item(item_id: str, body: StockItemUpdate, current_user: dict = Depends(get_current_user)) -> StockItemResponse:
     ensure_any_permission(current_user, _MANAGE_STOCK, "No tienes permisos para modificar materiales")
+    accessible = resolve_accessible_lab_ids(current_user)
+    existing = stock_item_repo.get_by_id(item_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+    if not is_lab_in_scope(existing.laboratory_id, accessible):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+    if body.laboratory_id is not None and not is_lab_in_scope(body.laboratory_id, accessible):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_OUT_OF_SCOPE_LAB_DETAIL)
     item = stock_item_repo.update(item_id, body)
     if item is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stock item no encontrado")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
     return item
 
 
 @router.patch("/{item_id}/quantity", response_model=StockItemResponse)
 def update_stock_item_quantity(item_id: str, body: dict, current_user: dict = Depends(get_current_user)) -> StockItemResponse:
     ensure_any_permission(current_user, _MOVE_STOCK, "No tienes permisos para ajustar cantidades de stock")
+    accessible = resolve_accessible_lab_ids(current_user)
+    existing = stock_item_repo.get_by_id(item_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+    if not is_lab_in_scope(existing.laboratory_id, accessible):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
     qty = body.get("quantity_available")
     if qty is None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Se requiere quantity_available")
     item = stock_item_repo.update(item_id, StockItemUpdate(quantity_available=int(qty)))
     if item is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stock item no encontrado")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
     return item
 
 
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_stock_item(item_id: str, current_user: dict = Depends(get_current_user)) -> None:
     ensure_any_permission(current_user, _MANAGE_STOCK, "No tienes permisos para eliminar materiales")
+    accessible = resolve_accessible_lab_ids(current_user)
+    existing = stock_item_repo.get_by_id(item_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+    if not is_lab_in_scope(existing.laboratory_id, accessible):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
     deleted = stock_item_repo.delete(item_id)
     if not deleted:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stock item no encontrado")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
