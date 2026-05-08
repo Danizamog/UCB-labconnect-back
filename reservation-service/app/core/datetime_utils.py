@@ -87,3 +87,57 @@ def iter_time_ranges(start: datetime, end: datetime, slot_minutes: int) -> list[
         items.append((cursor, next_value))
         cursor = next_value
     return items
+
+
+# Bloques académicos canónicos del laboratorio. Cada par (inicio, fin) tiene 45 min.
+# Las horas son uniformes para todos los laboratorios y reflejan la malla académica.
+ACADEMIC_BLOCKS: list[tuple[str, str]] = [
+    ("07:15", "08:00"),
+    ("08:00", "08:45"),
+    ("09:00", "09:45"),
+    ("09:45", "10:30"),
+    ("10:45", "11:30"),
+    ("11:30", "12:15"),
+    ("12:30", "13:15"),
+    ("13:15", "14:00"),
+    ("14:15", "15:00"),
+    ("15:00", "15:45"),
+    ("16:00", "16:45"),
+    ("16:45", "17:30"),
+    ("17:45", "18:30"),
+    ("18:30", "19:15"),
+    ("19:30", "20:15"),
+    ("20:15", "21:00"),
+]
+
+LAB_DAY_START: str = ACADEMIC_BLOCKS[0][0]
+LAB_DAY_END: str = ACADEMIC_BLOCKS[-1][1]
+ACADEMIC_BLOCK_MINUTES: int = 45
+
+_ACADEMIC_BLOCK_STARTS: frozenset[str] = frozenset(start for start, _ in ACADEMIC_BLOCKS)
+_ACADEMIC_BLOCK_ENDS: frozenset[str] = frozenset(end for _, end in ACADEMIC_BLOCKS)
+
+
+def iter_lab_blocks(day: date) -> list[tuple[datetime, datetime]]:
+    """Materializa los bloques académicos canónicos en una fecha concreta."""
+    return [
+        (combine_date_time(day, start), combine_date_time(day, end))
+        for start, end in ACADEMIC_BLOCKS
+    ]
+
+
+def is_valid_block_start(value: str) -> bool:
+    return value in _ACADEMIC_BLOCK_STARTS
+
+
+def is_valid_block_end(value: str) -> bool:
+    return value in _ACADEMIC_BLOCK_ENDS
+
+
+def matches_academic_range(start_time: str, end_time: str) -> bool:
+    """True si el rango (start, end) coincide con algún subrango contiguo de bloques académicos."""
+    if not is_valid_block_start(start_time) or not is_valid_block_end(end_time):
+        return False
+    if start_time >= end_time:
+        return False
+    return True

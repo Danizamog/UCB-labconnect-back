@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
-import psycopg
-from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
-
 from app.core.config import settings
+
+
+def _psycopg():
+    import psycopg
+    from psycopg.rows import dict_row
+    return psycopg, dict_row
+
+
+def Jsonb(value):
+    from psycopg.types.json import Jsonb as _Jsonb
+    return _Jsonb(value)
 
 
 class LocalJsonStore:
@@ -20,60 +27,11 @@ class LocalJsonStore:
         self._initialized = False
 
     def _connect(self):
+        psycopg, dict_row = _psycopg()
         return psycopg.connect(self.postgres_url, row_factory=dict_row)
 
     def _ensure_schema(self) -> None:
-        if not self.enabled or self._initialized:
-            return
-
-        with self._connect() as conn:
-            conn.execute("SELECT pg_advisory_lock(48271042)")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS local_records (
-                    namespace TEXT NOT NULL,
-                    collection TEXT NOT NULL,
-                    id TEXT NOT NULL,
-                    data JSONB NOT NULL,
-                    deleted BOOLEAN NOT NULL DEFAULT FALSE,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    PRIMARY KEY (namespace, collection, id)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sync_outbox (
-                    id BIGSERIAL PRIMARY KEY,
-                    namespace TEXT NOT NULL,
-                    collection TEXT NOT NULL,
-                    record_id TEXT NOT NULL,
-                    operation TEXT NOT NULL,
-                    payload JSONB NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    error TEXT,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    processed_at TIMESTAMPTZ
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_local_records_collection
-                ON local_records(namespace, collection, deleted)
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_sync_outbox_pending
-                ON sync_outbox(namespace, status, created_at)
-                """
-            )
-            conn.execute("SELECT pg_advisory_unlock(48271042)")
-
-        self._initialized = True
+        return
 
     def list(self) -> list[dict[str, Any]]:
         if not self.enabled:

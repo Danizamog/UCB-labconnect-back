@@ -3,8 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-import psycopg
-from psycopg.rows import dict_row
+
+
+def _psycopg():
+    import psycopg
+    from psycopg.rows import dict_row
+    return psycopg, dict_row
 
 
 class UserDirectoryRepository:
@@ -18,6 +22,7 @@ class UserDirectoryRepository:
         )
 
     def _connect(self):
+        psycopg, dict_row = _psycopg()
         return psycopg.connect(self._postgres_url, row_factory=dict_row)
 
     def _normalize_user(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -45,7 +50,7 @@ class UserDirectoryRepository:
                     """,
                     (self._namespace,),
                 ).fetchall()
-        except psycopg.Error:
+        except Exception:
             return []
 
         return [self._normalize_user(dict(row["data"])) for row in rows]

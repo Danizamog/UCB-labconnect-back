@@ -6,7 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.application.container import lab_block_repo, lab_reservation_repo, lab_schedule_repo, tutorial_session_repo
 from app.application.laboratory_access import ensure_user_can_reserve_laboratory
-from app.core.datetime_utils import combine_date_time, format_time, iter_time_ranges, now_local_naive, parse_datetime
+from app.core.datetime_utils import (
+    ACADEMIC_BLOCK_MINUTES,
+    combine_date_time,
+    format_time,
+    iter_lab_blocks,
+    now_local_naive,
+    parse_datetime,
+)
 from app.core.dependencies import get_current_user
 from app.schemas.availability import AvailabilitySlot, LabAvailabilityResponse
 
@@ -83,18 +90,8 @@ def get_lab_availability(
     if cached_response is not None:
         return cached_response
 
-    weekday = current_date.weekday()
-    schedule = lab_schedule_repo.get_active_for_laboratory_weekday(laboratory_id, weekday)
-    if schedule:
-        day_start = combine_date_time(current_date, schedule.open_time)
-        day_end = combine_date_time(current_date, schedule.close_time)
-        slot_minutes = schedule.slot_minutes or 60
-    else:
-        day_start = combine_date_time(current_date, "08:00")
-        day_end = combine_date_time(current_date, "20:00")
-        slot_minutes = 60
-
-    ranges = iter_time_ranges(day_start, day_end, slot_minutes)
+    ranges = iter_lab_blocks(current_date)
+    slot_minutes = ACADEMIC_BLOCK_MINUTES
 
     reservations = [
         item for item in lab_reservation_repo.list_for_laboratory_day(laboratory_id, day)
@@ -106,12 +103,27 @@ def get_lab_availability(
 
     blocks = lab_block_repo.list_for_laboratory_day(laboratory_id, day)
 
+    classes = lab_schedule_repo.list_active_for_laboratory_weekday(laboratory_id, current_date.weekday())
+    class_windows = [
+        (combine_date_time(current_date, klass.start_time), combine_date_time(current_date, klass.end_time), klass)
+        for klass in classes
+    ]
+
     slots: list[AvailabilitySlot] = []
     for start_dt, end_dt in ranges:
         state = "available"
         source = ""
         source_id = ""
         source_status = ""
+
+        if state == "available":
+            for class_start, class_end, klass in class_windows:
+                if start_dt < class_end and class_start < end_dt:
+                    state = "blocked"
+                    source = "class"
+                    source_id = klass.id
+                    source_status = klass.subject
+                    break
 
         if state == "available":
             for block in blocks:

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 from app.application.container import lab_access_session_repo, lab_reservation_repo, tutorial_session_repo, user_penalty_repo
 from app.application.container import lab_block_repo, lab_schedule_repo, laboratory_access_repo
 from app.application.laboratory_access import ensure_user_can_reserve_laboratory
-from app.core.datetime_utils import combine_date_time, iter_time_ranges, now_local_naive, parse_datetime
+from app.core.datetime_utils import LAB_DAY_END, LAB_DAY_START, combine_date_time, iter_lab_blocks, now_local_naive, parse_datetime
 from app.core.dependencies import ensure_any_permission, get_current_user, is_admin_role
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
 from app.realtime.manager import realtime_manager
@@ -101,19 +101,10 @@ def _has_schedule_overlap(start_at: datetime, end_at: datetime, other_start_raw:
     return start_at < other_end and other_start < end_at
 
 
-def _resolve_schedule_window(laboratory_id: str, reservation_day) -> tuple[datetime, datetime, int]:
-    weekday = reservation_day.weekday()
-    schedule = lab_schedule_repo.get_active_for_laboratory_weekday(laboratory_id, weekday)
-    if schedule:
-        day_start = combine_date_time(reservation_day, schedule.open_time)
-        day_end = combine_date_time(reservation_day, schedule.close_time)
-        slot_minutes = schedule.slot_minutes or 60
-    else:
-        day_start = combine_date_time(reservation_day, "08:00")
-        day_end = combine_date_time(reservation_day, "20:00")
-        slot_minutes = 60
-
-    return day_start, day_end, slot_minutes
+def _resolve_schedule_window(reservation_day) -> tuple[datetime, datetime]:
+    day_start = combine_date_time(reservation_day, LAB_DAY_START)
+    day_end = combine_date_time(reservation_day, LAB_DAY_END)
+    return day_start, day_end
 
 
 def _validate_reservation_time_rules(
@@ -152,23 +143,30 @@ def _validate_reservation_time_rules(
             detail="Solo puedes registrar o mover reservas dentro del plazo maximo de un mes",
         )
 
-    day_start, day_end, slot_minutes = _resolve_schedule_window(laboratory_id, start_at.date())
+    day_start, day_end = _resolve_schedule_window(start_at.date())
     if start_at < day_start or end_at > day_end:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="El horario seleccionado esta fuera del horario habilitado del laboratorio",
         )
 
-    slot_ranges = iter_time_ranges(day_start, day_end, slot_minutes)
+    slot_ranges = iter_lab_blocks(start_at.date())
     matches_any_slot = any(start_at == slot_start and end_at == slot_end for slot_start, slot_end in slot_ranges)
     if not matches_any_slot:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "Debes seleccionar un bloque horario valido del laboratorio. "
-                f"Los bloques vigentes para ese dia son de {slot_minutes} minutos."
-            ),
+            detail="Debes seleccionar un bloque academico valido del laboratorio.",
         )
+
+    weekday = start_at.weekday()
+    for klass in lab_schedule_repo.list_active_for_laboratory_weekday(laboratory_id, weekday):
+        class_start = combine_date_time(start_at.date(), klass.start_time)
+        class_end = combine_date_time(start_at.date(), klass.end_time)
+        if start_at < class_end and class_start < end_at:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Ese bloque esta ocupado por la clase '{klass.subject}'",
+            )
 
     day = start_at.date().isoformat()
 

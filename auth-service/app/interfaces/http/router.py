@@ -118,10 +118,8 @@ def _build_live_session_payload(payload: dict) -> dict:
             detail=INVALID_CREDENTIALS_MESSAGE,
         )
 
-    is_default_admin = subject == settings.default_admin_username.strip().lower()
-    use_default_admin_fallback = is_default_admin and not user.role and not user.permissions
-    role = user.role or ("admin" if use_default_admin_fallback else "user")
-    permissions = ["*"] if use_default_admin_fallback else sorted(set(user.permissions))
+    role = user.role or "user"
+    permissions = sorted(set(user.permissions))
 
     return {
         "sub": user.username,

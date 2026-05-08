@@ -52,7 +52,7 @@ class StockItemRepository:
                 data = self._client.request(
                     "GET",
                     self._base,
-                    params={"page": current_page, "perPage": per_page, "sort": "name", "expand": "laboratory_id"},
+                    params={"page": current_page, "perPage": per_page, "expand": "laboratory_id"},
                 )
                 if not isinstance(data, dict):
                     break
@@ -65,6 +65,7 @@ class StockItemRepository:
                     break
                 current_page += 1
 
+            items.sort(key=lambda x: (x.name or "").lower())
             return items
 
         return self._list_cache.get_or_set(cache_key, load)

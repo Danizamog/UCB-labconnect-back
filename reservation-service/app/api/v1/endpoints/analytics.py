@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.application.container import lab_block_repo, lab_reservation_repo, lab_schedule_repo, laboratory_access_repo
-from app.core.datetime_utils import combine_date_time, iter_time_ranges, now_local_naive, parse_datetime
+from app.core.datetime_utils import combine_date_time, iter_lab_blocks, now_local_naive, parse_datetime
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.schemas.lab_analytics import (
     ANALYTICS_PERIODS,
@@ -86,10 +86,6 @@ def get_laboratory_usage_analytics(
         lab for lab in laboratory_access_repo.list_all()
         if bool(lab.get("is_active", True))
     ]
-    schedules = [
-        schedule for schedule in lab_schedule_repo.list_all()
-        if bool(getattr(schedule, "is_active", True))
-    ]
     active_blocks = lab_block_repo.list_active_in_window(
         start_from=window_start_iso,
         end_to=window_end_iso,
@@ -99,11 +95,6 @@ def get_laboratory_usage_analytics(
         start_from=window_start_iso,
         end_to=window_end_iso,
     )
-
-    schedules_by_lab_weekday: dict[tuple[str, int], object] = {
-        (str(schedule.laboratory_id), int(schedule.weekday)): schedule
-        for schedule in schedules
-    }
 
     blocks_by_lab_day: dict[tuple[str, str], list] = defaultdict(list)
     for block in active_blocks:
@@ -143,20 +134,23 @@ def get_laboratory_usage_analytics(
         completed_blocks = 0
 
         for current_day in days_in_range:
-            schedule = schedules_by_lab_weekday.get((laboratory_id, current_day.weekday()))
-            open_time = str(getattr(schedule, "open_time", "08:00") or "08:00")
-            close_time = str(getattr(schedule, "close_time", "20:00") or "20:00")
-            slot_minutes = int(getattr(schedule, "slot_minutes", 60) or 60)
-
-            day_start = combine_date_time(current_day, open_time)
-            day_end = combine_date_time(current_day, close_time)
-            if day_end <= day_start:
-                continue
-
             blocks = blocks_by_lab_day.get((laboratory_id, current_day.isoformat()), [])
             day_reservations = reservations_by_lab_day.get((laboratory_id, current_day.isoformat()), [])
+            day_classes = lab_schedule_repo.list_active_for_laboratory_weekday(laboratory_id, current_day.weekday())
+            class_windows = [
+                (combine_date_time(current_day, klass.start_time), combine_date_time(current_day, klass.end_time))
+                for klass in day_classes
+            ]
 
-            for slot_start, slot_end in iter_time_ranges(day_start, day_end, slot_minutes):
+            for slot_start, slot_end in iter_lab_blocks(current_day):
+                is_blocked_by_class = any(
+                    slot_start < class_end and class_start < slot_end
+                    for class_start, class_end in class_windows
+                )
+                if is_blocked_by_class:
+                    blocked_blocks += 1
+                    continue
+
                 is_blocked = any(_has_overlap(slot_start, slot_end, block.start_at, block.end_at) for block in blocks)
                 if is_blocked:
                     blocked_blocks += 1

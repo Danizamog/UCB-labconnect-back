@@ -26,11 +26,9 @@ _load_env_file()
 
 
 class Settings:
-    secret_key: str = os.getenv("SECRET_KEY", "change-this-secret")
+    secret_key: str = os.getenv("SECRET_KEY")
     algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
     token_expire_minutes: int = int(os.getenv("TOKEN_EXPIRE_MINUTES", "60"))
-    default_admin_username: str = os.getenv("DEFAULT_ADMIN_USERNAME", "admin@ucb.edu.bo")
-    default_admin_password: str = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")
     institutional_email_domain: str = os.getenv("INSTITUTIONAL_EMAIL_DOMAIN", "@ucb.edu.bo").lower()
     institutional_sso_provider: str = os.getenv("INSTITUTIONAL_SSO_PROVIDER", "google_oidc" if os.getenv("GOOGLE_CLIENT_ID", "").strip() else "").strip()
     institutional_sso_button_label: str = os.getenv("INSTITUTIONAL_SSO_BUTTON_LABEL", "Continuar con cuenta institucional")

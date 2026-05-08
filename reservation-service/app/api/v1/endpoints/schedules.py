@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.application.container import lab_schedule_repo
 from app.core.dependencies import ensure_any_permission, get_current_user
@@ -12,7 +12,15 @@ router = APIRouter(prefix="/lab-schedules", tags=["lab-schedules"])
 
 
 @router.get("", response_model=list[LabScheduleResponse])
-def list_schedules(_: dict = Depends(get_current_user)) -> list[LabScheduleResponse]:
+def list_schedules(
+    laboratory_id: str | None = Query(default=None),
+    weekday: int | None = Query(default=None, ge=0, le=6),
+    _: dict = Depends(get_current_user),
+) -> list[LabScheduleResponse]:
+    if laboratory_id and weekday is not None:
+        return lab_schedule_repo.list_active_for_laboratory_weekday(laboratory_id, weekday)
+    if laboratory_id:
+        return lab_schedule_repo.list_for_laboratory(laboratory_id)
     return lab_schedule_repo.list_all()
 
 

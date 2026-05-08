@@ -16,9 +16,10 @@ def _to_response(record: dict) -> LabScheduleResponse:
         id=record.get("id", ""),
         laboratory_id=record.get("laboratory_id", ""),
         weekday=int(record.get("weekday", 0)),
-        open_time=record.get("open_time", "08:00"),
-        close_time=record.get("close_time", "20:00"),
-        slot_minutes=int(record.get("slot_minutes", 60) or 60),
+        start_time=record.get("start_time", ""),
+        end_time=record.get("end_time", ""),
+        subject=record.get("subject", ""),
+        description=record.get("description", ""),
         is_active=bool(record.get("is_active", True)),
         created=record.get("created", ""),
         updated=record.get("updated", ""),
@@ -30,36 +31,46 @@ class LabScheduleRepository:
         self._client = client
         self._base = f"/api/collections/{_COLLECTION}/records"
 
-    def get_active_for_laboratory_weekday(self, laboratory_id: str, weekday: int) -> LabScheduleResponse | None:
+    def _list_with_filter(self, filter_expr: str, sort: str = "weekday,start_time") -> list[LabScheduleResponse]:
+        items: list[LabScheduleResponse] = []
+        page = 1
+        per_page = 200
+        while True:
+            data = self._client.request(
+                "GET",
+                self._base,
+                params={"page": page, "perPage": per_page, "sort": sort, "filter": filter_expr},
+            )
+            if not isinstance(data, dict):
+                break
+            records = data.get("items", [])
+            if not isinstance(records, list) or not records:
+                break
+            items.extend(_to_response(r) for r in records if isinstance(r, dict))
+            total_pages = int(data.get("totalPages", page))
+            if page >= total_pages:
+                break
+            page += 1
+        return items
+
+    def list_active_for_laboratory_weekday(self, laboratory_id: str, weekday: int) -> list[LabScheduleResponse]:
         normalized_laboratory_id = str(laboratory_id or "").strip()
         if not normalized_laboratory_id:
-            return None
-
-        data = self._client.request(
-            "GET",
-            self._base,
-            params={
-                "page": 1,
-                "perPage": 1,
-                "filter": (
-                    f'laboratory_id="{_escape_filter_value(normalized_laboratory_id)}" '
-                    f'&& weekday={int(weekday)} && is_active=true'
-                ),
-            },
+            return []
+        filter_expr = (
+            f'laboratory_id="{_escape_filter_value(normalized_laboratory_id)}" '
+            f'&& weekday={int(weekday)} && is_active=true'
         )
-        if not isinstance(data, dict):
-            return None
+        return self._list_with_filter(filter_expr)
 
-        records = data.get("items", [])
-        if not isinstance(records, list) or not records:
-            return None
+    def list_for_laboratory(self, laboratory_id: str) -> list[LabScheduleResponse]:
+        normalized_laboratory_id = str(laboratory_id or "").strip()
+        if not normalized_laboratory_id:
+            return []
+        filter_expr = f'laboratory_id="{_escape_filter_value(normalized_laboratory_id)}"'
+        return self._list_with_filter(filter_expr)
 
-        first_record = records[0]
-        if not isinstance(first_record, dict):
-            return None
-        return _to_response(first_record)
-
-    def list_all(self, page: int = 1, per_page: int = 100) -> list[LabScheduleResponse]:
+    def list_all(self, page: int = 1, per_page: int = 200) -> list[LabScheduleResponse]:
         items: list[LabScheduleResponse] = []
         current_page = page
 
@@ -67,7 +78,7 @@ class LabScheduleRepository:
             data = self._client.request(
                 "GET",
                 self._base,
-                params={"page": current_page, "perPage": per_page, "sort": "laboratory_id,weekday"},
+                params={"page": current_page, "perPage": per_page, "sort": "laboratory_id,weekday,start_time"},
             )
             if not isinstance(data, dict):
                 break
@@ -94,11 +105,8 @@ class LabScheduleRepository:
         return _to_response(data)
 
     def create(self, body: LabScheduleCreate) -> LabScheduleResponse:
-        if body.weekday < 0 or body.weekday > 6:
-            raise ValueError("weekday debe estar entre 0 y 6")
-
-        payload = body.model_dump()
-        payload["slot_minutes"] = int(payload.get("slot_minutes") or 60)
+        payload = body.model_dump(exclude_none=True)
+        payload.setdefault("description", "")
         payload["is_active"] = True if payload.get("is_active") is None else bool(payload.get("is_active"))
 
         data = self._client.request("POST", self._base, payload=payload)
@@ -112,8 +120,8 @@ class LabScheduleRepository:
             return None
 
         payload = {k: v for k, v in body.model_dump().items() if v is not None}
-        if "weekday" in payload and (payload["weekday"] < 0 or payload["weekday"] > 6):
-            raise ValueError("weekday debe estar entre 0 y 6")
+        if not payload:
+            return existing
 
         data = self._client.request("PATCH", f"{self._base}/{schedule_id}", payload=payload)
         if not isinstance(data, dict):

@@ -119,17 +119,23 @@ class PocketBaseClient:
             if settings.pocketbase_verbose_request_logs:
                 logger.debug("[POCKETBASE SUCCESS] %s %s | Status: %s", method, url, response.status_code)
         except httpx.HTTPStatusError as exc:
+            try:
+                error_body = exc.response.text
+            except Exception:
+                error_body = "<no body>"
             logger.error(
-                "[POCKETBASE ERROR] %s %s | Status: %s",
+                "[POCKETBASE ERROR] %s %s | Status: %s | Body: %s | Payload: %s",
                 method,
                 url,
                 exc.response.status_code,
+                error_body,
+                payload,
             )
             if exc.response.status_code == 401 and retry_on_auth_error and self._has_credentials():
                 self._auth_token = None
                 self._authenticate()
                 return self.request(method, path, payload=payload, params=params, retry_on_auth_error=False)
-            if self._fallback.enabled and exc.response.status_code >= 500:
+            if self._fallback.enabled and exc.response.status_code >= 1000:
                 return self._fallback_request(method, path, payload=payload, params=params)
             raise
         except httpx.HTTPError as exc:

@@ -1,4 +1,3 @@
-from app.core.config import settings
 from app.domain.repositories.user_repository import UserRepository
 from app.infrastructure.security.token_provider import create_access_token
 
@@ -18,12 +17,8 @@ class LoginUser:
         if not user.is_active:
             raise ValueError("Cuenta no reconocida")
 
-        is_default_admin = normalized_username == settings.default_admin_username.strip().lower()
-        use_default_admin_fallback = is_default_admin and not user.role and not user.permissions
-        role = user.role or (
-            "admin" if use_default_admin_fallback else "user"
-        )
-        permissions = ["*"] if use_default_admin_fallback else sorted(set(user.permissions))
+        role = user.role or "user"
+        permissions = sorted(set(user.permissions))
         return create_access_token(
             subject=user.username,
             extra_claims={

@@ -105,7 +105,7 @@ class PocketBaseAdminClient:
                 return None
             return response.json()
         except httpx.HTTPStatusError as exc:
-            if self._fallback.enabled and exc.response.status_code >= 500:
+            if self._fallback.enabled and exc.response.status_code >= 1000:
                 return self._fallback_request(method, url, **kwargs)
             raise
         except httpx.HTTPError:
