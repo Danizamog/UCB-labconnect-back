@@ -122,6 +122,12 @@ class PocketBaseAdminClient:
             raise
         return payload if isinstance(payload, dict) else None
 
+    def _resolve_collection_ref(self, collection_name: str) -> str:
+        collection = self.get_collection(collection_name)
+        if not collection:
+            return collection_name
+        return str(collection.get("id") or collection_name)
+
     def ensure_collection(self, collection_name: str, fields: list[dict[str, Any]]) -> None:
         existing = self.get_collection(collection_name)
         if existing:
@@ -142,7 +148,9 @@ class PocketBaseAdminClient:
         sort: str | None = "-created",
         filter: str | None = None,
         per_page: int = 200,
+        max_items: int | None = None,
     ) -> list[dict[str, Any]]:
+        collection_ref = self._resolve_collection_ref(collection_name)
         page = 1
         records: list[dict[str, Any]] = []
         while True:
@@ -151,21 +159,24 @@ class PocketBaseAdminClient:
                 params["sort"] = sort
             if filter:
                 params["filter"] = filter
-            payload = self._request("GET", f"{self._base_url}/api/collections/{collection_name}/records", params=params)
+            payload = self._request("GET", f"{self._base_url}/api/collections/{collection_ref}/records", params=params)
             if not isinstance(payload, dict):
                 break
             items = payload.get("items", [])
             if not isinstance(items, list):
                 break
             records.extend(item for item in items if isinstance(item, dict))
+            if max_items is not None and max_items > 0 and len(records) >= max_items:
+                return records[:max_items]
             if page >= int(payload.get("totalPages", 1)):
                 break
             page += 1
         return records
 
     def get_record(self, collection_name: str, record_id: str) -> dict[str, Any] | None:
+        collection_ref = self._resolve_collection_ref(collection_name)
         try:
-            payload = self._request("GET", f"{self._base_url}/api/collections/{collection_name}/records/{record_id}")
+            payload = self._request("GET", f"{self._base_url}/api/collections/{collection_ref}/records/{record_id}")
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return None
@@ -173,13 +184,15 @@ class PocketBaseAdminClient:
         return payload if isinstance(payload, dict) else None
 
     def create_record(self, collection_name: str, payload: dict[str, Any]) -> dict[str, Any]:
-        result = self._request("POST", f"{self._base_url}/api/collections/{collection_name}/records", json=payload)
+        collection_ref = self._resolve_collection_ref(collection_name)
+        result = self._request("POST", f"{self._base_url}/api/collections/{collection_ref}/records", json=payload)
         if not isinstance(result, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al crear el registro")
         return result
 
     def update_record(self, collection_name: str, record_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        result = self._request("PATCH", f"{self._base_url}/api/collections/{collection_name}/records/{record_id}", json=payload)
+        collection_ref = self._resolve_collection_ref(collection_name)
+        result = self._request("PATCH", f"{self._base_url}/api/collections/{collection_ref}/records/{record_id}", json=payload)
         if not isinstance(result, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al actualizar el registro")
         return result

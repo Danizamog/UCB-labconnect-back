@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from calendar import monthrange
 from datetime import UTC, datetime
+from threading import Lock
 
 from app.core.config import settings
 from app.core.datetime_utils import combine_date_time, now_local_naive, parse_datetime
+from app.infrastructure.pocketbase_admin import PocketBaseAdminClient
 from app.infrastructure.pocketbase_base import PocketBaseClient
 from app.infrastructure.repositories.lab_reservation_repository import LabReservationRepository
 from app.schemas.tutorial_session import (
@@ -69,6 +71,51 @@ class TutorialSessionRepository:
         self._reservation_repo = reservation_repo
         self._sessions_base = f"/api/collections/{settings.pb_tutorial_session_collection}/records"
         self._enrollments_base = f"/api/collections/{settings.pb_tutorial_enrollment_collection}/records"
+        self._observation_collection = settings.pb_tutorial_observation_collection
+        self._observation_admin = PocketBaseAdminClient(
+            base_url=settings.pocketbase_url,
+            auth_identity=settings.pocketbase_auth_identity,
+            auth_password=settings.pocketbase_auth_password,
+            auth_collection=settings.pocketbase_auth_collection,
+            timeout_seconds=settings.pocketbase_timeout_seconds,
+        )
+        self._observation_collection_ready = False
+        self._observation_lock = Lock()
+
+    def _ensure_observation_collection(self) -> None:
+        if self._observation_collection_ready or not self._observation_admin.enabled:
+            return
+        with self._observation_lock:
+            if self._observation_collection_ready:
+                return
+            self._observation_admin.ensure_collection(
+                self._observation_collection,
+                [
+                    {"name": "session_id", "type": "text", "required": True, "max": 120},
+                    {"name": "tutor_id", "type": "text", "required": True, "max": 120},
+                    {"name": "observation", "type": "text", "required": False, "max": 1000},
+                ],
+            )
+            self._observation_collection_ready = True
+
+    def _build_observation_map(self, session_ids: list[str]) -> dict[str, str]:
+        normalized_ids = [session_id for session_id in session_ids if session_id]
+        if not normalized_ids or not self._observation_admin.enabled:
+            return {}
+
+        try:
+            records = self._observation_admin.list_records(self._observation_collection, sort=None)
+        except Exception:
+            return {}
+
+        target_ids = set(normalized_ids)
+        observation_map: dict[str, str] = {}
+        for record in records:
+            session_id = str(record.get("session_id") or "").strip()
+            if not session_id or session_id not in target_ids or session_id in observation_map:
+                continue
+            observation_map[session_id] = str(record.get("observation") or "").strip()
+        return observation_map
 
     def list_public_for_laboratory_day(self, laboratory_id: str, day: str) -> list[TutorialSessionResponse]:
         normalized_laboratory_id = str(laboratory_id or "").strip()
@@ -82,8 +129,16 @@ class TutorialSessionRepository:
         )
         session_records = self._list_records(self._sessions_base, filter_expression=filter_expression, sort="session_date,start_time")
         enrollment_map = self._build_enrollment_map(session_records)
+        observation_map = self._build_observation_map([str(record.get("id") or "").strip() for record in session_records])
         now = now_local_naive()
-        sessions = [self._map_session(record, enrollment_map.get(str(record.get("id") or ""), [])) for record in session_records]
+        sessions = [
+            self._map_session(
+                record,
+                enrollment_map.get(str(record.get("id") or ""), []),
+                observation_map.get(str(record.get("id") or "").strip(), ""),
+            )
+            for record in session_records
+        ]
         return [session for session in sessions if session.is_published and parse_datetime(session.end_at) >= now]
 
     def _build_session(self, session_id: str, body: TutorialSessionCreate) -> TutorialSessionResponse:
@@ -149,7 +204,12 @@ class TutorialSessionRepository:
             created_at=str(record.get("created_at") or record.get("created") or ""),
         )
 
-    def _map_session(self, record: dict, enrollments: list[TutorialEnrollmentResponse]) -> TutorialSessionResponse:
+    def _map_session(
+        self,
+        record: dict,
+        enrollments: list[TutorialEnrollmentResponse],
+        tutor_observation: str = "",
+    ) -> TutorialSessionResponse:
         return TutorialSessionResponse(
             id=str(record.get("id") or ""),
             tutor_id=str(record.get("tutor_id") or ""),
@@ -166,6 +226,7 @@ class TutorialSessionRepository:
             end_at=str(record.get("end_at") or ""),
             max_students=int(record.get("max_students") or 0),
             is_published=bool(record.get("is_published", True)),
+            tutor_observation=str(tutor_observation or "").strip(),
             enrolled_students=enrollments,
             created=str(record.get("created") or ""),
             updated=str(record.get("updated") or ""),
@@ -301,11 +362,17 @@ class TutorialSessionRepository:
         if not session_records:
             return []
         enrollment_map = self._build_enrollment_map(session_records)
+        observation_map = self._build_observation_map([str(record.get("id") or "").strip() for record in session_records])
         now = now_local_naive()
 
         sessions: list[TutorialSessionResponse] = []
         for record in session_records:
-            session = self._map_session(record, enrollment_map.get(str(record.get("id") or ""), []))
+            session_id = str(record.get("id") or "").strip()
+            session = self._map_session(
+                record,
+                enrollment_map.get(session_id, []),
+                observation_map.get(session_id, ""),
+            )
             if not include_past:
                 try:
                     if parse_datetime(session.end_at) < now:
@@ -351,7 +418,42 @@ class TutorialSessionRepository:
         if record is None:
             return None
         enrollments = [self._map_enrollment(item) for item in self._list_enrollment_records(session_id=session_id)]
-        return self._map_session(record, enrollments)
+        observation_map = self._build_observation_map([str(session_id or "").strip()])
+        return self._map_session(record, enrollments, observation_map.get(str(session_id or "").strip(), ""))
+
+    def save_observation(self, session_id: str, *, tutor_id: str, observation: str) -> TutorialSessionResponse:
+        session = self._get_session_or_raise(session_id)
+        normalized_tutor_id = str(tutor_id or "").strip()
+        if not normalized_tutor_id:
+            raise ValueError("No se pudo identificar al tutor")
+
+        normalized_observation = str(observation or "").strip()
+        if len(normalized_observation) > 1000:
+            raise ValueError("La observacion no puede superar los 1000 caracteres")
+
+        self._ensure_observation_collection()
+        existing_records = [
+            record
+            for record in self._observation_admin.list_records(self._observation_collection, sort=None)
+            if str(record.get("session_id") or "").strip() == session_id
+        ][:1]
+
+        payload = {
+            "session_id": session.id,
+            "tutor_id": normalized_tutor_id,
+            "observation": normalized_observation,
+        }
+        if existing_records:
+            record_id = str(existing_records[0].get("id") or "").strip()
+            if record_id:
+                self._observation_admin.update_record(self._observation_collection, record_id, payload)
+        else:
+            self._observation_admin.create_record(self._observation_collection, payload)
+
+        refreshed = self.get_by_id(session_id)
+        if refreshed is None:
+            raise KeyError("Tutoria no encontrada")
+        return refreshed
 
     def create(self, body: TutorialSessionCreate) -> TutorialSessionResponse:
         candidate = self._build_session("new", body)

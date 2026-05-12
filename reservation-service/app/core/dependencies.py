@@ -82,6 +82,9 @@ def _resolve_live_payload(token: str, fallback_payload: dict | None) -> dict:
             headers={"Authorization": f"Bearer {token}"},
         )
     except httpx.HTTPError as exc:
+        if fallback_payload:
+            _set_cached_token_payload(token, fallback_payload)
+            return fallback_payload
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No se pudo validar la sesion actual",
@@ -98,6 +101,9 @@ def _resolve_live_payload(token: str, fallback_payload: dict | None) -> dict:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
 
     if response.status_code >= 400:
+        if fallback_payload:
+            _set_cached_token_payload(token, fallback_payload)
+            return fallback_payload
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No se pudo validar la sesion actual",

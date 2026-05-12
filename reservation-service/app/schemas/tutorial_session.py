@@ -25,6 +25,10 @@ class TutorialSessionCreate(BaseModel):
     is_published: bool | None = None
 
 
+class TutorialSessionObservationUpdate(BaseModel):
+    tutor_observation: str = ""
+
+
 class TutorialSessionResponse(BaseModel):
     id: str
     tutor_id: str
@@ -41,6 +45,7 @@ class TutorialSessionResponse(BaseModel):
     end_at: str
     max_students: int
     is_published: bool
+    tutor_observation: str = ""
     enrolled_students: list[TutorialEnrollmentResponse] = Field(default_factory=list)
     created: str
     updated: str

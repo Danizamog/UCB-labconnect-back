@@ -56,6 +56,10 @@ class Settings:
         self.pb_laboratory_collection = os.getenv("POCKETBASE_LABORATORY_COLLECTION", "laboratory")
         self.pb_tutorial_session_collection = os.getenv("POCKETBASE_TUTORIAL_SESSION_COLLECTION", "tutorial_session")
         self.pb_tutorial_enrollment_collection = os.getenv("POCKETBASE_TUTORIAL_ENROLLMENT_COLLECTION", "tutorial_enrollment")
+        self.pb_tutorial_observation_collection = os.getenv(
+            "POCKETBASE_TUTORIAL_OBSERVATION_COLLECTION",
+            "tutorial_session_observation",
+        )
         self.pb_penalty_collection = os.getenv("POCKETBASE_PENALTY_COLLECTION", "user_penalty")
         self.pb_penalty_reactivation_history_collection = os.getenv(
             "POCKETBASE_PENALTY_REACTIVATION_HISTORY_COLLECTION",
