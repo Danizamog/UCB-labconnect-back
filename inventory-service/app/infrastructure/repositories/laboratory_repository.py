@@ -41,18 +41,41 @@ class LaboratoryRepository:
         self._list_cache.invalidate()
         self._detail_cache.invalidate()
 
-    def list_all(self, page: int = 1, per_page: int = 200) -> list[LaboratoryResponse]:
-        cache_key = ("list_all", page, per_page)
+    def list_all(
+        self,
+        page: int = 1,
+        per_page: int = 200,
+        search: str | None = None,
+        area_id: str | None = None,
+    ) -> list[LaboratoryResponse]:
+        cache_key = ("list_all", page, per_page, search, area_id)
 
         def load() -> list[LaboratoryResponse]:
             items: list[LaboratoryResponse] = []
             current_page = page
 
+            clauses = []
+            if search:
+                clauses.append(f'name ~ "{search}"')
+            if area_id:
+                clauses.append(f'area_id = "{area_id}"')
+
+            filter_expr = " && ".join(clauses) if clauses else ""
+
             while True:
+                params = {
+                    "page": current_page,
+                    "perPage": per_page,
+                    "sort": "name",
+                    "expand": "area_id",
+                }
+                if filter_expr:
+                    params["filter"] = filter_expr
+
                 data = self._client.request(
                     "GET",
                     self._base,
-                    params={"page": current_page, "perPage": per_page, "sort": "name", "expand": "area_id"},
+                    params=params,
                 )
                 if not isinstance(data, dict):
                     break

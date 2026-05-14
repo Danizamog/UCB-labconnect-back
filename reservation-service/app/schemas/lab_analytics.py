@@ -22,6 +22,17 @@ class LaboratoryUsageStats(BaseModel):
     occupancy_percentage: float
 
 
+class HourlyUsage(BaseModel):
+    hour: int
+    count: int
+
+
+class WeekdayUsage(BaseModel):
+    weekday: int
+    label: str
+    count: int
+
+
 class LaboratoryUsageTotals(BaseModel):
     laboratories_count: int
     available_blocks: int
@@ -41,5 +52,8 @@ class LaboratoryUsageAnalyticsResponse(BaseModel):
     generated_at: str
     labs: list[LaboratoryUsageStats]
     totals: LaboratoryUsageTotals
+    hourly_usage: list[HourlyUsage] = []
+    weekday_usage: list[WeekdayUsage] = []
     highest_usage_laboratory: LaboratoryUsageStats | None = None
     lowest_usage_laboratory: LaboratoryUsageStats | None = None
+lowest_usage_laboratory: LaboratoryUsageStats | None = None

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.application.container import tutorial_session_repo
 from app.core.datetime_utils import now_local_naive, parse_timestamp_to_local_naive
@@ -57,8 +57,17 @@ async def _broadcast_tutorial_notification(
 
 
 @router.get("", response_model=list[TutorialSessionResponse])
-def list_public_tutorial_sessions(_: dict = Depends(get_current_user)) -> list[TutorialSessionResponse]:
-    return tutorial_session_repo.list_public()
+def list_public_tutorial_sessions(
+    topic_search: str | None = Query(None),
+    session_date: str | None = Query(None),
+    laboratory_id: str | None = Query(None),
+    _: dict = Depends(get_current_user),
+) -> list[TutorialSessionResponse]:
+    return tutorial_session_repo.list_public(
+        topic_search=topic_search,
+        session_date=session_date,
+        laboratory_id=laboratory_id,
+    )
 
 
 @router.get("/mine", response_model=list[TutorialSessionResponse])

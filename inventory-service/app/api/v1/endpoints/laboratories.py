@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.application.container import laboratory_repo
 from app.core.dependencies import ensure_any_permission, get_current_user
@@ -10,13 +10,21 @@ _MANAGE_LABS = {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_acc
 
 
 @router.get("/all", response_model=list[LaboratoryResponse])
-def list_laboratories_all(_: dict = Depends(get_current_user)) -> list[LaboratoryResponse]:
-    return laboratory_repo.list_all()
+def list_laboratories_all(
+    search: str | None = Query(None),
+    area_id: str | None = Query(None),
+    _: dict = Depends(get_current_user),
+) -> list[LaboratoryResponse]:
+    return laboratory_repo.list_all(search=search, area_id=area_id)
 
 
 @router.get("", response_model=list[LaboratoryResponse])
-def list_laboratories(_: dict = Depends(get_current_user)) -> list[LaboratoryResponse]:
-    return laboratory_repo.list_all()
+def list_laboratories(
+    search: str | None = Query(None),
+    area_id: str | None = Query(None),
+    _: dict = Depends(get_current_user),
+) -> list[LaboratoryResponse]:
+    return laboratory_repo.list_all(search=search, area_id=area_id)
 
 
 @router.get("/{lab_id}", response_model=LaboratoryResponse)

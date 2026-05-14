@@ -345,8 +345,24 @@ class TutorialSessionRepository:
                     "Este horario se cruza con una reserva de laboratorio propia. Ajusta la tutoria antes de publicarla",
                 )
 
-    def list_all(self, *, include_past: bool = False) -> list[TutorialSessionResponse]:
-        return self._list_sessions_with(filter_expression=None, include_past=include_past)
+    def list_all(
+        self,
+        *,
+        include_past: bool = False,
+        topic_search: str | None = None,
+        session_date: str | None = None,
+        laboratory_id: str | None = None,
+    ) -> list[TutorialSessionResponse]:
+        clauses = []
+        if topic_search:
+            clauses.append(f'topic ~ "{_escape_filter_value(topic_search)}"')
+        if session_date:
+            clauses.append(f'session_date = "{_escape_filter_value(session_date)}"')
+        if laboratory_id:
+            clauses.append(f'laboratory_id = "{_escape_filter_value(laboratory_id)}"')
+
+        filter_expression = " && ".join(clauses) if clauses else None
+        return self._list_sessions_with(filter_expression=filter_expression, include_past=include_past)
 
     def _list_sessions_with(
         self,
@@ -383,8 +399,23 @@ class TutorialSessionRepository:
 
         return sorted(sessions, key=lambda item: (item.session_date, item.start_time, item.topic))
 
-    def list_public(self) -> list[TutorialSessionResponse]:
-        return self._list_sessions_with(filter_expression='is_published=true', include_past=False)
+    def list_public(
+        self,
+        *,
+        topic_search: str | None = None,
+        session_date: str | None = None,
+        laboratory_id: str | None = None,
+    ) -> list[TutorialSessionResponse]:
+        clauses = ["is_published=true"]
+        if topic_search:
+            clauses.append(f'topic ~ "{_escape_filter_value(topic_search)}"')
+        if session_date:
+            clauses.append(f'session_date = "{_escape_filter_value(session_date)}"')
+        if laboratory_id:
+            clauses.append(f'laboratory_id = "{_escape_filter_value(laboratory_id)}"')
+
+        filter_expression = " && ".join(clauses)
+        return self._list_sessions_with(filter_expression=filter_expression, include_past=False)
 
     def list_for_tutor(self, tutor_id: str) -> list[TutorialSessionResponse]:
         normalized_tutor_id = str(tutor_id or "").strip()

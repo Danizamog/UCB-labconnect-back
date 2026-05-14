@@ -10,6 +10,8 @@ from app.core.datetime_utils import combine_date_time, iter_lab_blocks, now_loca
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.schemas.lab_analytics import (
     ANALYTICS_PERIODS,
+    HourlyUsage,
+    WeekdayUsage,
     LaboratoryUsageAnalyticsResponse,
     LaboratoryUsageStats,
     LaboratoryUsageTotals,
@@ -68,6 +70,8 @@ def _lab_sort_key(item: LaboratoryUsageStats) -> tuple[float, int, int, str]:
 @router.get("/laboratory-usage", response_model=LaboratoryUsageAnalyticsResponse)
 def get_laboratory_usage_analytics(
     period: str = Query(default="daily"),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
     current_user: dict = Depends(get_current_user),
 ) -> LaboratoryUsageAnalyticsResponse:
     ensure_any_permission(
@@ -77,10 +81,13 @@ def get_laboratory_usage_analytics(
     )
 
     today = now_local_naive().date()
-    start_date, end_date, period_label = _resolve_period_window(period, today)
+    if start_date and end_date:
+        s_date, e_date, p_label = start_date, end_date, f"{start_date} al {end_date}"
+    else:
+        s_date, e_date, p_label = _resolve_period_window(period, today)
 
-    window_start_iso = combine_date_time(start_date, "00:00").isoformat()
-    window_end_iso = combine_date_time(end_date + timedelta(days=1), "00:00").isoformat()
+    window_start_iso = combine_date_time(s_date, "00:00").isoformat()
+    window_end_iso = combine_date_time(e_date + timedelta(days=1), "00:00").isoformat()
 
     laboratories = [
         lab for lab in laboratory_access_repo.list_all()
@@ -103,7 +110,7 @@ def get_laboratory_usage_analytics(
             block_end = parse_datetime(block.end_at)
         except ValueError:
             continue
-        if block_end.date() < start_date or block_start.date() > end_date:
+        if block_end.date() < s_date or block_start.date() > e_date:
             continue
         blocks_by_lab_day[(str(block.laboratory_id), block_start.date().isoformat())].append(block)
 
@@ -114,12 +121,12 @@ def get_laboratory_usage_analytics(
             reservation_end = parse_datetime(reservation.end_at)
         except ValueError:
             continue
-        if reservation_end.date() < start_date or reservation_start.date() > end_date:
+        if reservation_end.date() < s_date or reservation_start.date() > e_date:
             continue
         reservations_by_lab_day[(str(reservation.laboratory_id), reservation_start.date().isoformat())].append(reservation)
 
     usage_rows: list[LaboratoryUsageStats] = []
-    days_in_range = _iter_days(start_date, end_date)
+    days_in_range = _iter_days(s_date, e_date)
 
     for laboratory in laboratories:
         laboratory_id = str(laboratory.get("id") or "").strip()
@@ -209,11 +216,50 @@ def get_laboratory_usage_analytics(
     total_in_progress_blocks = sum(item.in_progress_blocks for item in usage_rows)
     total_completed_blocks = sum(item.completed_blocks for item in usage_rows)
 
+    # Calculate hourly demand
+    # We include ALL reservations in the window to show true demand distribution
+    all_demand_reservations = lab_reservation_repo.list_in_window_by_statuses(
+        statuses=["pending", "approved", "in_progress", "completed", "absent"],
+        start_from=window_start_iso,
+        end_to=window_end_iso,
+    )
+
+    print(f"[ANALYTICS] Processing {len(all_demand_reservations)} reservations for demand distribution")
+
+    WEEKDAY_LABELS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+    hourly_counts: dict[int, int] = defaultdict(int)
+    weekday_counts: dict[int, int] = defaultdict(int)
+
+    for reservation in all_demand_reservations:
+        try:
+            res_start = parse_datetime(reservation.start_at)
+            # Only count hourly if within the reasonable day range (7 AM to 10 PM)
+            if 7 <= res_start.hour <= 22:
+                hourly_counts[res_start.hour] += 1
+            
+            # Count weekday
+            weekday_counts[res_start.weekday()] += 1
+        except (ValueError, AttributeError):
+            continue
+
+    print(f"[ANALYTICS] Hourly counts: {dict(hourly_counts)}")
+    print(f"[ANALYTICS] Weekday counts: {dict(weekday_counts)}")
+
+    hourly_usage = [
+        HourlyUsage(hour=h, count=hourly_counts[h])
+        for h in range(7, 23)
+    ]
+
+    weekday_usage = [
+        WeekdayUsage(weekday=i, label=WEEKDAY_LABELS[i], count=weekday_counts[i])
+        for i in range(7)
+    ]
+
     return LaboratoryUsageAnalyticsResponse(
         period=str(period).strip().lower() if str(period).strip().lower() in ANALYTICS_PERIODS else "daily",
-        period_label=period_label,
-        start_date=start_date.isoformat(),
-        end_date=end_date.isoformat(),
+        period_label=p_label,
+        start_date=s_date.isoformat(),
+        end_date=e_date.isoformat(),
         generated_at=now_local_naive().isoformat(),
         labs=usage_rows,
         totals=LaboratoryUsageTotals(
@@ -226,6 +272,8 @@ def get_laboratory_usage_analytics(
             completed_blocks=total_completed_blocks,
             occupancy_percentage=_round_percentage(total_used_blocks, total_available_blocks),
         ),
+        hourly_usage=hourly_usage,
+        weekday_usage=weekday_usage,
         highest_usage_laboratory=usage_rows[0] if usage_rows else None,
         lowest_usage_laboratory=usage_rows[-1] if usage_rows else None,
     )
