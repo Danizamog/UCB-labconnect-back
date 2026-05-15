@@ -41,7 +41,18 @@ def _filter_items_in_scope(items, accessible: list[str] | None) -> list[StockIte
 
 
 @router.get("", response_model=list[StockItemResponse])
-def list_stock_items(current_user: dict = Depends(get_current_user)) -> list[StockItemResponse]:
+def list_stock_items(
+    laboratory_id: str | None = Query(default=None),
+    current_user: dict = Depends(get_current_user),
+) -> list[StockItemResponse]:
+    requested_lab = str(laboratory_id or "").strip()
+
+    if requested_lab:
+        # Catalogo publico por laboratorio: cualquier usuario autenticado puede verlo
+        # para poder seleccionar materiales al hacer una reserva o tutoria.
+        items = stock_item_repo.list_all()
+        return [item for item in items if str(item.laboratory_id or "") == requested_lab]
+
     ensure_any_permission(current_user, _VIEW_STOCK, "No tienes permisos para consultar el inventario de materiales")
     accessible = resolve_accessible_lab_ids(current_user)
     return _filter_items_in_scope(stock_item_repo.list_all(), accessible)
