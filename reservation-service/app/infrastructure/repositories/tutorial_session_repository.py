@@ -139,7 +139,12 @@ class TutorialSessionRepository:
             )
             for record in session_records
         ]
-        return [session for session in sessions if session.is_published and parse_datetime(session.end_at) >= now]
+        return [
+            session for session in sessions
+            if session.is_published
+            and session.approval_status != "rejected"
+            and parse_datetime(session.end_at) >= now
+        ]
 
     def _build_session(self, session_id: str, body: TutorialSessionCreate) -> TutorialSessionResponse:
         topic = str(body.topic or "").strip()
@@ -191,6 +196,8 @@ class TutorialSessionRepository:
             end_at=_format_iso_utc(end_dt),
             max_students=max_students,
             is_published=True if body.is_published is None else bool(body.is_published),
+            approval_status="pending",
+            approval_reason="",
             enrolled_students=[],
             created=created_at,
             updated=created_at,
@@ -226,6 +233,8 @@ class TutorialSessionRepository:
             end_at=str(record.get("end_at") or ""),
             max_students=int(record.get("max_students") or 0),
             is_published=bool(record.get("is_published", True)),
+            approval_status=str(record.get("approval_status") or "pending").strip() or "pending",
+            approval_reason=str(record.get("approval_reason") or "").strip(),
             tutor_observation=str(tutor_observation or "").strip(),
             enrolled_students=enrollments,
             created=str(record.get("created") or ""),
@@ -323,6 +332,8 @@ class TutorialSessionRepository:
             session = self._map_session(record, [])
             if skip_id and session.id == skip_id:
                 continue
+            if session.approval_status == "rejected":
+                continue
             if session.laboratory_id == candidate.laboratory_id and _has_overlap(
                 candidate.start_at,
                 candidate.end_at,
@@ -406,7 +417,7 @@ class TutorialSessionRepository:
         session_date: str | None = None,
         laboratory_id: str | None = None,
     ) -> list[TutorialSessionResponse]:
-        clauses = ["is_published=true"]
+        clauses = ['is_published=true', 'approval_status="approved"']
         if topic_search:
             clauses.append(f'topic ~ "{_escape_filter_value(topic_search)}"')
         if session_date:
@@ -416,6 +427,41 @@ class TutorialSessionRepository:
 
         filter_expression = " && ".join(clauses)
         return self._list_sessions_with(filter_expression=filter_expression, include_past=False)
+
+    def list_pending(self) -> list[TutorialSessionResponse]:
+        return self._list_sessions_with(
+            filter_expression='approval_status="pending"',
+            include_past=False,
+        )
+
+    def set_approval_status(
+        self,
+        session_id: str,
+        *,
+        status_value: str,
+        reason: str = "",
+    ) -> TutorialSessionResponse:
+        normalized_status = str(status_value or "").strip().lower()
+        if normalized_status not in {"approved", "rejected", "pending"}:
+            raise ValueError("Estado de aprobacion invalido")
+
+        session = self._get_session_or_raise(session_id)
+
+        payload: dict = {"approval_status": normalized_status}
+        if normalized_status == "rejected":
+            payload["approval_reason"] = str(reason or "").strip()[:400]
+        else:
+            payload["approval_reason"] = ""
+
+        data = self._client.request(
+            "PATCH",
+            f"{self._sessions_base}/{session_id}",
+            payload=payload,
+        )
+        if not isinstance(data, dict):
+            raise ValueError("PocketBase devolvio una respuesta invalida al actualizar la aprobacion")
+
+        return self._map_session(data, list(session.enrolled_students))
 
     def list_for_tutor(self, tutor_id: str) -> list[TutorialSessionResponse]:
         normalized_tutor_id = str(tutor_id or "").strip()
@@ -508,6 +554,8 @@ class TutorialSessionRepository:
                 "end_at": candidate.end_at,
                 "max_students": candidate.max_students,
                 "is_published": candidate.is_published,
+                "approval_status": "pending",
+                "approval_reason": "",
             },
         )
         if not isinstance(data, dict):
@@ -577,6 +625,8 @@ class TutorialSessionRepository:
         session = self._get_session_or_raise(session_id)
         if not session.is_published:
             raise ValueError("La tutoria ya no esta disponible")
+        if session.approval_status != "approved":
+            raise ValueError("La tutoria aun no fue aprobada por el laboratorio")
         if normalized_student_id == session.tutor_id:
             raise ValueError("El tutor no puede inscribirse en su propia tutoria")
         if any(enrollment.student_id == normalized_student_id for enrollment in session.enrolled_students):

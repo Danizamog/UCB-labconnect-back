@@ -29,6 +29,11 @@ class TutorialSessionObservationUpdate(BaseModel):
     tutor_observation: str = ""
 
 
+class TutorialSessionApprovalUpdate(BaseModel):
+    status: str
+    reason: str = ""
+
+
 class TutorialSessionResponse(BaseModel):
     id: str
     tutor_id: str
@@ -45,6 +50,8 @@ class TutorialSessionResponse(BaseModel):
     end_at: str
     max_students: int
     is_published: bool
+    approval_status: str = "pending"
+    approval_reason: str = ""
     tutor_observation: str = ""
     enrolled_students: list[TutorialEnrollmentResponse] = Field(default_factory=list)
     created: str
