@@ -11,7 +11,11 @@ class StockItemRepository:
 
     def get_raw_by_id(self, item_id: str) -> dict | None:
         try:
-            data = self._client.request("GET", f"{self._base}/{item_id}")
+            data = self._client.request(
+                "GET",
+                f"{self._base}/{item_id}",
+                params={"expand": "laboratory_id"},
+            )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return None

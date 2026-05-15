@@ -122,6 +122,35 @@ services:
       retries: 5
       start_period: 10s
   
+  supply-reservation-service:
+    build:
+      context: ./supply-reservation-service
+    container_name: supply-reservation-service
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "8006:8006"
+    environment:
+      - AUTH_SERVICE_URL=http://auth-service:8001
+      - SECRET_KEY=${SECRET_KEY}
+      - POCKETBASE_URL=${POCKETBASE_URL}
+      - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
+      - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
+      - POCKETBASE_TIMEOUT_SECONDS=${POCKETBASE_TIMEOUT_SECONDS:-10}
+      - SUPPLY_RESERVATION_APP_PORT=8006
+    depends_on:
+      auth-service:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8006/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   api-gateway:
     build:
       context: ./api-gateway
@@ -136,6 +165,7 @@ services:
       - INVENTORY_SERVICE_URL=http://inventory-service:8003
       - ROLE_SERVICE_URL=http://role-service:8004
       - RESERVATIONS_SERVICE_URL=http://reservation-service:8005
+      - SUPPLY_RESERVATION_SERVICE_URL=http://supply-reservation-service:8006
     ports:
       - "${API_GATEWAY_PORT:-8000}:8000"
     depends_on:
@@ -146,6 +176,8 @@ services:
       role-service:
         condition: service_started
       reservation-service:
+        condition: service_started
+      supply-reservation-service:
         condition: service_started
 
 networks:
