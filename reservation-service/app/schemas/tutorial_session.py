@@ -8,6 +8,8 @@ class TutorialEnrollmentResponse(BaseModel):
     student_name: str
     student_email: str = ""
     created_at: str
+    attended: bool = False
+    performance_observation: str = ""
 
 
 class TutorialSessionCreate(BaseModel):
@@ -27,6 +29,11 @@ class TutorialSessionCreate(BaseModel):
 
 class TutorialSessionObservationUpdate(BaseModel):
     tutor_observation: str = ""
+
+
+class TutorialEnrollmentAttendanceUpdate(BaseModel):
+    attended: bool = False
+    performance_observation: str = Field(default="", max_length=200)
 
 
 class TutorialSessionResponse(BaseModel):
