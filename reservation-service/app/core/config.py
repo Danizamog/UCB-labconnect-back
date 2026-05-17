@@ -60,6 +60,10 @@ class Settings:
             "POCKETBASE_TUTORIAL_OBSERVATION_COLLECTION",
             "tutorial_session_observation",
         )
+        self.pb_tutorial_attendance_collection = os.getenv(
+            "POCKETBASE_TUTORIAL_ATTENDANCE_COLLECTION",
+            "tutorial_session_attendance",
+        )
         self.pb_penalty_collection = os.getenv("POCKETBASE_PENALTY_COLLECTION", "user_penalty")
         self.pb_penalty_reactivation_history_collection = os.getenv(
             "POCKETBASE_PENALTY_REACTIVATION_HISTORY_COLLECTION",

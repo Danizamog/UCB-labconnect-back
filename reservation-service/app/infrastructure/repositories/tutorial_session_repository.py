@@ -72,6 +72,7 @@ class TutorialSessionRepository:
         self._sessions_base = f"/api/collections/{settings.pb_tutorial_session_collection}/records"
         self._enrollments_base = f"/api/collections/{settings.pb_tutorial_enrollment_collection}/records"
         self._observation_collection = settings.pb_tutorial_observation_collection
+        self._attendance_collection = settings.pb_tutorial_attendance_collection
         self._observation_admin = PocketBaseAdminClient(
             base_url=settings.pocketbase_url,
             auth_identity=settings.pocketbase_auth_identity,
@@ -79,8 +80,27 @@ class TutorialSessionRepository:
             auth_collection=settings.pocketbase_auth_collection,
             timeout_seconds=settings.pocketbase_timeout_seconds,
         )
+        self._attendance_collection_ready = False
+        self._attendance_lock = Lock()
         self._observation_collection_ready = False
         self._observation_lock = Lock()
+
+    def _ensure_attendance_collection(self) -> None:
+        if self._attendance_collection_ready or not self._observation_admin.enabled:
+            return
+        with self._attendance_lock:
+            if self._attendance_collection_ready:
+                return
+            self._observation_admin.ensure_collection(
+                self._attendance_collection,
+                [
+                    {"name": "session_id", "type": "text", "required": True, "max": 120},
+                    {"name": "student_id", "type": "text", "required": True, "max": 120},
+                    {"name": "attended", "type": "bool", "required": False},
+                    {"name": "performance_observation", "type": "text", "required": False, "max": 200},
+                ],
+            )
+            self._attendance_collection_ready = True
 
     def _ensure_observation_collection(self) -> None:
         if self._observation_collection_ready or not self._observation_admin.enabled:
@@ -203,12 +223,60 @@ class TutorialSessionRepository:
             updated=created_at,
         )
 
-    def _map_enrollment(self, record: dict) -> TutorialEnrollmentResponse:
+    def _list_attendance_records(self, *, session_id: str | None = None, student_id: str | None = None) -> list[dict]:
+        if not self._observation_admin.enabled:
+            return []
+
+        clauses: list[str] = []
+        if session_id:
+            clauses.append(f'session_id="{_escape_filter_value(session_id)}"')
+        if student_id:
+            clauses.append(f'student_id="{_escape_filter_value(student_id)}"')
+        filter_expression = " && ".join(clauses) if clauses else None
+
+        try:
+            return self._observation_admin.list_records(self._attendance_collection, sort=None, filter=filter_expression)
+        except Exception:
+            return []
+
+    def _build_attendance_map(self, session_ids: list[str]) -> dict[tuple[str, str], dict]:
+        normalized_ids = [session_id for session_id in session_ids if session_id]
+        if not normalized_ids:
+            return {}
+
+        attendance_records: list[dict]
+        if self._observation_admin.enabled:
+            filter_expression = " || ".join(
+                f'session_id="{_escape_filter_value(session_id)}"' for session_id in normalized_ids
+            )
+            try:
+                attendance_records = self._observation_admin.list_records(
+                    self._attendance_collection,
+                    sort=None,
+                    filter=filter_expression,
+                )
+            except Exception:
+                attendance_records = []
+        else:
+            attendance_records = []
+
+        attendance_map: dict[tuple[str, str], dict] = {}
+        for record in attendance_records:
+            session_id = str(record.get("session_id") or "").strip()
+            student_id = str(record.get("student_id") or "").strip()
+            if not session_id or not student_id:
+                continue
+            attendance_map[(session_id, student_id)] = record
+        return attendance_map
+
+    def _map_enrollment(self, record: dict, attendance_record: dict | None = None) -> TutorialEnrollmentResponse:
         return TutorialEnrollmentResponse(
             student_id=str(record.get("student_id") or ""),
             student_name=str(record.get("student_name") or "Estudiante"),
             student_email=str(record.get("student_email") or ""),
             created_at=str(record.get("created_at") or record.get("created") or ""),
+            attended=bool((attendance_record or {}).get("attended", False)),
+            performance_observation=str((attendance_record or {}).get("performance_observation") or "").strip(),
         )
 
     def _map_session(
@@ -296,12 +364,14 @@ class TutorialSessionRepository:
             f'session_id="{_escape_filter_value(session_id)}"' for session_id in session_ids
         )
         enrollments = self._list_records(self._enrollments_base, filter_expression=filter_expression, sort=None)
+        attendance_map = self._build_attendance_map(session_ids)
         grouped: dict[str, list[TutorialEnrollmentResponse]] = {session_id: [] for session_id in session_ids}
         for record in enrollments:
             session_id = str(record.get("session_id") or "").strip()
+            student_id = str(record.get("student_id") or "").strip()
             if session_id not in grouped:
                 continue
-            grouped[session_id].append(self._map_enrollment(record))
+            grouped[session_id].append(self._map_enrollment(record, attendance_map.get((session_id, student_id))))
         return grouped
 
     def _get_session_record(self, session_id: str) -> dict | None:
@@ -494,7 +564,14 @@ class TutorialSessionRepository:
         record = self._get_session_record(session_id)
         if record is None:
             return None
-        enrollments = [self._map_enrollment(item) for item in self._list_enrollment_records(session_id=session_id)]
+        attendance_map = self._build_attendance_map([str(session_id or "").strip()])
+        enrollments = [
+            self._map_enrollment(
+                item,
+                attendance_map.get((str(session_id or "").strip(), str(item.get("student_id") or "").strip())),
+            )
+            for item in self._list_enrollment_records(session_id=session_id)
+        ]
         observation_map = self._build_observation_map([str(session_id or "").strip()])
         return self._map_session(record, enrollments, observation_map.get(str(session_id or "").strip(), ""))
 
@@ -526,6 +603,48 @@ class TutorialSessionRepository:
                 self._observation_admin.update_record(self._observation_collection, record_id, payload)
         else:
             self._observation_admin.create_record(self._observation_collection, payload)
+
+        refreshed = self.get_by_id(session_id)
+        if refreshed is None:
+            raise KeyError("Tutoria no encontrada")
+        return refreshed
+
+    def save_enrollment_attendance(
+        self,
+        session_id: str,
+        *,
+        student_id: str,
+        attended: bool,
+        performance_observation: str,
+    ) -> TutorialSessionResponse:
+        normalized_student_id = str(student_id or "").strip()
+        if not normalized_student_id:
+            raise ValueError("No se pudo identificar al estudiante")
+
+        normalized_observation = str(performance_observation or "").strip()
+        if len(normalized_observation) > 200:
+            raise ValueError("La observacion del estudiante no puede superar los 200 caracteres")
+
+        self._get_session_or_raise(session_id)
+        self._ensure_attendance_collection()
+        enrollment_records = self._list_enrollment_records(session_id=session_id, student_id=normalized_student_id)
+        if not enrollment_records:
+            raise ValueError("No se encontro una inscripcion activa para esta tutoria")
+
+        payload = {
+            "session_id": str(session_id or "").strip(),
+            "student_id": normalized_student_id,
+            "attended": bool(attended),
+            "performance_observation": normalized_observation,
+        }
+
+        existing_records = self._list_attendance_records(session_id=session_id, student_id=normalized_student_id)[:1]
+        if existing_records:
+            record_id = str(existing_records[0].get("id") or "").strip()
+            if record_id:
+                self._observation_admin.update_record(self._attendance_collection, record_id, payload)
+        else:
+            self._observation_admin.create_record(self._attendance_collection, payload)
 
         refreshed = self.get_by_id(session_id)
         if refreshed is None:
