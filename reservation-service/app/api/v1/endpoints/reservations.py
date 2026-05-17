@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 from app.application.container import lab_access_session_repo, lab_reservation_repo, tutorial_session_repo, user_penalty_repo
 from app.application.container import lab_block_repo, lab_schedule_repo, laboratory_access_repo
 from app.application.laboratory_access import ensure_user_can_reserve_laboratory
+from app.api.v1.endpoints.availability import invalidate_availability_cache
 from app.core.datetime_utils import LAB_DAY_END, LAB_DAY_START, combine_date_time, iter_lab_blocks, now_local_naive, parse_datetime
 from app.core.dependencies import ensure_any_permission, get_current_user, is_admin_role
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
@@ -208,7 +209,12 @@ def _occupant_email_for_access(reservation: LabReservationResponse, body: Reserv
     return str(body.occupant_email or reservation.requested_by_email or "").strip()
 
 
+def _reservation_day(reservation: LabReservationResponse) -> str:
+    return str(reservation.start_at or "").split("T", 1)[0]
+
+
 async def _broadcast_reservation_event(action: str, reservation: LabReservationResponse) -> None:
+    invalidate_availability_cache(reservation.laboratory_id, _reservation_day(reservation))
     await realtime_manager.broadcast(
         {
             "topic": "lab_reservation",
@@ -1006,6 +1012,12 @@ async def update_reservation(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
     await _notify_schedule_change(existing_reservation, updated, current_user)
+
+    if (
+        existing_reservation.laboratory_id != updated.laboratory_id
+        or _reservation_day(existing_reservation) != _reservation_day(updated)
+    ):
+        invalidate_availability_cache(existing_reservation.laboratory_id, _reservation_day(existing_reservation))
 
     enriched = _serialize_reservation(updated)
     await _broadcast_reservation_event("update", enriched)

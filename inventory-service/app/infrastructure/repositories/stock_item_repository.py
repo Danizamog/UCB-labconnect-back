@@ -70,6 +70,14 @@ class StockItemRepository:
 
         return self._list_cache.get_or_set(cache_key, load)
 
+    def list_low_stock(self) -> list[StockItemResponse]:
+        return [
+            item
+            for item in self.list_all()
+            if int(item.minimum_stock or 0) > 0
+            and int(item.quantity_available or 0) <= int(item.minimum_stock or 0)
+        ]
+
     def get_by_id(self, item_id: str) -> StockItemResponse | None:
         normalized_id = str(item_id or "").strip()
         if not normalized_id:

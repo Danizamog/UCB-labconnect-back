@@ -31,6 +31,11 @@ class TutorialSessionObservationUpdate(BaseModel):
     tutor_observation: str = ""
 
 
+class TutorialSessionApprovalUpdate(BaseModel):
+    status: str
+    reason: str = ""
+
+
 class TutorialEnrollmentAttendanceUpdate(BaseModel):
     attended: bool = False
     performance_observation: str = Field(default="", max_length=200)
@@ -52,6 +57,8 @@ class TutorialSessionResponse(BaseModel):
     end_at: str
     max_students: int
     is_published: bool
+    approval_status: str = "pending"
+    approval_reason: str = ""
     tutor_observation: str = ""
     enrolled_students: list[TutorialEnrollmentResponse] = Field(default_factory=list)
     created: str

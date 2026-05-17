@@ -61,7 +61,7 @@ def get_usage_report(
 def _stock_status(quantity_available: int, minimum_stock: int) -> str:
     if quantity_available <= 0:
         return "out_of_stock"
-    if quantity_available < max(1, minimum_stock):
+    if minimum_stock > 0 and quantity_available <= minimum_stock:
         return "low_stock"
     return "ok"
 
@@ -75,7 +75,7 @@ def get_stock_items_report(
     current_user: dict = Depends(get_current_user),
 ) -> StockReportResponse:
     ensure_any_permission(current_user, _VIEW_REPORTS, "No tienes permisos para consultar reportes")
-    items = stock_item_repo.list_all()
+    items = stock_item_repo.list_low_stock() if only_low_or_out else stock_item_repo.list_all()
     normalized_search = (search or "").strip().lower()
 
     report_items: list[StockReportItem] = []
@@ -113,6 +113,7 @@ def get_stock_items_report(
                 laboratory_name=item.laboratory_name,
                 quantity_available=item.quantity_available,
                 minimum_stock=item.minimum_stock,
+                stock_gap=max(0, item.minimum_stock - item.quantity_available),
                 status=status,
             )
         )

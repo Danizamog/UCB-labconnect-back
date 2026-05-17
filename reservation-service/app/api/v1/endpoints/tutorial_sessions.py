@@ -6,12 +6,14 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.application.container import tutorial_session_repo
+from app.api.v1.endpoints.availability import invalidate_availability_cache
 from app.core.datetime_utils import now_local_naive, parse_timestamp_to_local_naive
 from app.core.dependencies import ensure_any_permission, get_current_user, is_admin_role
 from app.notifications.store import notification_store
 from app.realtime.manager import realtime_manager
 from app.schemas.tutorial_session import (
     TutorialEnrollmentAttendanceUpdate,
+    TutorialSessionApprovalUpdate,
     TutorialSessionCreate,
     TutorialSessionObservationUpdate,
     TutorialSessionResponse,
@@ -24,6 +26,14 @@ def _session_has_started(session: TutorialSessionResponse) -> bool:
     except ValueError:
         return False
     return start <= now_local_naive()
+
+
+def _tutorial_day(session: TutorialSessionResponse) -> str:
+    return session.session_date or str(session.start_at or "").split("T", 1)[0]
+
+
+def _invalidate_tutorial_availability(session: TutorialSessionResponse) -> None:
+    invalidate_availability_cache(session.laboratory_id, _tutorial_day(session))
 
 
 router = APIRouter(prefix="/tutorial-sessions", tags=["tutorial-sessions"])
@@ -81,6 +91,81 @@ def list_my_tutorial_sessions(current_user: dict = Depends(get_current_user)) ->
     return tutorial_session_repo.list_for_tutor(current_user.get("user_id") or "")
 
 
+@router.get("/pending", response_model=list[TutorialSessionResponse])
+def list_pending_tutorial_sessions(
+    current_user: dict = Depends(get_current_user),
+) -> list[TutorialSessionResponse]:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_reservas", "gestionar_tutorias"},
+        "No tienes permisos para revisar tutorias pendientes",
+    )
+    return tutorial_session_repo.list_pending()
+
+
+@router.patch("/{session_id}/approval", response_model=TutorialSessionResponse)
+async def set_tutorial_session_approval(
+    session_id: str,
+    body: TutorialSessionApprovalUpdate,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_reservas", "gestionar_tutorias"},
+        "No tienes permisos para aprobar o rechazar tutorias",
+    )
+
+    try:
+        updated = await asyncio.to_thread(
+            tutorial_session_repo.set_approval_status,
+            session_id,
+            status_value=body.status,
+            reason=body.reason,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    _invalidate_tutorial_availability(updated)
+
+    await _broadcast_tutorial_notification(
+        recipient_user_id=updated.tutor_id,
+        notification_type=(
+            "tutorial_session_approved"
+            if updated.approval_status == "approved"
+            else "tutorial_session_rejected"
+        ),
+        title=(
+            "Tutoria aprobada"
+            if updated.approval_status == "approved"
+            else "Tutoria rechazada"
+        ),
+        message=(
+            f"Tu tutoria '{updated.topic}' fue aprobada y ya esta visible para los estudiantes."
+            if updated.approval_status == "approved"
+            else f"Tu tutoria '{updated.topic}' fue rechazada. Motivo: {updated.approval_reason or 'Sin detalle'}"
+        ),
+        payload={
+            "tutorial_session_id": updated.id,
+            "topic": updated.topic,
+            "approval_status": updated.approval_status,
+            "approval_reason": updated.approval_reason,
+            "target_path": "/app/tutorias",
+        },
+    )
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "update",
+            "record": updated.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return updated
+
+
 @router.get("/my-enrollments", response_model=list[TutorialSessionResponse])
 def list_my_enrolled_tutorial_sessions(current_user: dict = Depends(get_current_user)) -> list[TutorialSessionResponse]:
     return tutorial_session_repo.list_for_student(current_user.get("user_id") or "")
@@ -129,6 +214,7 @@ async def create_tutorial_session(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
+    _invalidate_tutorial_availability(created)
     await realtime_manager.broadcast(
         {
             "topic": "tutorial_session",
@@ -208,6 +294,8 @@ async def update_tutorial_session(
         for enrollment in existing.enrolled_students
     ])
 
+    _invalidate_tutorial_availability(existing)
+    _invalidate_tutorial_availability(updated)
     await realtime_manager.broadcast(
         {
             "topic": "tutorial_session",
@@ -393,6 +481,7 @@ async def delete_tutorial_session(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
 
     deleted_session, enrollments = deleted_result
+    _invalidate_tutorial_availability(deleted_session)
     await asyncio.gather(*[
         _broadcast_tutorial_notification(
             recipient_user_id=enrollment.student_id,

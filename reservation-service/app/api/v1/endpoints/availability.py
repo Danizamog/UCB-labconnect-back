@@ -1,3 +1,4 @@
+import asyncio
 from calendar import monthrange
 from datetime import datetime
 from time import monotonic
@@ -21,6 +22,8 @@ router = APIRouter(prefix="/availability", tags=["availability"])
 
 _AVAILABILITY_CACHE: dict[str, tuple[float, LabAvailabilityResponse]] = {}
 _AVAILABILITY_CACHE_MAX_ITEMS = 250
+_AVAILABILITY_CACHE_TTL_TODAY = 60
+_AVAILABILITY_CACHE_TTL_OTHER = 120
 
 
 def _max_allowed_reservation_date(base_day):
@@ -65,8 +68,23 @@ def _set_cached_availability(laboratory_id: str, day: str, response: LabAvailabi
     _AVAILABILITY_CACHE[_cache_key(laboratory_id, day)] = (monotonic() + ttl_seconds, response)
 
 
+def invalidate_availability_cache(laboratory_id: str | None, day: str | None = None) -> None:
+    laboratory_id = str(laboratory_id or "").strip()
+    if not laboratory_id:
+        return
+
+    if day:
+        _AVAILABILITY_CACHE.pop(_cache_key(laboratory_id, str(day).split("T", 1)[0]), None)
+        return
+
+    prefix = f"{laboratory_id}:"
+    for key in list(_AVAILABILITY_CACHE.keys()):
+        if key.startswith(prefix):
+            _AVAILABILITY_CACHE.pop(key, None)
+
+
 @router.get("/labs/{laboratory_id}", response_model=LabAvailabilityResponse)
-def get_lab_availability(
+async def get_lab_availability(
     laboratory_id: str,
     day: str = Query(..., description="Fecha en formato YYYY-MM-DD"),
     current_user: dict = Depends(get_current_user),
@@ -93,17 +111,18 @@ def get_lab_availability(
     ranges = iter_lab_blocks(current_date)
     slot_minutes = ACADEMIC_BLOCK_MINUTES
 
+    raw_reservations, tutorial_sessions, blocks, classes = await asyncio.gather(
+        asyncio.to_thread(lab_reservation_repo.list_for_laboratory_day, laboratory_id, day),
+        asyncio.to_thread(tutorial_session_repo.list_public_for_laboratory_day, laboratory_id, day),
+        asyncio.to_thread(lab_block_repo.list_for_laboratory_day, laboratory_id, day),
+        asyncio.to_thread(lab_schedule_repo.list_active_for_laboratory_weekday, laboratory_id, current_date.weekday()),
+    )
+
     reservations = [
-        item for item in lab_reservation_repo.list_for_laboratory_day(laboratory_id, day)
+        item for item in raw_reservations
         if item.status not in {"rejected", "cancelled", "completed", "absent"}
         and item.is_active
     ]
-
-    tutorial_sessions = tutorial_session_repo.list_public_for_laboratory_day(laboratory_id, day)
-
-    blocks = lab_block_repo.list_for_laboratory_day(laboratory_id, day)
-
-    classes = lab_schedule_repo.list_active_for_laboratory_weekday(laboratory_id, current_date.weekday())
     class_windows = [
         (combine_date_time(current_date, klass.start_time), combine_date_time(current_date, klass.end_time), klass)
         for klass in classes
@@ -178,6 +197,10 @@ def get_lab_availability(
         slot_minutes=slot_minutes,
         slots=slots,
     )
-    cache_ttl_seconds = 10 if current_date == current_local_time.date() else 20
+    cache_ttl_seconds = (
+        _AVAILABILITY_CACHE_TTL_TODAY
+        if current_date == current_local_time.date()
+        else _AVAILABILITY_CACHE_TTL_OTHER
+    )
     _set_cached_availability(laboratory_id, day, response, cache_ttl_seconds)
     return response

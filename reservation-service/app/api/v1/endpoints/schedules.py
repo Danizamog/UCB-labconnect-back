@@ -4,6 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.application.container import lab_schedule_repo
+from app.api.v1.endpoints.availability import invalidate_availability_cache
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.realtime.manager import realtime_manager
 from app.schemas.lab_schedule import LabScheduleCreate, LabScheduleResponse, LabScheduleUpdate
@@ -36,6 +37,7 @@ async def create_schedule(body: LabScheduleCreate, current_user: dict = Depends(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
+    invalidate_availability_cache(created.laboratory_id)
     await realtime_manager.broadcast(
         {
             "topic": "lab_schedule",
@@ -59,6 +61,7 @@ async def update_schedule(
         {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
         "No tienes permisos para actualizar horarios",
     )
+    existing = await asyncio.to_thread(lab_schedule_repo.get_by_id, schedule_id)
     try:
         updated = await asyncio.to_thread(lab_schedule_repo.update, schedule_id, body)
     except ValueError as exc:
@@ -66,6 +69,9 @@ async def update_schedule(
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Horario no encontrado")
 
+    if existing is not None and existing.laboratory_id != updated.laboratory_id:
+        invalidate_availability_cache(existing.laboratory_id)
+    invalidate_availability_cache(updated.laboratory_id)
     await realtime_manager.broadcast(
         {
             "topic": "lab_schedule",
@@ -84,10 +90,13 @@ async def delete_schedule(schedule_id: str, current_user: dict = Depends(get_cur
         {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
         "No tienes permisos para eliminar horarios",
     )
+    existing = await asyncio.to_thread(lab_schedule_repo.get_by_id, schedule_id)
     deleted = await asyncio.to_thread(lab_schedule_repo.delete, schedule_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Horario no encontrado")
 
+    if existing is not None:
+        invalidate_availability_cache(existing.laboratory_id)
     await realtime_manager.broadcast(
         {
             "topic": "lab_schedule",
