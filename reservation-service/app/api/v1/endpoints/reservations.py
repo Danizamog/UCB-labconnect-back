@@ -15,6 +15,7 @@ from app.application.laboratory_access import ensure_user_can_reserve_laboratory
 from app.api.v1.endpoints.availability import invalidate_availability_cache
 from app.core.datetime_utils import LAB_DAY_END, LAB_DAY_START, combine_date_time, iter_lab_blocks, now_local_naive, parse_datetime
 from app.core.dependencies import ensure_any_permission, get_current_user, is_admin_role
+from app.core.locks import laboratory_lock_registry
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
 from app.realtime.manager import realtime_manager
 from app.schemas.agenda_summary import AgendaSummaryResponse
@@ -36,20 +37,10 @@ _USER_RESERVATION_MODIFICATION_WINDOW_SECONDS = 2 * 60 * 60
 _ABSENT_GRACE_PERIOD_SECONDS = 15 * 60
 
 # Lock por laboratorio para serializar validacion+creacion/actualizacion y evitar
-# que dos solicitudes concurrentes pasen ambas la verificacion de overlap y
-# terminen creando reservas pisadas en el mismo bloque.
-_LABORATORY_LOCKS: dict[str, asyncio.Lock] = {}
-_LABORATORY_LOCKS_GUARD = asyncio.Lock()
-
-
-async def _laboratory_lock(laboratory_id: str) -> asyncio.Lock:
-    key = str(laboratory_id or "").strip()
-    async with _LABORATORY_LOCKS_GUARD:
-        lock = _LABORATORY_LOCKS.get(key)
-        if lock is None:
-            lock = asyncio.Lock()
-            _LABORATORY_LOCKS[key] = lock
-        return lock
+# que dos solicitudes concurrentes pasen ambas la verificacion de overlap.
+# El registry libera el lock cuando no quedan waiters, evitando fuga de memoria
+# si se ven muchos laboratory_id distintos.
+# NOTA: solo es correcto con --workers=1 por servicio (lock in-proc).
 
 
 _MANAGEMENT_PERMISSIONS = {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"}
@@ -862,8 +853,7 @@ async def create_reservation(body: LabReservationCreate, current_user: dict = De
         notes=body.notes,
     )
 
-    lab_lock = await _laboratory_lock(body.laboratory_id)
-    async with lab_lock:
+    async with laboratory_lock_registry.lock(body.laboratory_id):
         await asyncio.to_thread(
             _validate_reservation_time_rules,
             laboratory_id=body.laboratory_id,
@@ -898,8 +888,7 @@ async def create_walk_in_reservation(
             detail="El usuario tiene una penalizacion activa y no puede ingresar mediante un walk-in",
         )
 
-    lab_lock = await _laboratory_lock(body.laboratory_id)
-    async with lab_lock:
+    async with laboratory_lock_registry.lock(body.laboratory_id):
         try:
             created = await lab_reservation_repo.acreate(
                 LabReservationCreate(
@@ -993,8 +982,7 @@ async def update_reservation(
             ensure_user_can_reserve_laboratory(str(payload.laboratory_id or existing_reservation.laboratory_id), current_user)
 
     target_lab_id = str(payload.laboratory_id or existing_reservation.laboratory_id)
-    lab_lock = await _laboratory_lock(target_lab_id)
-    async with lab_lock:
+    async with laboratory_lock_registry.lock(target_lab_id):
         await asyncio.to_thread(
             _validate_reservation_time_rules,
             laboratory_id=target_lab_id,

@@ -25,6 +25,16 @@ def _load_env_file() -> None:
 _load_env_file()
 
 
+def _require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value or not value.strip():
+        raise RuntimeError(
+            f"La variable de entorno {name} es obligatoria y no esta definida. "
+            "Configurala antes de iniciar el servicio."
+        )
+    return value.strip()
+
+
 class Settings:
     def __init__(self) -> None:
         self.app_name = os.getenv("INVENTORY_APP_NAME", "LabConnect Inventory Service")
@@ -33,8 +43,12 @@ class Settings:
         self.app_port = int(os.getenv("INVENTORY_APP_PORT", "8003"))
         self.database_url = os.getenv("INVENTORY_DATABASE_URL", "sqlite:///./inventory.db")
         self.auth_service_url = os.getenv("AUTH_SERVICE_URL", "http://127.0.0.1:8101")
-        self.secret_key = os.getenv("SECRET_KEY", "change-this-secret")
+        self.secret_key = _require_env("SECRET_KEY")
         self.algorithm = os.getenv("JWT_ALGORITHM", os.getenv("ALGORITHM", "HS256"))
+        self.jwt_issuer = os.getenv("JWT_ISSUER", "labconnect-auth").strip() or "labconnect-auth"
+        self.jwt_audience = os.getenv("JWT_AUDIENCE", "labconnect").strip() or "labconnect"
+        self.token_cache_ttl_seconds = float(os.getenv("TOKEN_CACHE_TTL_SECONDS", "30"))
+        self.token_cache_max_entries = int(os.getenv("TOKEN_CACHE_MAX_ENTRIES", "5000"))
         self.pocketbase_url = os.getenv("POCKETBASE_URL", "").rstrip("/")
         self.pocketbase_auth_token = os.getenv("POCKETBASE_AUTH_TOKEN")
         self.pocketbase_auth_identity = os.getenv("POCKETBASE_AUTH_IDENTITY")

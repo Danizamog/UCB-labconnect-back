@@ -1,10 +1,34 @@
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from app.application.container import stock_item_repo, stock_movement_repo
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.core.laboratory_access import is_lab_in_scope, resolve_accessible_lab_ids
+from app.core.locks import stock_item_lock_registry
 from app.schemas.stock_item import StockItemCreate, StockItemResponse, StockItemUpdate
+
+
+def _extract_pocketbase_error(exc: Exception) -> str:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return str(exc)
+    try:
+        body = exc.response.json()
+    except ValueError:
+        return f"{exc.response.status_code}: {exc.response.text[:500]}"
+    if not isinstance(body, dict):
+        return str(body)
+    message = str(body.get("message") or "").strip()
+    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+    field_errors = []
+    for field_name, info in data.items():
+        if isinstance(info, dict):
+            field_errors.append(f"{field_name}={info.get('message') or info.get('code')}")
+    detail = message or f"HTTP {exc.response.status_code}"
+    if field_errors:
+        detail = f"{detail} ({'; '.join(field_errors)})"
+    return detail
+
 
 router = APIRouter(prefix="/stock-items", tags=["stock-items"])
 
@@ -50,12 +74,15 @@ def list_stock_items(
     if requested_lab:
         # Catalogo publico por laboratorio: cualquier usuario autenticado puede verlo
         # para poder seleccionar materiales al hacer una reserva o tutoria.
-        items = stock_item_repo.list_all()
-        return [item for item in items if str(item.laboratory_id or "") == requested_lab]
+        return stock_item_repo.list_by_laboratories([requested_lab])
 
     ensure_any_permission(current_user, _VIEW_STOCK, "No tienes permisos para consultar el inventario de materiales")
     accessible = resolve_accessible_lab_ids(current_user)
-    return _filter_items_in_scope(stock_item_repo.list_all(), accessible)
+    if accessible is None:
+        return stock_item_repo.list_all()
+    if not accessible:
+        return []
+    return stock_item_repo.list_by_laboratories(list(accessible))
 
 
 @router.get("/movements", response_model=list[StockMovementResponse])
@@ -104,32 +131,68 @@ def create_movement(
     current_user: dict = Depends(get_current_user),
 ) -> StockMovementResponse:
     ensure_any_permission(current_user, _MOVE_STOCK, "No tienes permisos para registrar movimientos de stock")
-    item = stock_item_repo.get_by_id(item_id)
-    if item is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+    if body.quantity <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La cantidad del movimiento debe ser mayor a cero",
+        )
+
     accessible = resolve_accessible_lab_ids(current_user)
-    if not is_lab_in_scope(item.laboratory_id, accessible):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
 
-    if body.movement_type in ("entry", "return"):
-        change = body.quantity
-    else:
-        change = -body.quantity
+    with stock_item_lock_registry.lock(item_id):
+        item = stock_item_repo.get_by_id_fresh(item_id)
+        if item is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+        if not is_lab_in_scope(item.laboratory_id, accessible):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
 
-    new_qty = max(0, item.quantity_available + change)
-    stock_item_repo.update(item_id, StockItemUpdate(quantity_available=new_qty))
+        if body.movement_type in ("entry", "return"):
+            change = body.quantity
+        else:
+            change = -body.quantity
+            if item.quantity_available + change < 0:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Stock insuficiente para el movimiento. Disponible: {item.quantity_available}, "
+                        f"solicitado: {body.quantity}."
+                    ),
+                )
 
-    performed_by = str(current_user.get("username") or "sistema")
+        new_qty = item.quantity_available + change
+        updated_item = stock_item_repo.update(item_id, StockItemUpdate(quantity_available=new_qty))
+        if updated_item is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
 
-    record = stock_movement_repo.create(
-        stock_item_id=item_id,
-        stock_item_name=item.name,
-        movement_type=body.movement_type,
-        quantity_change=change,
-        quantity_after=new_qty,
-        performed_by=performed_by,
-        notes=body.notes or "",
-    )
+        performed_by = str(current_user.get("username") or "sistema")
+        # stock_movement.stock_item_name es required en PocketBase; evitamos enviar ""
+        # que algunas versiones rechazan como vacio para campos required.
+        movement_item_name = (item.name or "").strip() or f"Material {item_id}"
+
+        try:
+            record = stock_movement_repo.create(
+                stock_item_id=item_id,
+                stock_item_name=movement_item_name,
+                movement_type=body.movement_type,
+                quantity_change=change,
+                quantity_after=new_qty,
+                performed_by=performed_by,
+                notes=body.notes or "",
+            )
+        except Exception as movement_error:
+            # Saga: el stock ya se actualizo en PB pero el movimiento fallo.
+            # Revertimos para no dejar el inventario inconsistente.
+            try:
+                stock_item_repo.update(
+                    item_id,
+                    StockItemUpdate(quantity_available=item.quantity_available),
+                )
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"No se pudo registrar el movimiento (PocketBase): {_extract_pocketbase_error(movement_error)}",
+            ) from movement_error
 
     return StockMovementResponse(
         id=record.id,
@@ -187,17 +250,25 @@ def update_stock_item(item_id: str, body: StockItemUpdate, current_user: dict = 
 def update_stock_item_quantity(item_id: str, body: dict, current_user: dict = Depends(get_current_user)) -> StockItemResponse:
     ensure_any_permission(current_user, _MOVE_STOCK, "No tienes permisos para ajustar cantidades de stock")
     accessible = resolve_accessible_lab_ids(current_user)
-    existing = stock_item_repo.get_by_id(item_id)
-    if existing is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
-    if not is_lab_in_scope(existing.laboratory_id, accessible):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
-    qty = body.get("quantity_available")
-    if qty is None:
+    qty_raw = body.get("quantity_available")
+    if qty_raw is None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Se requiere quantity_available")
-    item = stock_item_repo.update(item_id, StockItemUpdate(quantity_available=int(qty)))
-    if item is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+    try:
+        qty = int(qty_raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="quantity_available debe ser entero") from None
+    if qty < 0:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="quantity_available no puede ser negativo")
+
+    with stock_item_lock_registry.lock(item_id):
+        existing = stock_item_repo.get_by_id_fresh(item_id)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+        if not is_lab_in_scope(existing.laboratory_id, accessible):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+        item = stock_item_repo.update(item_id, StockItemUpdate(quantity_available=qty))
+        if item is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
     return item
 
 

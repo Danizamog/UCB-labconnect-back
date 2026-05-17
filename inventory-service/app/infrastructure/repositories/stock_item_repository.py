@@ -41,6 +41,46 @@ class StockItemRepository:
         self._list_cache.invalidate()
         self._detail_cache.invalidate()
 
+    @staticmethod
+    def _escape_filter_value(value: str) -> str:
+        return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+    def list_by_laboratories(self, laboratory_ids: list[str], per_page: int = 200) -> list[StockItemResponse]:
+        normalized = [str(lid or "").strip() for lid in laboratory_ids if str(lid or "").strip()]
+        if not normalized:
+            return []
+
+        filter_expression = " || ".join(
+            f'laboratory_id="{self._escape_filter_value(lid)}"' for lid in normalized
+        )
+
+        items: list[StockItemResponse] = []
+        current_page = 1
+        while True:
+            data = self._client.request(
+                "GET",
+                self._base,
+                params={
+                    "page": current_page,
+                    "perPage": per_page,
+                    "expand": "laboratory_id",
+                    "filter": filter_expression,
+                },
+            )
+            if not isinstance(data, dict):
+                break
+            records = data.get("items", [])
+            if not isinstance(records, list) or not records:
+                break
+            items.extend(_to_response(r) for r in records if isinstance(r, dict))
+            total_pages = int(data.get("totalPages", current_page))
+            if current_page >= total_pages:
+                break
+            current_page += 1
+
+        items.sort(key=lambda x: (x.name or "").lower())
+        return items
+
     def list_all(self, page: int = 1, per_page: int = 200) -> list[StockItemResponse]:
         cache_key = ("list_all", page, per_page)
 
@@ -70,13 +110,35 @@ class StockItemRepository:
 
         return self._list_cache.get_or_set(cache_key, load)
 
-    def list_low_stock(self) -> list[StockItemResponse]:
-        return [
-            item
-            for item in self.list_all()
-            if int(item.minimum_stock or 0) > 0
-            and int(item.quantity_available or 0) <= int(item.minimum_stock or 0)
-        ]
+    def list_low_stock(self, per_page: int = 200) -> list[StockItemResponse]:
+        items: list[StockItemResponse] = []
+        current_page = 1
+        filter_expression = "minimum_stock>0 && quantity_available<=minimum_stock"
+
+        while True:
+            data = self._client.request(
+                "GET",
+                self._base,
+                params={
+                    "page": current_page,
+                    "perPage": per_page,
+                    "expand": "laboratory_id",
+                    "filter": filter_expression,
+                },
+            )
+            if not isinstance(data, dict):
+                break
+            records = data.get("items", [])
+            if not isinstance(records, list) or not records:
+                break
+            items.extend(_to_response(r) for r in records if isinstance(r, dict))
+            total_pages = int(data.get("totalPages", current_page))
+            if current_page >= total_pages:
+                break
+            current_page += 1
+
+        items.sort(key=lambda x: (x.name or "").lower())
+        return items
 
     def get_by_id(self, item_id: str) -> StockItemResponse | None:
         normalized_id = str(item_id or "").strip()
@@ -95,6 +157,13 @@ class StockItemRepository:
             return _to_response(data)
 
         return self._detail_cache.get_or_set(("detail", normalized_id), load)
+
+    def get_by_id_fresh(self, item_id: str) -> StockItemResponse | None:
+        normalized_id = str(item_id or "").strip()
+        if not normalized_id:
+            return None
+        self._detail_cache.invalidate(predicate=lambda k: k == ("detail", normalized_id))
+        return self.get_by_id(normalized_id)
 
     def create(self, body: StockItemCreate) -> StockItemResponse:
         payload = body.model_dump()

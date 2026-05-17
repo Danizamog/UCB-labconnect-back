@@ -1,8 +1,11 @@
+import hashlib
+from threading import Lock
+from time import monotonic
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import httpx
 from jose import JWTError, jwt
-from time import monotonic
 
 from app.core.config import settings
 
@@ -12,35 +15,55 @@ auth_validation_client = httpx.Client(
     timeout=httpx.Timeout(5.0, connect=3.0),
     limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
 )
+
+_TOKEN_CACHE_LOCK = Lock()
 _TOKEN_VALIDATION_CACHE: dict[str, tuple[float, dict]] = {}
-_TOKEN_VALIDATION_CACHE_TTL_SECONDS = 15
-_TOKEN_VALIDATION_CACHE_MAX_ITEMS = 300
+
+
+def _token_cache_key(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _get_cached_token_payload(token: str) -> dict | None:
-    cached = _TOKEN_VALIDATION_CACHE.get(token)
-    if not cached:
-        return None
-
-    expires_at, payload = cached
-    if expires_at <= monotonic():
-        _TOKEN_VALIDATION_CACHE.pop(token, None)
-        return None
-
-    return dict(payload)
+    key = _token_cache_key(token)
+    with _TOKEN_CACHE_LOCK:
+        cached = _TOKEN_VALIDATION_CACHE.get(key)
+        if not cached:
+            return None
+        expires_at, payload = cached
+        if expires_at <= monotonic():
+            _TOKEN_VALIDATION_CACHE.pop(key, None)
+            return None
+        return dict(payload)
 
 
 def _set_cached_token_payload(token: str, payload: dict) -> None:
-    if len(_TOKEN_VALIDATION_CACHE) >= _TOKEN_VALIDATION_CACHE_MAX_ITEMS:
-        oldest_key = next(iter(_TOKEN_VALIDATION_CACHE))
-        _TOKEN_VALIDATION_CACHE.pop(oldest_key, None)
+    key = _token_cache_key(token)
+    with _TOKEN_CACHE_LOCK:
+        if len(_TOKEN_VALIDATION_CACHE) >= settings.token_cache_max_entries:
+            _TOKEN_VALIDATION_CACHE.pop(next(iter(_TOKEN_VALIDATION_CACHE)), None)
+        _TOKEN_VALIDATION_CACHE[key] = (
+            monotonic() + settings.token_cache_ttl_seconds,
+            dict(payload),
+        )
 
-    _TOKEN_VALIDATION_CACHE[token] = (monotonic() + _TOKEN_VALIDATION_CACHE_TTL_SECONDS, dict(payload))
+
+def _invalidate_cached_token_payload(token: str) -> None:
+    key = _token_cache_key(token)
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_VALIDATION_CACHE.pop(key, None)
 
 
 def _decode_token_payload(token: str) -> dict | None:
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        payload = jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=[settings.algorithm],
+            audience=settings.jwt_audience,
+            issuer=settings.jwt_issuer,
+            options={"require_exp": True, "require_iat": True, "require_nbf": True},
+        )
     except JWTError:
         return None
 
@@ -91,6 +114,7 @@ def _resolve_live_payload(token: str, fallback_payload: dict | None) -> dict:
         ) from exc
 
     if response.status_code == status.HTTP_401_UNAUTHORIZED:
+        _invalidate_cached_token_payload(token)
         detail = "Token invalido o expirado"
         try:
             body = response.json()
