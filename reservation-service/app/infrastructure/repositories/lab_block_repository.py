@@ -1,3 +1,5 @@
+from datetime import date, timedelta
+
 import httpx
 
 from app.core.config import settings
@@ -10,6 +12,19 @@ _COLLECTION = settings.pb_lab_block_collection
 
 def _escape_filter_value(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _day_range_clause(field: str, day: str) -> str:
+    """Filtro PocketBase para 'todo el dia X' usando rango lexicografico."""
+    normalized = str(day or "").strip()
+    if not normalized:
+        return ""
+    try:
+        current = date.fromisoformat(normalized)
+    except ValueError:
+        return f'{field}~"{_escape_filter_value(normalized)}"'
+    next_day = (current + timedelta(days=1)).isoformat()
+    return f'{field}>="{_escape_filter_value(normalized)}" && {field}<"{_escape_filter_value(next_day)}"'
 
 
 def _to_response(record: dict) -> LabBlockResponse:
@@ -42,7 +57,7 @@ class LabBlockRepository:
         current_page = page
         filter_expression = (
             f'laboratory_id="{_escape_filter_value(normalized_laboratory_id)}" '
-            f'&& is_active=true && start_at~"{_escape_filter_value(normalized_day)}"'
+            f'&& is_active=true && {_day_range_clause("start_at", normalized_day)}'
         )
 
         while True:

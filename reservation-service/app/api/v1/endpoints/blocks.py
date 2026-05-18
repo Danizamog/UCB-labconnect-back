@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.application.container import lab_block_repo
 from app.api.v1.endpoints.availability import invalidate_availability_cache
+from app.core.datetime_utils import extract_iso_date
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.realtime.manager import realtime_manager
 from app.schemas.lab_block import LabBlockCreate, LabBlockResponse, LabBlockUpdate
@@ -13,7 +14,7 @@ router = APIRouter(prefix="/lab-blocks", tags=["lab-blocks"])
 
 
 def _block_day(block: LabBlockResponse) -> str:
-    return str(block.start_at or "").split("T", 1)[0]
+    return extract_iso_date(block.start_at)
 
 
 def _invalidate_block_availability(block: LabBlockResponse) -> None:

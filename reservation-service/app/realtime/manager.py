@@ -81,7 +81,15 @@ def _user_can_receive(client: ClientContext, payload: dict) -> bool:
     if topic == "lab_reservation":
         if client.is_manager():
             return True
-        if client.laboratory_ids and record_lab_id and record_lab_id in client.laboratory_ids:
+        if client.laboratory_ids:
+            # Cliente declaro labs especificos: filtrar por ellos.
+            if record_lab_id and record_lab_id in client.laboratory_ids:
+                return True
+        else:
+            # Sin filtro de labs el cliente escucha todo y filtra localmente.
+            # Esto coincide con la semantica del front (aggregateSubscription
+            # envia [] cuando alguna pagina no declara labs especificos) y
+            # evita que estudiantes pierdan eventos de su laboratorio actual.
             return True
         requested_by = str(record.get("requested_by") or "")
         if client.user_id and requested_by and client.user_id == requested_by:

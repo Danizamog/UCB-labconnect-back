@@ -13,7 +13,7 @@ from app.application.container import lab_access_session_repo, lab_reservation_r
 from app.application.container import lab_block_repo, lab_schedule_repo, laboratory_access_repo
 from app.application.laboratory_access import ensure_user_can_reserve_laboratory
 from app.api.v1.endpoints.availability import invalidate_availability_cache
-from app.core.datetime_utils import LAB_DAY_END, LAB_DAY_START, combine_date_time, iter_lab_blocks, now_local_naive, parse_datetime
+from app.core.datetime_utils import LAB_DAY_END, LAB_DAY_START, combine_date_time, extract_iso_date, iter_lab_blocks, now_local_naive, parse_datetime
 from app.core.dependencies import ensure_any_permission, get_current_user, is_admin_role
 from app.core.locks import laboratory_lock_registry
 from app.notifications.store import OPERATIONS_RECIPIENT_ID, notification_store
@@ -201,7 +201,7 @@ def _occupant_email_for_access(reservation: LabReservationResponse, body: Reserv
 
 
 def _reservation_day(reservation: LabReservationResponse) -> str:
-    return str(reservation.start_at or "").split("T", 1)[0]
+    return extract_iso_date(reservation.start_at)
 
 
 async def _broadcast_reservation_event(action: str, reservation: LabReservationResponse) -> None:
@@ -223,7 +223,7 @@ def _can_manage_reservations(current_user: dict) -> bool:
 
 def _reservation_field_value(reservation: LabReservationResponse, field: str) -> str:
     if field == "date":
-        return str(reservation.start_at).split("T", 1)[0]
+        return extract_iso_date(reservation.start_at)
 
     value = getattr(reservation, field, "")
     if value is None:
@@ -233,7 +233,7 @@ def _reservation_field_value(reservation: LabReservationResponse, field: str) ->
 
 def _reservation_field_value_for_where(reservation: LabReservationResponse, field: str):
     if field == "date":
-        return str(reservation.start_at).split("T", 1)[0]
+        return extract_iso_date(reservation.start_at)
 
     value = getattr(reservation, field, None)
     if field in {"attendees_count", "user_modification_count"}:
@@ -695,11 +695,22 @@ def search_reservations(
 
 
 @router.get("/mine", response_model=list[LabReservationResponse])
-def list_my_reservations(current_user: dict = Depends(get_current_user)) -> list[LabReservationResponse]:
+def list_my_reservations(
+    upcoming_only: bool = Query(default=False),
+    limit: int | None = Query(default=None, ge=1, le=200),
+    current_user: dict = Depends(get_current_user),
+) -> list[LabReservationResponse]:
     requester = str(current_user.get("user_id") or "").strip()
     if not requester:
         return []
-    items = lab_reservation_repo.list_filtered(requested_by=requester, sort_by="start_at", sort_type="ASC")
+
+    if upcoming_only:
+        now_iso = now_local_naive().isoformat(sep="T", timespec="seconds")
+        items = lab_reservation_repo.list_upcoming_for_user(requester, now_iso=now_iso, limit=limit)
+    else:
+        items = lab_reservation_repo.list_filtered(requested_by=requester, sort_by="start_at", sort_type="ASC")
+        if limit is not None:
+            items = items[:limit]
     return [_serialize_reservation(item) for item in items]
 
 
@@ -710,28 +721,27 @@ def get_my_agenda_summary(
 ) -> AgendaSummaryResponse:
     requester = str(current_user.get("user_id") or "").strip()
     now = now_local_naive()
+    now_iso = now.isoformat(sep="T", timespec="seconds")
 
     if requester:
-        my_reservations = lab_reservation_repo.list_filtered(
-            requested_by=requester,
-            sort_by="start_at",
-            sort_type="ASC",
+        # Filtra en PocketBase por (requested_by, end_at >= now, status no final).
+        # Antes traia todo el historial del usuario y truncaba en Python.
+        raw_reservations = lab_reservation_repo.list_upcoming_for_user(
+            requester,
+            now_iso=now_iso,
+            limit=limit,
         )
     else:
-        my_reservations = []
+        raw_reservations = []
+
+    upcoming_reservations = [_serialize_reservation(item) for item in raw_reservations]
+    upcoming_reservations.sort(key=lambda item: (item.start_at, item.end_at, item.id))
 
     def _is_upcoming(value: str) -> bool:
         try:
             return parse_datetime(value) >= now
         except ValueError:
             return False
-
-    upcoming_reservations = [
-        _serialize_reservation(item)
-        for item in my_reservations
-        if _is_upcoming(item.end_at) and item.status not in _FINAL_RESERVATION_STATUSES
-    ]
-    upcoming_reservations.sort(key=lambda item: (item.start_at, item.end_at, item.id))
 
     combined_tutorials: dict[str, TutorialSessionResponse] = {}
     if requester:

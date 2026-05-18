@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date, timedelta
 
 import httpx
 
@@ -8,6 +9,23 @@ from app.infrastructure.pocketbase_base import PocketBaseClient
 from app.schemas.lab_reservation import RESERVATION_STATUSES, LabReservationCreate, LabReservationResponse, LabReservationUpdate
 
 _COLLECTION = settings.pb_lab_reservation_collection
+
+
+def _day_range_clause(field: str, day: str) -> str:
+    """Filtro PocketBase para 'todo el dia X' sobre un campo datetime.
+
+    Usa rango lexicografico (>= dia AND < dia siguiente) en vez del operador
+    LIKE (~) para que PocketBase pueda usar indices sobre el campo.
+    """
+    normalized = str(day or "").strip()
+    if not normalized:
+        return ""
+    try:
+        current = date.fromisoformat(normalized)
+    except ValueError:
+        return f'{field}~"{_escape_filter_value(normalized)}"'
+    next_day = (current + timedelta(days=1)).isoformat()
+    return f'{field}>="{_escape_filter_value(normalized)}" && {field}<"{_escape_filter_value(next_day)}"'
 
 
 def _to_response(record: dict) -> LabReservationResponse:
@@ -65,7 +83,7 @@ class LabReservationRepository:
         current_page = 1
         filter_expression = (
             f'laboratory_id="{_escape_filter_value(normalized_laboratory_id)}" '
-            f'&& start_at~"{_escape_filter_value(normalized_day)}"'
+            f'&& {_day_range_clause("start_at", normalized_day)}'
         )
 
         while True:
@@ -163,6 +181,65 @@ class LabReservationRepository:
             current_page += 1
         return items
 
+    def list_upcoming_for_user(
+        self,
+        user_id: str,
+        *,
+        now_iso: str,
+        limit: int | None = None,
+        per_page: int = 200,
+    ) -> list[LabReservationResponse]:
+        """Lista solo reservas vigentes (end_at >= now y no en estado final).
+
+        Filtra directamente en PocketBase para evitar traer todo el historial
+        del usuario. Si se pasa `limit`, corta tan pronto se alcanza para no
+        paginar de mas.
+        """
+        normalized_user = str(user_id or "").strip()
+        if not normalized_user:
+            return []
+
+        clauses = [
+            f'requested_by="{_escape_filter_value(normalized_user)}"',
+            f'end_at>="{_escape_filter_value(now_iso)}"',
+            'status!="rejected"',
+            'status!="cancelled"',
+            'status!="completed"',
+            'status!="absent"',
+        ]
+        filter_expression = " && ".join(clauses)
+
+        page_size = per_page
+        if limit is not None and limit > 0:
+            page_size = min(per_page, limit)
+
+        items: list[LabReservationResponse] = []
+        current_page = 1
+        while True:
+            data = self._client.request(
+                "GET",
+                self._base,
+                params={
+                    "page": current_page,
+                    "perPage": page_size,
+                    "sort": "start_at",
+                    "filter": filter_expression,
+                },
+            )
+            if not isinstance(data, dict):
+                break
+            records = data.get("items", [])
+            if not isinstance(records, list) or not records:
+                break
+            items.extend(_to_response(r) for r in records if isinstance(r, dict))
+            if limit is not None and len(items) >= limit:
+                return items[:limit]
+            total_pages = int(data.get("totalPages", current_page))
+            if current_page >= total_pages:
+                break
+            current_page += 1
+        return items
+
     def list_active_approved_with_start_before(
         self,
         *,
@@ -223,7 +300,9 @@ class LabReservationRepository:
         if requested_by:
             clauses.append(f'requested_by="{_escape_filter_value(str(requested_by).strip())}"')
         if day:
-            clauses.append(f'start_at~"{_escape_filter_value(str(day).strip())}"')
+            day_clause = _day_range_clause("start_at", str(day).strip())
+            if day_clause:
+                clauses.append(day_clause)
 
         return " && ".join(clauses) if clauses else None
 

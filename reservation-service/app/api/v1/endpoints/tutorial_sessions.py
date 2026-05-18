@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.application.container import tutorial_session_repo
 from app.api.v1.endpoints.availability import invalidate_availability_cache
-from app.core.datetime_utils import now_local_naive, parse_timestamp_to_local_naive
+from app.core.datetime_utils import extract_iso_date, now_local_naive, parse_timestamp_to_local_naive
 from app.core.dependencies import ensure_any_permission, get_current_user, is_admin_role
 from app.notifications.store import notification_store
 from app.realtime.manager import realtime_manager
@@ -29,7 +29,7 @@ def _session_has_started(session: TutorialSessionResponse) -> bool:
 
 
 def _tutorial_day(session: TutorialSessionResponse) -> str:
-    return session.session_date or str(session.start_at or "").split("T", 1)[0]
+    return session.session_date or extract_iso_date(session.start_at)
 
 
 def _invalidate_tutorial_availability(session: TutorialSessionResponse) -> None:

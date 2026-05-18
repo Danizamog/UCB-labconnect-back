@@ -61,6 +61,22 @@ def now_local_naive() -> datetime:
     return datetime.now(_app_timezone()).replace(tzinfo=None)
 
 
+def extract_iso_date(value: str | None) -> str:
+    """Devuelve el prefijo YYYY-MM-DD de cualquier datetime string.
+
+    PocketBase persiste fechas con espacio (ej. "2026-05-18 14:30:00.000Z")
+    pero el codigo a veces guarda formato ISO con 'T'. Usar split('T') falla
+    con el formato de PocketBase y deja basura en la clave de cache,
+    impidiendo invalidar la disponibilidad cuando se crea/edita/cancela una
+    reserva. Tomamos los primeros 10 caracteres porque YYYY-MM-DD siempre
+    mide 10 sin importar el separador.
+    """
+    normalized = str(value or "").strip()
+    if len(normalized) < 10:
+        return ""
+    return normalized[:10]
+
+
 def combine_date_time(day: date, hhmm: str) -> datetime:
     try:
         hour, minute = [int(part) for part in hhmm.split(":", 1)]

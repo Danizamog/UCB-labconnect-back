@@ -10,6 +10,7 @@ from app.application.laboratory_access import ensure_user_can_reserve_laboratory
 from app.core.datetime_utils import (
     ACADEMIC_BLOCK_MINUTES,
     combine_date_time,
+    extract_iso_date,
     format_time,
     iter_lab_blocks,
     now_local_naive,
@@ -74,7 +75,8 @@ def invalidate_availability_cache(laboratory_id: str | None, day: str | None = N
         return
 
     if day:
-        _AVAILABILITY_CACHE.pop(_cache_key(laboratory_id, str(day).split("T", 1)[0]), None)
+        normalized_day = extract_iso_date(day) or str(day).strip()
+        _AVAILABILITY_CACHE.pop(_cache_key(laboratory_id, normalized_day), None)
         return
 
     prefix = f"{laboratory_id}:"
