@@ -60,6 +60,18 @@ def create_supply_reservation(
     if stock_item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Insumo no encontrado")
 
+    limit_per_user = stock_item.get("limite_reserva_usuario")
+    if limit_per_user is not None:
+        try:
+            limit_per_user = int(limit_per_user)
+        except (TypeError, ValueError):
+            limit_per_user = None
+    if limit_per_user is not None and limit_per_user > 0 and body.quantity > limit_per_user:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Has superado la cantidad maxima permitida para este insumo",
+        )
+
     item_lab_id = str(stock_item.get("laboratory_id") or "")
     requested_lab_id = str(body.laboratory_id or "").strip()
     if requested_lab_id and item_lab_id and requested_lab_id != item_lab_id:
