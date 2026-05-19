@@ -487,8 +487,7 @@ class TutorialSessionRepository:
         session_date: str | None = None,
         laboratory_id: str | None = None,
     ) -> list[TutorialSessionResponse]:
-        # Temporarily removing approval_status to verify if it's causing the 400 error
-        clauses = ['is_published=true'] # , 'approval_status="approved"']
+        clauses = ['is_published=true', 'approval_status="approved"']
         if topic_search:
             clauses.append(f'topic ~ "{_escape_filter_value(topic_search)}"')
         if session_date:
