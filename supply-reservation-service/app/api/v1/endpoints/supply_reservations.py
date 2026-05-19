@@ -14,6 +14,7 @@ router = APIRouter(prefix="/supply-reservations", tags=["supply-reservations"])
 _ALLOWED_STATUSES = {"pending", "approved", "delivered", "cancelled"}
 _VIEW_SUPPLY_RESERVATIONS = {"gestionar_reservas_materiales", "gestionar_stock", "gestionar_reactivos_quimicos"}
 _MANAGE_SUPPLY_RESERVATIONS = {"gestionar_reservas_materiales", "gestionar_stock", "gestionar_reactivos_quimicos"}
+_TUTORIAL_SUPPLY_RESERVATIONS = {"gestionar_tutorias"}
 
 # Lock por stock_item para serializar la verificacion+descuento al aprobar y
 # evitar que dos aprobaciones simultaneas descuenten dos veces sobre el mismo
@@ -29,7 +30,7 @@ def list_supply_reservations(
     lab_reservation_id: str | None = Query(default=None),
     current_user: dict = Depends(get_current_user),
 ) -> list[SupplyReservationResponse]:
-    can_manage = _can_manage(current_user)
+    can_manage = _can_manage(current_user) or _can_manage_tutorial_supplies(current_user)
     requester_filter = None if can_manage else str(current_user.get("user_id") or current_user.get("username") or "")
 
     return supply_reservation_repo.list_all(
@@ -88,17 +89,16 @@ def create_supply_reservation(
             detail="El material esta agotado",
         )
 
-    # Reserva pesimista a nivel logico: el stock se descuenta solo al aprobar,
-    # pero descontamos las reservas pendientes para no aceptar mas de lo que
-    # realmente hay disponible.
-    reserved_pending = supply_reservation_repo.sum_pending_quantity(body.stock_item_id)
-    effective_available = max(0, current_qty - reserved_pending)
-    if body.quantity > effective_available:
+    # La solicitud queda pendiente y el descuento real ocurre al aprobarla.
+    # Por eso aqui solo validamos contra el stock actual visible; si varias
+    # solicitudes compiten por el mismo material, el encargado decide cuales
+    # aprobar y la validacion fuerte de stock se hace en la aprobacion.
+    if body.quantity > current_qty:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"No hay cantidad suficiente disponible para reservar. "
-                f"Disponible: {effective_available} (stock {current_qty}, reservado {reserved_pending})."
+                f"No hay cantidad suficiente disponible para solicitar. "
+                f"Disponible: {current_qty}, solicitado: {body.quantity}."
             ),
         )
 
@@ -135,7 +135,11 @@ async def update_supply_reservation_status(
     body: SupplyReservationStatusUpdate,
     current_user: dict = Depends(get_current_user),
 ) -> SupplyReservationResponse:
-    ensure_any_permission(current_user, _MANAGE_SUPPLY_RESERVATIONS, "No tienes permisos para gestionar reservas de insumos")
+    ensure_any_permission(
+        current_user,
+        _MANAGE_SUPPLY_RESERVATIONS | _TUTORIAL_SUPPLY_RESERVATIONS,
+        "No tienes permisos para gestionar reservas de insumos",
+    )
     new_status = body.status.strip().lower()
     if new_status not in _ALLOWED_STATUSES:
         raise HTTPException(
@@ -225,3 +229,13 @@ def _can_manage(current_user: dict) -> bool:
     if "*" in permissions:
         return True
     return bool(permissions.intersection(_MANAGE_SUPPLY_RESERVATIONS))
+
+
+def _can_manage_tutorial_supplies(current_user: dict) -> bool:
+    role = str(current_user.get("role") or "").strip().lower()
+    if role in {"admin", "administrador"}:
+        return True
+    permissions = set(current_user.get("permissions") or [])
+    if "*" in permissions:
+        return True
+    return bool(permissions.intersection(_TUTORIAL_SUPPLY_RESERVATIONS))
