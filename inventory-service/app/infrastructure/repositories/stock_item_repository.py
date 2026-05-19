@@ -27,6 +27,7 @@ def _to_response(record: dict) -> StockItemResponse:
         description=record.get("description", ""),
         created=record.get("created", ""),
         updated=record.get("updated", ""),
+        limite_reserva_usuario=int(record.get("limite_reserva_usuario")) if record.get("limite_reserva_usuario") is not None and record.get("limite_reserva_usuario") != "" else None,
     )
 
 
