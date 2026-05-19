@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 import logging
@@ -7,6 +8,28 @@ import anyio.to_thread
 from app.api.v1.router import api_router
 from app.core.dependencies import auth_validation_client
 from app.reminders.scheduler import reservation_reminder_scheduler
+
+
+logger = logging.getLogger(__name__)
+
+
+def _warn_if_multi_worker() -> None:
+    raw = os.getenv("WEB_CONCURRENCY") or os.getenv("UVICORN_WORKERS") or "1"
+    try:
+        workers = int(raw)
+    except (TypeError, ValueError):
+        return
+    if workers > 1:
+        logger.critical(
+            "reservation-service detecto %s workers. Los locks por laboratorio, el "
+            "NotificationStore, los recordatorios y el realtime manager son in-proc. "
+            "Con >1 worker hay condiciones de carrera, notificaciones duplicadas y "
+            "perdida de eventos. Usa workers=1 hasta que exista infra distribuida (Redis).",
+            workers,
+        )
+
+
+_warn_if_multi_worker()
 
 
 _THREADPOOL_TOKENS = 200

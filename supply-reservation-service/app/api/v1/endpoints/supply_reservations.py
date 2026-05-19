@@ -1,9 +1,8 @@
-import asyncio
-
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.application.container import stock_item_repo, stock_movement_repo, supply_reservation_repo
 from app.core.dependencies import ensure_any_permission, get_current_user
+from app.core.locks import stock_item_lock_registry
 from app.schemas.supply_reservation import (
     SupplyReservationCreate,
     SupplyReservationResponse,
@@ -18,19 +17,8 @@ _MANAGE_SUPPLY_RESERVATIONS = {"gestionar_reservas_materiales", "gestionar_stock
 
 # Lock por stock_item para serializar la verificacion+descuento al aprobar y
 # evitar que dos aprobaciones simultaneas descuenten dos veces sobre el mismo
-# inventario. Mismo patron que reservation-service usa para reservas de lab.
-_STOCK_ITEM_LOCKS: dict[str, asyncio.Lock] = {}
-_STOCK_ITEM_LOCKS_GUARD = asyncio.Lock()
-
-
-async def _stock_item_lock(stock_item_id: str) -> asyncio.Lock:
-    key = str(stock_item_id or "").strip()
-    async with _STOCK_ITEM_LOCKS_GUARD:
-        lock = _STOCK_ITEM_LOCKS.get(key)
-        if lock is None:
-            lock = asyncio.Lock()
-            _STOCK_ITEM_LOCKS[key] = lock
-        return lock
+# inventario. El registry libera la entrada cuando no quedan waiters.
+# NOTA: solo es correcto con --workers=1 por servicio (lock in-proc).
 
 
 @router.get("", response_model=list[SupplyReservationResponse])
@@ -71,6 +59,18 @@ def create_supply_reservation(
     stock_item = stock_item_repo.get_raw_by_id(body.stock_item_id)
     if stock_item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Insumo no encontrado")
+
+    limit_per_user = stock_item.get("limite_reserva_usuario")
+    if limit_per_user is not None:
+        try:
+            limit_per_user = int(limit_per_user)
+        except (TypeError, ValueError):
+            limit_per_user = None
+    if limit_per_user is not None and limit_per_user > 0 and body.quantity > limit_per_user:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Has superado la cantidad maxima permitida para este insumo",
+        )
 
     item_lab_id = str(stock_item.get("laboratory_id") or "")
     requested_lab_id = str(body.laboratory_id or "").strip()
@@ -156,8 +156,7 @@ async def update_supply_reservation_status(
     notes = existing.notes if body.notes is None else body.notes
     actor = str(current_user.get("username") or current_user.get("user_id") or "sistema")
 
-    lock = await _stock_item_lock(existing.stock_item_id)
-    async with lock:
+    async with stock_item_lock_registry.lock(existing.stock_item_id):
         # Re-leer para tener la cantidad actual correcta tras el lock.
         stock_item = stock_item_repo.get_raw_by_id(existing.stock_item_id)
         if stock_item is None:

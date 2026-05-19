@@ -25,6 +25,16 @@ def _load_env_file() -> None:
 _load_env_file()
 
 
+def _require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value or not value.strip():
+        raise RuntimeError(
+            f"La variable de entorno {name} es obligatoria y no esta definida. "
+            "Configurala antes de iniciar el servicio."
+        )
+    return value.strip()
+
+
 class Settings:
     def __init__(self) -> None:
         self.app_name = os.getenv("RESERVATION_APP_NAME", "LabConnect Reservation Service")
@@ -33,8 +43,12 @@ class Settings:
         self.app_timezone = os.getenv("APP_TIMEZONE", "America/La_Paz").strip() or "America/La_Paz"
         self.auth_service_url = os.getenv("AUTH_SERVICE_URL", "http://127.0.0.1:8101")
         self.inventory_service_url = os.getenv("INVENTORY_SERVICE_URL", "http://127.0.0.1:8003").strip().rstrip("/")
-        self.secret_key = os.getenv("SECRET_KEY", "change-this-secret")
+        self.secret_key = _require_env("SECRET_KEY")
         self.algorithm = os.getenv("JWT_ALGORITHM", os.getenv("ALGORITHM", "HS256"))
+        self.jwt_issuer = os.getenv("JWT_ISSUER", "labconnect-auth").strip() or "labconnect-auth"
+        self.jwt_audience = os.getenv("JWT_AUDIENCE", "labconnect").strip() or "labconnect"
+        self.token_cache_ttl_seconds = float(os.getenv("TOKEN_CACHE_TTL_SECONDS", "30"))
+        self.token_cache_max_entries = int(os.getenv("TOKEN_CACHE_MAX_ENTRIES", "5000"))
         self.data_mode = os.getenv("DATA_MODE", "pocketbase").strip().lower() or "pocketbase"
         self.local_data_namespace = os.getenv("LOCAL_DATA_NAMESPACE", "labconnect").strip() or "labconnect"
         self.postgres_url = os.getenv(
@@ -59,6 +73,10 @@ class Settings:
         self.pb_tutorial_observation_collection = os.getenv(
             "POCKETBASE_TUTORIAL_OBSERVATION_COLLECTION",
             "tutorial_session_observation",
+        )
+        self.pb_tutorial_attendance_collection = os.getenv(
+            "POCKETBASE_TUTORIAL_ATTENDANCE_COLLECTION",
+            "tutorial_session_attendance",
         )
         self.pb_penalty_collection = os.getenv("POCKETBASE_PENALTY_COLLECTION", "user_penalty")
         self.pb_penalty_reactivation_history_collection = os.getenv(

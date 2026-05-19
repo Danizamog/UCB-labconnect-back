@@ -12,6 +12,7 @@ class StockReportItem(BaseModel):
     laboratory_name: str | None = None
     quantity_available: int
     minimum_stock: int
+    stock_gap: int = 0
     status: str  # out_of_stock | low_stock | ok
 
 

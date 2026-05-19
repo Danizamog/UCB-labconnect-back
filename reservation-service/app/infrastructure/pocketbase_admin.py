@@ -10,6 +10,32 @@ from app.infrastructure.local_pocketbase import LocalPocketBaseFallback
 
 
 class PocketBaseAdminClient:
+    @staticmethod
+    def _merge_collection_fields(existing_fields: list[dict[str, Any]], fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged_by_name: dict[str, dict[str, Any]] = {}
+        ordered_names: list[str] = []
+
+        for field in existing_fields:
+            if not isinstance(field, dict):
+                continue
+            name = str(field.get("name") or "").strip()
+            if not name:
+                continue
+            merged_by_name[name] = field
+            ordered_names.append(name)
+
+        for field in fields:
+            if not isinstance(field, dict):
+                continue
+            name = str(field.get("name") or "").strip()
+            if not name:
+                continue
+            if name not in merged_by_name:
+                ordered_names.append(name)
+            merged_by_name[name] = {**merged_by_name.get(name, {}), **field}
+
+        return [merged_by_name[name] for name in ordered_names if name in merged_by_name]
+
     def __init__(
         self,
         *,
@@ -132,7 +158,9 @@ class PocketBaseAdminClient:
         existing = self.get_collection(collection_name)
         if existing:
             collection_id = existing.get("id") or collection_name
-            self._request("PATCH", f"{self._base_url}/api/collections/{collection_id}", json={"fields": fields})
+            existing_fields = existing.get("fields") if isinstance(existing.get("fields"), list) else []
+            merged_fields = self._merge_collection_fields(existing_fields, fields)
+            self._request("PATCH", f"{self._base_url}/api/collections/{collection_id}", json={"fields": merged_fields})
             return
 
         self._request(

@@ -25,10 +25,22 @@ def _load_env_file() -> None:
 _load_env_file()
 
 
+def _require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value or not value.strip():
+        raise RuntimeError(
+            f"La variable de entorno {name} es obligatoria y no esta definida. "
+            "Configurala antes de iniciar el servicio."
+        )
+    return value.strip()
+
+
 class Settings:
-    secret_key: str = os.getenv("SECRET_KEY")
+    secret_key: str = _require_env("SECRET_KEY")
     algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
     token_expire_minutes: int = int(os.getenv("TOKEN_EXPIRE_MINUTES", "60"))
+    jwt_issuer: str = os.getenv("JWT_ISSUER", "labconnect-auth").strip() or "labconnect-auth"
+    jwt_audience: str = os.getenv("JWT_AUDIENCE", "labconnect").strip() or "labconnect"
     institutional_email_domain: str = os.getenv("INSTITUTIONAL_EMAIL_DOMAIN", "@ucb.edu.bo").lower()
     institutional_sso_provider: str = os.getenv("INSTITUTIONAL_SSO_PROVIDER", "google_oidc" if os.getenv("GOOGLE_CLIENT_ID", "").strip() else "").strip()
     institutional_sso_button_label: str = os.getenv("INSTITUTIONAL_SSO_BUTTON_LABEL", "Continuar con cuenta institucional")
