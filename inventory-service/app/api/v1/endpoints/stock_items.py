@@ -6,7 +6,7 @@ from app.application.container import stock_item_repo, stock_movement_repo
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.core.laboratory_access import is_lab_in_scope, resolve_accessible_lab_ids
 from app.core.locks import stock_item_lock_registry
-from app.schemas.stock_item import StockItemCreate, StockItemResponse, StockItemUpdate
+from app.schemas.stock_item import StockItemCreate, StockItemResponse, StockItemUpdate, StockItemQuantityUpdate
 
 
 def _extract_pocketbase_error(exc: Exception) -> str:
@@ -130,7 +130,7 @@ def create_movement(
     body: StockMovementCreate,
     current_user: dict = Depends(get_current_user),
 ) -> StockMovementResponse:
-    ensure_any_permission(current_user, _MOVE_STOCK, "No tienes permisos para registrar movimientos de stock")
+    print(f"[DEBUG] create_movement called for {item_id} with body: {body.model_dump()}")
     if body.quantity <= 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -150,6 +150,15 @@ def create_movement(
             change = body.quantity
         else:
             change = -body.quantity
+            # Validar limite_reserva_usuario si es consumo
+            if body.movement_type == "consumption":
+                limit = item.limite_reserva_usuario
+                if limit is not None and limit > 0 and body.quantity > limit:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Has superado la cantidad maxima permitida ({limit}) para este insumo",
+                    )
+
             if item.quantity_available + change < 0:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -158,7 +167,6 @@ def create_movement(
                         f"solicitado: {body.quantity}."
                     ),
                 )
-
         new_qty = item.quantity_available + change
         updated_item = stock_item_repo.update(item_id, StockItemUpdate(quantity_available=new_qty))
         if updated_item is None:
@@ -221,6 +229,7 @@ def get_stock_item(item_id: str, current_user: dict = Depends(get_current_user))
 
 @router.post("", response_model=StockItemResponse, status_code=status.HTTP_201_CREATED)
 def create_stock_item(body: StockItemCreate, current_user: dict = Depends(get_current_user)) -> StockItemResponse:
+    print(f"[DEBUG] Endpoint create_stock_item received body: {body.model_dump()}")
     ensure_any_permission(current_user, _MANAGE_STOCK, "No tienes permisos para registrar materiales")
     accessible = resolve_accessible_lab_ids(current_user)
     if not is_lab_in_scope(body.laboratory_id, accessible):
@@ -231,15 +240,32 @@ def create_stock_item(body: StockItemCreate, current_user: dict = Depends(get_cu
 @router.patch("/{item_id}", response_model=StockItemResponse)
 @router.put("/{item_id}", response_model=StockItemResponse)
 def update_stock_item(item_id: str, body: StockItemUpdate, current_user: dict = Depends(get_current_user)) -> StockItemResponse:
+    print(f"[DEBUG] update_stock_item called for {item_id}. Body: {body.model_dump()}")
     ensure_any_permission(current_user, _MANAGE_STOCK, "No tienes permisos para modificar materiales")
     accessible = resolve_accessible_lab_ids(current_user)
     existing = stock_item_repo.get_by_id(item_id)
     if existing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+    
+    print(f"[DEBUG] Existing stock: {existing.quantity_available}, Limit: {existing.limite_reserva_usuario}")
+    
+    # Validar limite_reserva_usuario si se está actualizando la cantidad
+    if body.quantity_available is not None and existing.limite_reserva_usuario is not None and existing.limite_reserva_usuario > 0:
+        if body.quantity_available < existing.quantity_available:
+            cantidad_a_consumir = existing.quantity_available - body.quantity_available
+            print(f"[DEBUG] Consumiendo {cantidad_a_consumir}. Limit: {existing.limite_reserva_usuario}")
+            if cantidad_a_consumir > existing.limite_reserva_usuario:
+                print(f"[DEBUG] Validation failed! Consumed {cantidad_a_consumir} > {existing.limite_reserva_usuario}")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Has superado la cantidad maxima permitida ({existing.limite_reserva_usuario}) para este insumo",
+                )
+    
     if not is_lab_in_scope(existing.laboratory_id, accessible):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
     if body.laboratory_id is not None and not is_lab_in_scope(body.laboratory_id, accessible):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_OUT_OF_SCOPE_LAB_DETAIL)
+    
     item = stock_item_repo.update(item_id, body)
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
@@ -247,18 +273,15 @@ def update_stock_item(item_id: str, body: StockItemUpdate, current_user: dict = 
 
 
 @router.patch("/{item_id}/quantity", response_model=StockItemResponse)
-def update_stock_item_quantity(item_id: str, body: dict, current_user: dict = Depends(get_current_user)) -> StockItemResponse:
+def update_stock_item_quantity(
+    item_id: str,
+    body: StockItemQuantityUpdate,
+    current_user: dict = Depends(get_current_user),
+) -> StockItemResponse:
+    print(f"[DEBUG] update_stock_item_quantity called for {item_id} with body: {body.model_dump()}")
     ensure_any_permission(current_user, _MOVE_STOCK, "No tienes permisos para ajustar cantidades de stock")
+    
     accessible = resolve_accessible_lab_ids(current_user)
-    qty_raw = body.get("quantity_available")
-    if qty_raw is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Se requiere quantity_available")
-    try:
-        qty = int(qty_raw)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="quantity_available debe ser entero") from None
-    if qty < 0:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="quantity_available no puede ser negativo")
 
     with stock_item_lock_registry.lock(item_id):
         existing = stock_item_repo.get_by_id_fresh(item_id)
@@ -266,7 +289,19 @@ def update_stock_item_quantity(item_id: str, body: dict, current_user: dict = De
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
         if not is_lab_in_scope(existing.laboratory_id, accessible):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
-        item = stock_item_repo.update(item_id, StockItemUpdate(quantity_available=qty))
+            
+        # Validación estricta del límite
+        if existing.limite_reserva_usuario is not None and existing.limite_reserva_usuario > 0:
+            # Si la nueva cantidad es menor que la actual, estamos "consumiendo"
+            if body.quantity_available < existing.quantity_available:
+                cantidad_a_consumir = existing.quantity_available - body.quantity_available
+                if cantidad_a_consumir > existing.limite_reserva_usuario:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Has superado la cantidad maxima permitida ({existing.limite_reserva_usuario}) para este insumo",
+                    )
+                
+        item = stock_item_repo.update(item_id, StockItemUpdate(quantity_available=body.quantity_available))
         if item is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
     return item

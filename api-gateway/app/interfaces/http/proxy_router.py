@@ -84,6 +84,25 @@ async def proxy_roles_root(request: Request) -> Response:
     return await forward_request(target_url, request)
 
 
+# Users - Role Service
+@router.api_route(
+    "/api/v1/users/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_role_service_users_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.role_service_url}/v1/roles/users/{path}"
+    return await forward_request(target_url, request)
+
+
+@router.api_route(
+    "/api/v1/users",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_role_service_users_root(request: Request) -> Response:
+    target_url = f"{settings.role_service_url}/v1/roles/users/"
+    return await forward_request(target_url, request)
+
+
 # Inventory Service - Assets & Stock items (infrastructureService, reservationsApi)
 @router.api_route(
     "/api/inventory/{path:path}",

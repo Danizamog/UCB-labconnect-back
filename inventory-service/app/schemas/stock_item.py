@@ -10,6 +10,7 @@ class StockItemCreate(BaseModel):
     minimum_stock: int = 0
     laboratory_id: str = ""
     description: str = ""
+    limite_reserva_usuario: int | None = None
 
 
 class StockItemUpdate(BaseModel):
@@ -20,6 +21,11 @@ class StockItemUpdate(BaseModel):
     minimum_stock: int | None = None
     laboratory_id: str | None = None
     description: str | None = None
+    limite_reserva_usuario: int | None = None
+
+
+class StockItemQuantityUpdate(BaseModel):
+    quantity_available: int
 
 
 class StockItemResponse(BaseModel):
@@ -32,5 +38,6 @@ class StockItemResponse(BaseModel):
     laboratory_id: str
     laboratory_name: str | None = None
     description: str
+    limite_reserva_usuario: int | None = None
     created: str
     updated: str

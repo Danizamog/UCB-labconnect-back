@@ -54,7 +54,7 @@ def assign_role_to_user(
 ):
     ensure_any_permission(current_user, {"gestionar_roles_permisos"}, "No autorizado para asignar roles")
     try:
-        return manage_roles_use_case.assign_user_role(user_id=user_id, role_id=payload.roleId)
+        return manage_roles_use_case.assign_user_role(user_id=user_id, role_name=payload.roleId)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except LookupError as exc:

@@ -313,11 +313,24 @@ class PocketBaseRoleRepository:
                 f"{self._users_endpoint()}/{user_id}",
                 json={"role": role_id or None},
             )
+            
             payload = self._request(
                 "GET",
                 f"{self._users_endpoint()}/{user_id}",
                 params={"expand": "role"},
             )
+            
+            # Fallback: si expand falló pero tenemos un role_id, lo buscamos manualmente
+            if payload and isinstance(payload, dict) and not payload.get("expand") and payload.get("role"):
+                r = self.get_by_id(payload["role"])
+                if r:
+                    payload["expand"] = {"role": {
+                        "id": r.id,
+                        "nombre": r.nombre,
+                        "descripcion": r.descripcion,
+                        "permisos": r.permisos
+                    }}
+                    
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return None

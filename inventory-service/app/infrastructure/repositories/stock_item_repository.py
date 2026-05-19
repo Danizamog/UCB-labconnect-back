@@ -15,6 +15,8 @@ def _to_response(record: dict) -> StockItemResponse:
         if isinstance(lab_record, dict):
             laboratory_name = lab_record.get("name") or None
 
+    print(f"[DEBUG] Mapping record {record.get('id')} - limite_reserva_usuario: {record.get('limite_reserva_usuario')}")
+    
     return StockItemResponse(
         id=record.get("id", ""),
         name=record.get("name", ""),
@@ -25,6 +27,7 @@ def _to_response(record: dict) -> StockItemResponse:
         laboratory_id=record.get("laboratory_id", ""),
         laboratory_name=laboratory_name,
         description=record.get("description", ""),
+        limite_reserva_usuario=record.get("limite_reserva_usuario"),
         created=record.get("created", ""),
         updated=record.get("updated", ""),
     )
@@ -167,6 +170,7 @@ class StockItemRepository:
 
     def create(self, body: StockItemCreate) -> StockItemResponse:
         payload = body.model_dump()
+        print(f"[DEBUG] Creating StockItem with payload: {payload}")
         data = self._client.request("POST", self._base, payload=payload, params={"expand": "laboratory_id"})
         if not isinstance(data, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al crear el stock item")
@@ -178,6 +182,7 @@ class StockItemRepository:
         if existing is None:
             return None
         payload = {k: v for k, v in body.model_dump().items() if v is not None}
+        print(f"[DEBUG] Updating StockItem {item_id} with payload: {payload}")
         data = self._client.request("PATCH", f"{self._base}/{item_id}", payload=payload, params={"expand": "laboratory_id"})
         if not isinstance(data, dict):
             raise ValueError("PocketBase devolvio una respuesta invalida al actualizar el stock item")

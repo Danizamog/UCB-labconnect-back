@@ -16,6 +16,7 @@ class StockItemRepository:
                 f"{self._base}/{item_id}",
                 params={"expand": "laboratory_id"},
             )
+            print(f"[DEBUG SUPPLY-RESERVATION] Fetching item {item_id}: {data}")
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return None
