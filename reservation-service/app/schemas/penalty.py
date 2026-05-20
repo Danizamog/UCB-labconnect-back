@@ -127,3 +127,11 @@ class PenaltyReactivationResponse(BaseModel):
 class PenaltyListResponse(BaseModel):
     items: list[PenaltyResponse] = Field(default_factory=list)
 
+
+class PaginatedPenaltyResponse(BaseModel):
+    items: list[PenaltyResponse] = Field(default_factory=list)
+    total_pages: int
+    total_items: int
+    page: int
+    per_page: int
+

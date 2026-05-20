@@ -116,6 +116,38 @@ class PenaltyStore:
         status, is_active = _build_status(record)
         return record.model_copy(update={"status": status, "is_active": is_active})
 
+    def list_page(self, *, page: int = 1, per_page: int = 20, sort: str = "-created", filter_expr: str | None = None) -> dict:
+        params: dict[str, str | int] = {"page": page, "perPage": per_page}
+        if sort:
+            params["sort"] = sort
+        if filter_expr:
+            params["filter"] = filter_expr
+
+        try:
+            data = self._client.request("GET", self._base, params=params)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 400 and sort:
+                fallback_params: dict[str, str | int] = {"page": page, "perPage": per_page}
+                if filter_expr:
+                    fallback_params["filter"] = filter_expr
+                data = self._client.request("GET", self._base, params=fallback_params)
+            else:
+                raise
+
+        if not isinstance(data, dict):
+            return {"items": [], "total_pages": 1, "total_items": 0, "page": page, "per_page": per_page}
+
+        records = data.get("items", [])
+        items = [self._hydrate(self._to_response(record)) for record in records if isinstance(record, dict)]
+        
+        return {
+            "items": items,
+            "total_pages": int(data.get("totalPages", 1)),
+            "total_items": int(data.get("totalItems", len(items))),
+            "page": int(data.get("page", page)),
+            "per_page": int(data.get("perPage", per_page)),
+        }
+
     def list_all(self) -> list[PenaltyResponse]:
         records = self._list_records()
         items = [self._hydrate(self._to_response(record)) for record in records]

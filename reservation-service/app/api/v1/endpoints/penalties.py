@@ -21,6 +21,7 @@ from app.core.dependencies import ensure_any_permission, get_current_user
 from app.notifications.store import notification_store
 from app.realtime.manager import realtime_manager
 from app.schemas.penalty import (
+    PaginatedPenaltyResponse,
     PenaltyCreate,
     PenaltyLiftRequest,
     PenaltyLiftResponse,
@@ -349,16 +350,27 @@ async def _execute_reactivation(
     )
 
 
-@router.get("", response_model=list[PenaltyResponse])
+@router.get("", response_model=PaginatedPenaltyResponse | list[PenaltyResponse])
 def list_penalties(
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=100),
+    sort: str = Query(default="-created"),
     active_only: bool = Query(default=False),
+    paginate: bool = Query(default=False),
     current_user: dict = Depends(get_current_user),
-) -> list[PenaltyResponse]:
+) -> dict | list[PenaltyResponse]:
     ensure_any_permission(
         current_user,
         _VIEW_PENALTIES,
         "No tienes permisos para consultar el listado de penalizaciones",
     )
+    if paginate:
+        filter_expr = None
+        if active_only:
+            now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            filter_expr = f"lifted_at='' && starts_at<='{now}' && ends_at>'{now}'"
+        return user_penalty_repo.list_page(page=page, per_page=per_page, sort=sort, filter_expr=filter_expr)
+        
     items = user_penalty_repo.list_all()
     if active_only:
         items = [item for item in items if item.is_active]
