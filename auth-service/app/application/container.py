@@ -3,9 +3,12 @@ from app.application.use_cases.login_with_google import LoginWithGoogle
 from app.application.use_cases.register_user import RegisterUser
 from app.application.use_cases.validate_token import ValidateToken
 from app.core.config import settings
+from app.infrastructure.cache import TTLCache
 from app.infrastructure.google.google_identity import GoogleIdentityTokenVerifier
 from app.infrastructure.repositories.in_memory_user_repository import InMemoryUserRepository
 from app.infrastructure.repositories.pocketbase_user_repository import PocketBaseUserRepository
+
+_SESSION_CACHE_TTL_SECONDS = 30.0
 
 
 def _build_user_repository() -> InMemoryUserRepository | PocketBaseUserRepository:
@@ -23,6 +26,7 @@ def _build_user_repository() -> InMemoryUserRepository | PocketBaseUserRepositor
 
 
 user_repository = _build_user_repository()
+session_cache: TTLCache[dict] = TTLCache(_SESSION_CACHE_TTL_SECONDS)
 
 register_user_use_case = RegisterUser(repository=user_repository)
 login_user_use_case = LoginUser(repository=user_repository)

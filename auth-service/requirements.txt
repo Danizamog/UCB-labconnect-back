@@ -1,8 +1,7 @@
 fastapi==0.116.1
 uvicorn==0.35.0
 python-jose[cryptography]==3.5.0
-passlib[bcrypt]==1.7.4
-bcrypt==4.0.1
+passlib==1.7.4
 httpx==0.28.1
 google-auth==2.35.0
 requests==2.32.3

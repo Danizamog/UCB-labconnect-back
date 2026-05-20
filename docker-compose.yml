@@ -27,8 +27,6 @@ services:
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
       - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
       - POCKETBASE_RETRY_SECONDS=${POCKETBASE_RETRY_SECONDS:-60}
-      - DATA_MODE=${DATA_MODE:-pocketbase}
-      - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2)"]
       interval: 3s
@@ -50,8 +48,6 @@ services:
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
       - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
       - POCKETBASE_RETRY_SECONDS=${POCKETBASE_RETRY_SECONDS:-60}
-      - DATA_MODE=${DATA_MODE:-pocketbase}
-      - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=2)"]
       interval: 3s
@@ -76,8 +72,6 @@ services:
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
       - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
       - POCKETBASE_RETRY_SECONDS=${POCKETBASE_RETRY_SECONDS:-60}
-      - DATA_MODE=${DATA_MODE:-pocketbase}
-      - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health', timeout=2)"]
       interval: 10s
@@ -103,9 +97,6 @@ services:
       - POCKETBASE_USERS_COLLECTION=${POCKETBASE_USERS_COLLECTION:-users}
       - POCKETBASE_RETRY_SECONDS=${POCKETBASE_RETRY_SECONDS:-60}
       - TUTORIAL_SESSIONS_STORAGE_PATH=/app/data/tutorial_sessions.json
-      - DATA_MODE=${DATA_MODE:-pocketbase}
-      - LOCAL_DATA_NAMESPACE=${LOCAL_DATA_NAMESPACE:-labconnect}
-      - POSTGRES_URL=${POSTGRES_URL:-postgresql://labconnect:labconnect@labconnect-postgres:5432/labconnect}
       - SMTP_HOST=mailpit
       - SMTP_PORT=1025
       - SMTP_SENDER=${SMTP_SENDER:-labconnect@ucb.edu.bo}

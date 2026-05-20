@@ -35,13 +35,20 @@ def _require_env(name: str) -> str:
     return value.strip()
 
 
+def _normalize_email_domain(raw: str) -> str:
+    domain = raw.strip().lower().lstrip("@")
+    return f"@{domain}" if domain else ""
+
+
 class Settings:
     secret_key: str = _require_env("SECRET_KEY")
     algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
     token_expire_minutes: int = int(os.getenv("TOKEN_EXPIRE_MINUTES", "60"))
     jwt_issuer: str = os.getenv("JWT_ISSUER", "labconnect-auth").strip() or "labconnect-auth"
     jwt_audience: str = os.getenv("JWT_AUDIENCE", "labconnect").strip() or "labconnect"
-    institutional_email_domain: str = os.getenv("INSTITUTIONAL_EMAIL_DOMAIN", "@ucb.edu.bo").lower()
+    institutional_email_domain: str = _normalize_email_domain(
+        os.getenv("INSTITUTIONAL_EMAIL_DOMAIN", "@ucb.edu.bo")
+    )
     institutional_sso_provider: str = os.getenv("INSTITUTIONAL_SSO_PROVIDER", "google_oidc" if os.getenv("GOOGLE_CLIENT_ID", "").strip() else "").strip()
     institutional_sso_button_label: str = os.getenv("INSTITUTIONAL_SSO_BUTTON_LABEL", "Continuar con cuenta institucional")
     google_client_id: str = os.getenv("GOOGLE_CLIENT_ID", "")

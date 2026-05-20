@@ -49,12 +49,6 @@ class Settings:
         self.jwt_audience = os.getenv("JWT_AUDIENCE", "labconnect").strip() or "labconnect"
         self.token_cache_ttl_seconds = float(os.getenv("TOKEN_CACHE_TTL_SECONDS", "30"))
         self.token_cache_max_entries = int(os.getenv("TOKEN_CACHE_MAX_ENTRIES", "5000"))
-        self.data_mode = os.getenv("DATA_MODE", "pocketbase").strip().lower() or "pocketbase"
-        self.local_data_namespace = os.getenv("LOCAL_DATA_NAMESPACE", "labconnect").strip() or "labconnect"
-        self.postgres_url = os.getenv(
-            "POSTGRES_URL",
-            os.getenv("DATABASE_URL", "postgresql://labconnect:labconnect@labconnect-postgres:5432/labconnect"),
-        ).strip()
         self.pocketbase_url = os.getenv("POCKETBASE_URL", "").rstrip("/")
         self.pocketbase_auth_identity = os.getenv("POCKETBASE_AUTH_IDENTITY")
         self.pocketbase_auth_password = os.getenv("POCKETBASE_AUTH_PASSWORD")

@@ -4,6 +4,9 @@ from urllib.parse import urlencode
 import httpx
 
 from app.domain.entities.user import User
+from app.infrastructure.cache import TTLCache
+
+_ROLE_CACHE_TTL_SECONDS = 300.0
 
 
 class PocketBaseUserRepository:
@@ -27,7 +30,7 @@ class PocketBaseUserRepository:
         self._auth_collection = auth_collection
         self._auth_token = auth_token
         self._supported_fields: set[str] | None = None
-        self._role_id_cache: dict[str, str] = {}
+        self._role_id_cache: TTLCache[str] = TTLCache(_ROLE_CACHE_TTL_SECONDS)
         self._client = httpx.Client(
             timeout=httpx.Timeout(self._timeout, connect=min(self._timeout, 5.0)),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
@@ -234,8 +237,9 @@ class PocketBaseUserRepository:
             return None
 
         cache_key = normalized.lower()
-        if cache_key in self._role_id_cache:
-            return self._role_id_cache[cache_key] or None
+        cached = self._role_id_cache.get(cache_key)
+        if cached is not None:
+            return cached or None
 
         self._ensure_authenticated()
         roles_url = f"{self._base_url}/api/collections/{self._roles_collection}/records"
@@ -251,7 +255,7 @@ class PocketBaseUserRepository:
             payload = self._request("GET", f"{roles_url}?{params}")
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in {400, 404}:
-                self._role_id_cache[cache_key] = ""
+                self._role_id_cache.set(cache_key, "")
                 return None
             raise
         except httpx.RequestError:
@@ -267,7 +271,7 @@ class PocketBaseUserRepository:
                     if isinstance(raw_id, str):
                         role_id = raw_id.strip()
 
-        self._role_id_cache[cache_key] = role_id
+        self._role_id_cache.set(cache_key, role_id)
         return role_id or None
 
     def _build_payload(self, user: User, password: str | None = None) -> dict:
@@ -323,7 +327,7 @@ class PocketBaseUserRepository:
             params = urlencode(
                 {
                     "page": page,
-                    "perPage": 200,
+                    "perPage": 500,
                     "expand": "role",
                     "sort": "-created",
                 }
@@ -344,6 +348,29 @@ class PocketBaseUserRepository:
             page += 1
 
         return users
+
+    def list_paginated(self, page: int, per_page: int) -> tuple[list[User], int]:
+        self._ensure_authenticated()
+
+        safe_page = max(1, page)
+        safe_per_page = max(1, min(per_page, 500))
+
+        params = urlencode(
+            {
+                "page": safe_page,
+                "perPage": safe_per_page,
+                "expand": "role",
+                "sort": "-created",
+            }
+        )
+        payload = self._request("GET", f"{self._records_endpoint()}?{params}")
+        if not isinstance(payload, dict):
+            return [], 0
+
+        items = payload.get("items", []) or []
+        users = [self._to_user(item) for item in items if isinstance(item, dict)]
+        total = int(payload.get("totalItems", len(users)))
+        return users, total
 
     def get_by_username(self, username: str) -> User | None:
         normalized_username = username.strip().lower()

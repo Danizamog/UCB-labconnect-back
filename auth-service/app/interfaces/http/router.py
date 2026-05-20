@@ -4,6 +4,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.application.container import (
     login_user_use_case,
     login_with_google_use_case,
+    session_cache,
     user_repository,
     validate_token_use_case,
 )
@@ -111,6 +112,16 @@ def _build_live_session_payload(payload: dict) -> dict:
             detail="Token invalido o expirado",
         )
 
+    cached = session_cache.get(subject)
+    if cached is not None:
+        return {
+            **cached,
+            "picture": payload.get("picture"),
+            "auth_provider": payload.get("auth_provider"),
+            "google_sub": payload.get("google_sub"),
+            "exp": payload.get("exp"),
+        }
+
     user = user_repository.get_by_username(subject)
     if not user or not user.is_active:
         raise HTTPException(
@@ -121,7 +132,7 @@ def _build_live_session_payload(payload: dict) -> dict:
     role = user.role or "user"
     permissions = sorted(set(user.permissions))
 
-    return {
+    base_session = {
         "sub": user.username,
         "subject": user.username,
         "user_id": user.id,
@@ -129,11 +140,16 @@ def _build_live_session_payload(payload: dict) -> dict:
         "name": user.name,
         "email": user.username,
         "permissions": permissions,
+        "valid": True,
+    }
+    session_cache.set(subject, base_session)
+
+    return {
+        **base_session,
         "picture": payload.get("picture"),
         "auth_provider": payload.get("auth_provider"),
         "google_sub": payload.get("google_sub"),
         "exp": payload.get("exp"),
-        "valid": True,
     }
 
 
@@ -219,14 +235,6 @@ def _ensure_profile_update_permissions(
     )
 
 
-@auth_router.post("/register", status_code=status.HTTP_201_CREATED)
-def register() -> dict:
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="El registro directo no esta habilitado en este entorno",
-    )
-
-
 @auth_router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest) -> TokenResponse:
     try:
@@ -298,8 +306,15 @@ def validate_token(
 
 
 @users_router.get("/", response_model=list[UserProfileResponse])
-def list_users(_: dict = Depends(_require_user_directory_reader)) -> list[UserProfileResponse]:
-    return [_to_user_response(user) for user in user_repository.list_all()]
+def list_users(
+    page: int = 1,
+    per_page: int = 100,
+    _: dict = Depends(_require_user_directory_reader),
+) -> list[UserProfileResponse]:
+    safe_per_page = max(1, min(per_page, 500))
+    safe_page = max(1, page)
+    users, _total = user_repository.list_paginated(safe_page, safe_per_page)
+    return [_to_user_response(user) for user in users]
 
 
 @users_router.get("/{user_id}", response_model=UserProfileResponse)
@@ -340,6 +355,7 @@ def create_user_profile(
         ),
         payload.password,
     )
+    session_cache.invalidate(user.username)
     return _to_user_response(user)
 
 
@@ -403,6 +419,9 @@ def update_user_profile(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    session_cache.invalidate(existing_user.username)
+    if saved_user.username != existing_user.username:
+        session_cache.invalidate(saved_user.username)
     return _to_user_response(saved_user)
 
 

@@ -15,6 +15,14 @@ class InMemoryUserRepository:
     def list_all(self) -> list[User]:
         return list(self._data.values())
 
+    def list_paginated(self, page: int, per_page: int) -> tuple[list[User], int]:
+        all_users = list(self._data.values())
+        safe_page = max(1, page)
+        safe_per_page = max(1, per_page)
+        start = (safe_page - 1) * safe_per_page
+        end = start + safe_per_page
+        return all_users[start:end], len(all_users)
+
     def get_by_username(self, username: str) -> User | None:
         return self._data.get(username)
 
