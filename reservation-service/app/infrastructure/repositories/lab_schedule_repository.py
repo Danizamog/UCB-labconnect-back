@@ -70,6 +70,14 @@ class LabScheduleRepository:
         filter_expr = f'laboratory_id="{_escape_filter_value(normalized_laboratory_id)}"'
         return self._list_with_filter(filter_expr)
 
+    def list_all_active(self) -> list[LabScheduleResponse]:
+        """Trae todos los horarios activos en un solo round-trip.
+
+        Usado por analytics para evitar N x M queries cuando se calcula la
+        ocupacion semanal/mensual por laboratorio.
+        """
+        return self._list_with_filter("is_active=true", sort="laboratory_id,weekday,start_time")
+
     def list_all(self, page: int = 1, per_page: int = 200) -> list[LabScheduleResponse]:
         items: list[LabScheduleResponse] = []
         current_page = page

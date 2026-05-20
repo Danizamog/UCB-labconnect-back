@@ -13,16 +13,18 @@ router = APIRouter(prefix="/lab-schedules", tags=["lab-schedules"])
 
 
 @router.get("", response_model=list[LabScheduleResponse])
-def list_schedules(
+async def list_schedules(
     laboratory_id: str | None = Query(default=None),
     weekday: int | None = Query(default=None, ge=0, le=6),
     _: dict = Depends(get_current_user),
 ) -> list[LabScheduleResponse]:
     if laboratory_id and weekday is not None:
-        return lab_schedule_repo.list_active_for_laboratory_weekday(laboratory_id, weekday)
+        return await asyncio.to_thread(
+            lab_schedule_repo.list_active_for_laboratory_weekday, laboratory_id, weekday
+        )
     if laboratory_id:
-        return lab_schedule_repo.list_for_laboratory(laboratory_id)
-    return lab_schedule_repo.list_all()
+        return await asyncio.to_thread(lab_schedule_repo.list_for_laboratory, laboratory_id)
+    return await asyncio.to_thread(lab_schedule_repo.list_all)
 
 
 @router.post("", response_model=LabScheduleResponse, status_code=status.HTTP_201_CREATED)

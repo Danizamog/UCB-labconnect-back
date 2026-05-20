@@ -6,6 +6,7 @@ import logging
 import anyio.to_thread
 
 from app.api.v1.router import api_router
+from app.api.v1.endpoints.penalties import _penalty_http_client
 from app.core.dependencies import auth_validation_client
 from app.reminders.scheduler import reservation_reminder_scheduler
 
@@ -53,6 +54,7 @@ async def lifespan(_app: FastAPI):
     finally:
         await reservation_reminder_scheduler.stop()
         auth_validation_client.close()
+        await _penalty_http_client.aclose()
 
 
 app = FastAPI(title="LabConnect Reservation Service", version="1.0.0", lifespan=lifespan)

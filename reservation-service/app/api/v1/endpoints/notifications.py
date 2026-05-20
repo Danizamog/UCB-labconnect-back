@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -109,12 +110,7 @@ def _is_valid_reminder_notification(notification: UserNotificationResponse) -> b
     return _validate_tutorial_reminder(notification, payload, start_at)
 
 
-@router.get("/mine", response_model=list[UserNotificationResponse])
-def list_my_notifications(current_user: dict = Depends(get_current_user)) -> list[UserNotificationResponse]:
-    buckets = _notification_buckets_for_user(current_user)
-    if not buckets:
-        return []
-
+def _collect_valid_notifications(buckets: list[str]) -> list[UserNotificationResponse]:
     notifications: list[UserNotificationResponse] = []
     seen_ids: set[str] = set()
     for bucket in buckets:
@@ -125,8 +121,18 @@ def list_my_notifications(current_user: dict = Depends(get_current_user)) -> lis
                 continue
             seen_ids.add(notification.id)
             notifications.append(notification)
-
     return sorted(notifications, key=lambda item: item.created_at, reverse=True)
+
+
+@router.get("/mine", response_model=list[UserNotificationResponse])
+async def list_my_notifications(current_user: dict = Depends(get_current_user)) -> list[UserNotificationResponse]:
+    buckets = _notification_buckets_for_user(current_user)
+    if not buckets:
+        return []
+
+    # _is_valid_reminder_notification puede hacer queries a PocketBase para validar
+    # reservas/tutorias activas; ejecutar en threadpool para no bloquear el event loop.
+    return await asyncio.to_thread(_collect_valid_notifications, buckets)
 
 
 @router.patch("/{notification_id}/read", response_model=UserNotificationResponse)

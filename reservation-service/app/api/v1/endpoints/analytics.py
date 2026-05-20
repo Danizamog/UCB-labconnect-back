@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections import defaultdict
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+logger = logging.getLogger(__name__)
 
 from app.application.container import lab_block_repo, lab_reservation_repo, lab_schedule_repo, laboratory_access_repo
 from app.core.datetime_utils import combine_date_time, iter_lab_blocks, now_local_naive, parse_datetime
@@ -68,7 +72,7 @@ def _lab_sort_key(item: LaboratoryUsageStats) -> tuple[float, int, int, str]:
 
 
 @router.get("/laboratory-usage", response_model=LaboratoryUsageAnalyticsResponse)
-def get_laboratory_usage_analytics(
+async def get_laboratory_usage_analytics(
     period: str = Query(default="daily"),
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
@@ -89,19 +93,35 @@ def get_laboratory_usage_analytics(
     window_start_iso = combine_date_time(s_date, "00:00").isoformat()
     window_end_iso = combine_date_time(e_date + timedelta(days=1), "00:00").isoformat()
 
-    laboratories = [
-        lab for lab in laboratory_access_repo.list_all()
-        if bool(lab.get("is_active", True))
-    ]
-    active_blocks = lab_block_repo.list_active_in_window(
-        start_from=window_start_iso,
-        end_to=window_end_iso,
+    # Las cinco consultas pegan a colecciones distintas en PocketBase; paralelizar
+    # reduce la latencia total al maximo round-trip individual. Y pre-cargar todos
+    # los lab_schedule activos elimina el patron N x M dentro del bucle de labs/dias.
+    laboratories_raw, active_blocks, reservations, all_schedules, all_demand_reservations = await asyncio.gather(
+        asyncio.to_thread(laboratory_access_repo.list_all),
+        asyncio.to_thread(
+            lab_block_repo.list_active_in_window,
+            start_from=window_start_iso,
+            end_to=window_end_iso,
+        ),
+        asyncio.to_thread(
+            lab_reservation_repo.list_in_window_by_statuses,
+            statuses=list(_COUNTED_RESERVATION_STATUSES),
+            start_from=window_start_iso,
+            end_to=window_end_iso,
+        ),
+        asyncio.to_thread(lab_schedule_repo.list_all_active),
+        asyncio.to_thread(
+            lab_reservation_repo.list_in_window_by_statuses,
+            statuses=["pending", "approved", "in_progress", "completed", "absent"],
+            start_from=window_start_iso,
+            end_to=window_end_iso,
+        ),
     )
-    reservations = lab_reservation_repo.list_in_window_by_statuses(
-        statuses=list(_COUNTED_RESERVATION_STATUSES),
-        start_from=window_start_iso,
-        end_to=window_end_iso,
-    )
+    laboratories = [lab for lab in laboratories_raw if bool(lab.get("is_active", True))]
+
+    schedules_by_lab_weekday: dict[tuple[str, int], list] = defaultdict(list)
+    for schedule in all_schedules:
+        schedules_by_lab_weekday[(str(schedule.laboratory_id), int(schedule.weekday))].append(schedule)
 
     blocks_by_lab_day: dict[tuple[str, str], list] = defaultdict(list)
     for block in active_blocks:
@@ -143,7 +163,7 @@ def get_laboratory_usage_analytics(
         for current_day in days_in_range:
             blocks = blocks_by_lab_day.get((laboratory_id, current_day.isoformat()), [])
             day_reservations = reservations_by_lab_day.get((laboratory_id, current_day.isoformat()), [])
-            day_classes = lab_schedule_repo.list_active_for_laboratory_weekday(laboratory_id, current_day.weekday())
+            day_classes = schedules_by_lab_weekday.get((laboratory_id, current_day.weekday()), [])
             class_windows = [
                 (combine_date_time(current_day, klass.start_time), combine_date_time(current_day, klass.end_time))
                 for klass in day_classes
@@ -216,15 +236,9 @@ def get_laboratory_usage_analytics(
     total_in_progress_blocks = sum(item.in_progress_blocks for item in usage_rows)
     total_completed_blocks = sum(item.completed_blocks for item in usage_rows)
 
-    # Calculate hourly demand
-    # We include ALL reservations in the window to show true demand distribution
-    all_demand_reservations = lab_reservation_repo.list_in_window_by_statuses(
-        statuses=["pending", "approved", "in_progress", "completed", "absent"],
-        start_from=window_start_iso,
-        end_to=window_end_iso,
-    )
-
-    print(f"[ANALYTICS] Processing {len(all_demand_reservations)} reservations for demand distribution")
+    # all_demand_reservations ya se cargo arriba en el gather (cubre todos los estados
+    # para la distribucion de demanda horaria/semanal).
+    logger.debug("Processing %s reservations for demand distribution", len(all_demand_reservations))
 
     WEEKDAY_LABELS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
     hourly_counts: dict[int, int] = defaultdict(int)
@@ -242,8 +256,8 @@ def get_laboratory_usage_analytics(
         except (ValueError, AttributeError):
             continue
 
-    print(f"[ANALYTICS] Hourly counts: {dict(hourly_counts)}")
-    print(f"[ANALYTICS] Weekday counts: {dict(weekday_counts)}")
+    logger.debug("Hourly counts: %s", dict(hourly_counts))
+    logger.debug("Weekday counts: %s", dict(weekday_counts))
 
     hourly_usage = [
         HourlyUsage(hour=h, count=hourly_counts[h])

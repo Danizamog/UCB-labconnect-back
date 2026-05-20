@@ -22,8 +22,8 @@ def _invalidate_block_availability(block: LabBlockResponse) -> None:
 
 
 @router.get("", response_model=list[LabBlockResponse])
-def list_blocks(_: dict = Depends(get_current_user)) -> list[LabBlockResponse]:
-    return lab_block_repo.list_all()
+async def list_blocks(_: dict = Depends(get_current_user)) -> list[LabBlockResponse]:
+    return await asyncio.to_thread(lab_block_repo.list_all)
 
 
 @router.post("", response_model=LabBlockResponse, status_code=status.HTTP_201_CREATED)

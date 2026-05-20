@@ -135,7 +135,7 @@ class PocketBaseClient:
                 self._auth_token = None
                 self._authenticate()
                 return self.request(method, path, payload=payload, params=params, retry_on_auth_error=False)
-            if self._fallback.enabled and exc.response.status_code >= 1000:
+            if self._fallback.enabled and exc.response.status_code >= 500:
                 return self._fallback_request(method, path, payload=payload, params=params)
             raise
         except httpx.HTTPError as exc:

@@ -454,7 +454,9 @@ class LabReservationRepository:
         if not payload["requested_by"]:
             raise ValueError("requested_by es requerido")
 
-        self._validate_no_overlap(payload["laboratory_id"], payload["start_at"], payload["end_at"])
+        # La validacion de overlap la hace el endpoint dentro del laboratory lock
+        # (ver _validate_reservation_time_rules en api/v1/endpoints/reservations.py)
+        # antes de invocar este metodo, asi que aqui no se repite la query.
 
         try:
             data = self._client.request("POST", self._base, payload=payload)
@@ -482,10 +484,8 @@ class LabReservationRepository:
         if "status" in payload and payload["status"] not in RESERVATION_STATUSES:
             raise ValueError(f"status invalido: {payload['status']}")
 
-        if any(field in payload for field in {"laboratory_id", "start_at", "end_at", "status"}):
-            status_to_check = payload.get("status", existing.status)
-            if status_to_check not in {"rejected", "cancelled", "completed", "absent"}:
-                self._validate_no_overlap(next_laboratory, next_start, next_end, skip_id=reservation_id)
+        # La validacion de overlap la hace el endpoint dentro del laboratory lock
+        # antes de invocar este metodo.
 
         data = self._client.request("PATCH", f"{self._base}/{reservation_id}", payload=payload)
         if not isinstance(data, dict):
@@ -516,7 +516,3 @@ class LabReservationRepository:
 
     async def aupdate(self, reservation_id: str, body: LabReservationUpdate) -> LabReservationResponse | None:
         return await asyncio.to_thread(self.update, reservation_id, body)
-        # Código antiguo mantenido por referencia pero NUNCA ejecutado:
-        # try:
-        #     self._client.request("DELETE", f"{self._base}/{reservation_id}")
-        # except httpx.HTTPStatusError as exc:

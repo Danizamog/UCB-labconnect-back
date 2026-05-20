@@ -586,7 +586,7 @@ async def _notify_operations_reservation_cancelled(
 
 
 @router.get("", response_model=list[LabReservationResponse])
-def list_reservations(
+async def list_reservations(
     laboratory_id: str | None = Query(default=None),
     day: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
@@ -594,7 +594,7 @@ def list_reservations(
 ) -> list[LabReservationResponse]:
     requester = None if _can_manage_reservations(current_user) else (current_user.get("user_id") or "")
 
-    data = lab_reservation_repo.list_filtered(
+    data = await lab_reservation_repo.alist_filtered(
         laboratory_id=laboratory_id,
         day=day,
         status_filter=status_filter,
@@ -603,15 +603,16 @@ def list_reservations(
         sort_type="ASC",
     )
 
-    return [_serialize_reservation(item) for item in data]
+    enriched = await asyncio.to_thread(lab_access_session_repo.enrich_reservations, data)
+    return [LabReservationResponse.model_validate(item) for item in enriched]
 
 
 @router.get("/stats", response_model=LabReservationStatsResponse)
-def get_reservation_stats(
+async def get_reservation_stats(
     current_user: dict = Depends(get_current_user),
 ) -> LabReservationStatsResponse:
     requester = None if _can_manage_reservations(current_user) else str(current_user.get("user_id") or "")
-    items = lab_reservation_repo.list_filtered(requested_by=requester)
+    items = await lab_reservation_repo.alist_filtered(requested_by=requester)
 
     pending = 0
     walk_in = 0
@@ -629,7 +630,7 @@ def get_reservation_stats(
 
 
 @router.get("/search", response_model=PaginatedLabReservationResponse)
-def search_reservations(
+async def search_reservations(
     laboratory_id: str | None = Query(default=None),
     day: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
@@ -645,7 +646,7 @@ def search_reservations(
     normalized_where = str(where or "").strip() or None
 
     if normalized_where is None:
-        paginated_source_items, total_elements = lab_reservation_repo.search_page(
+        paginated_source_items, total_elements = await lab_reservation_repo.asearch_page(
             laboratory_id=laboratory_id,
             day=day,
             status_filter=status_filter,
@@ -655,12 +656,12 @@ def search_reservations(
             sort_by=normalized_sort_by,
             sort_type=normalized_sort_type,
         )
-        paginated_items = [
-            LabReservationResponse.model_validate(item)
-            for item in lab_access_session_repo.enrich_reservations(paginated_source_items)
-        ]
+        enriched = await asyncio.to_thread(
+            lab_access_session_repo.enrich_reservations, paginated_source_items
+        )
+        paginated_items = [LabReservationResponse.model_validate(item) for item in enriched]
     else:
-        source_items = lab_reservation_repo.list_filtered(
+        source_items = await lab_reservation_repo.alist_filtered(
             laboratory_id=laboratory_id,
             day=day,
             status_filter=status_filter,
@@ -668,10 +669,10 @@ def search_reservations(
             sort_by=normalized_sort_by,
             sort_type=normalized_sort_type,
         )
-        serialized = [
-            LabReservationResponse.model_validate(item)
-            for item in lab_access_session_repo.enrich_reservations(source_items)
-        ]
+        enriched = await asyncio.to_thread(
+            lab_access_session_repo.enrich_reservations, source_items
+        )
+        serialized = [LabReservationResponse.model_validate(item) for item in enriched]
         filtered = _apply_where_filter(serialized, normalized_where)
         ordered = _sort_reservations(filtered, normalized_sort_by, normalized_sort_type)
 
@@ -695,7 +696,7 @@ def search_reservations(
 
 
 @router.get("/mine", response_model=list[LabReservationResponse])
-def list_my_reservations(
+async def list_my_reservations(
     upcoming_only: bool = Query(default=False),
     limit: int | None = Query(default=None, ge=1, le=200),
     current_user: dict = Depends(get_current_user),
@@ -706,16 +707,24 @@ def list_my_reservations(
 
     if upcoming_only:
         now_iso = now_local_naive().isoformat(sep="T", timespec="seconds")
-        items = lab_reservation_repo.list_upcoming_for_user(requester, now_iso=now_iso, limit=limit)
+        items = await asyncio.to_thread(
+            lab_reservation_repo.list_upcoming_for_user,
+            requester,
+            now_iso=now_iso,
+            limit=limit,
+        )
     else:
-        items = lab_reservation_repo.list_filtered(requested_by=requester, sort_by="start_at", sort_type="ASC")
+        items = await lab_reservation_repo.alist_filtered(
+            requested_by=requester, sort_by="start_at", sort_type="ASC"
+        )
         if limit is not None:
             items = items[:limit]
-    return [_serialize_reservation(item) for item in items]
+    enriched = await asyncio.to_thread(lab_access_session_repo.enrich_reservations, items)
+    return [LabReservationResponse.model_validate(item) for item in enriched]
 
 
 @router.get("/summary", response_model=AgendaSummaryResponse)
-def get_my_agenda_summary(
+async def get_my_agenda_summary(
     current_user: dict = Depends(get_current_user),
     limit: int = Query(default=5, ge=1, le=12),
 ) -> AgendaSummaryResponse:
@@ -724,17 +733,27 @@ def get_my_agenda_summary(
     now_iso = now.isoformat(sep="T", timespec="seconds")
 
     if requester:
-        # Filtra en PocketBase por (requested_by, end_at >= now, status no final).
-        # Antes traia todo el historial del usuario y truncaba en Python.
-        raw_reservations = lab_reservation_repo.list_upcoming_for_user(
-            requester,
-            now_iso=now_iso,
-            limit=limit,
+        # Las tres consultas son independientes; las disparamos en paralelo para
+        # reducir la latencia percibida del summary al primer paint.
+        raw_reservations, tutor_sessions, student_sessions = await asyncio.gather(
+            asyncio.to_thread(
+                lab_reservation_repo.list_upcoming_for_user,
+                requester,
+                now_iso=now_iso,
+                limit=limit,
+            ),
+            asyncio.to_thread(tutorial_session_repo.list_for_tutor, requester),
+            asyncio.to_thread(tutorial_session_repo.list_for_student, requester),
         )
     else:
         raw_reservations = []
+        tutor_sessions = []
+        student_sessions = []
 
-    upcoming_reservations = [_serialize_reservation(item) for item in raw_reservations]
+    enriched_raw = await asyncio.to_thread(
+        lab_access_session_repo.enrich_reservations, raw_reservations
+    )
+    upcoming_reservations = [LabReservationResponse.model_validate(item) for item in enriched_raw]
     upcoming_reservations.sort(key=lambda item: (item.start_at, item.end_at, item.id))
 
     def _is_upcoming(value: str) -> bool:
@@ -744,14 +763,12 @@ def get_my_agenda_summary(
             return False
 
     combined_tutorials: dict[str, TutorialSessionResponse] = {}
-    if requester:
-        for session in tutorial_session_repo.list_for_student(requester):
-            if _is_upcoming(session.end_at):
-                combined_tutorials[session.id] = session
-
-        for session in tutorial_session_repo.list_for_tutor(requester):
-            if _is_upcoming(session.end_at):
-                combined_tutorials[session.id] = session
+    for session in student_sessions:
+        if _is_upcoming(session.end_at):
+            combined_tutorials[session.id] = session
+    for session in tutor_sessions:
+        if _is_upcoming(session.end_at):
+            combined_tutorials[session.id] = session
 
     upcoming_tutorials = sorted(
         combined_tutorials.values(),
@@ -769,7 +786,7 @@ def get_my_agenda_summary(
 
 
 @router.get("/mine/history/search", response_model=PaginatedLabReservationResponse)
-def search_my_reservation_history(
+async def search_my_reservation_history(
     page_number: int = Query(default=0, ge=0, alias="pageNumber"),
     page_size: int = Query(default=10, ge=1, le=100, alias="pageSize"),
     sort_by: str = Query(default="start_at", alias="sortBy"),
@@ -782,15 +799,15 @@ def search_my_reservation_history(
     if not requester:
         source_items = []
     else:
-        source_items = lab_reservation_repo.list_filtered(
+        source_items = await lab_reservation_repo.alist_filtered(
             requested_by=requester,
             sort_by=normalized_sort_by,
             sort_type=normalized_sort_type,
         )
-    serialized = [
-        LabReservationResponse.model_validate(item)
-        for item in lab_access_session_repo.enrich_reservations(source_items)
-    ]
+    enriched = await asyncio.to_thread(
+        lab_access_session_repo.enrich_reservations, source_items
+    )
+    serialized = [LabReservationResponse.model_validate(item) for item in enriched]
     history_items = [item for item in serialized if _is_history_reservation(item)]
     ordered = _sort_reservations(history_items, normalized_sort_by, normalized_sort_type)
 
@@ -813,7 +830,7 @@ def search_my_reservation_history(
 
 
 @router.get("/occupancy", response_model=OccupancyDashboardResponse)
-def get_occupancy_dashboard(
+async def get_occupancy_dashboard(
     laboratory_id: str | None = Query(default=None),
     current_user: dict = Depends(get_current_user),
 ) -> OccupancyDashboardResponse:
@@ -822,12 +839,14 @@ def get_occupancy_dashboard(
         {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
         "No tienes permisos para consultar la ocupacion del laboratorio",
     )
-    return lab_access_session_repo.get_dashboard(laboratory_id=laboratory_id)
+    return await asyncio.to_thread(
+        lab_access_session_repo.get_dashboard, laboratory_id=laboratory_id
+    )
 
 
 @router.get("/{reservation_id}", response_model=LabReservationResponse)
-def get_reservation(reservation_id: str, current_user: dict = Depends(get_current_user)) -> LabReservationResponse:
-    reservation = lab_reservation_repo.get_by_id(reservation_id)
+async def get_reservation(reservation_id: str, current_user: dict = Depends(get_current_user)) -> LabReservationResponse:
+    reservation = await lab_reservation_repo.aget_by_id(reservation_id)
     if reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
@@ -1131,18 +1150,11 @@ async def register_reservation_exit(
     )
 
     reservation = await lab_reservation_repo.aget_by_id(reservation_id)
-    session = await asyncio.to_thread(lab_access_session_repo.get_open_by_reservation, reservation_id)
-
-    # Si no encuentra por reservation_id pero existe session (estado corrupto de DB), cerrar la sesión de todas formas.
-    # O si el ID enviado era directamente de la sesión (como fallback).
-    if session is None:
-        # Intentar obtener la sesión asumiendo que reservation_id es el id de la sesión
-        try:
-            record = lab_access_session_repo._client.get_record(lab_access_session_repo._collection, reservation_id)
-            if record and record.get("status") == "open":
-                session = lab_access_session_repo._to_response(record)
-        except Exception:
-            pass
+    # Acepta reservation_id o session_id como fallback para estados de BD donde la
+    # reserva fue borrada manualmente pero la sesion sigue abierta.
+    session = await asyncio.to_thread(
+        lab_access_session_repo.find_open_by_id_or_reservation, reservation_id
+    )
 
     if session is None:
         if reservation is None:

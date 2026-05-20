@@ -56,4 +56,3 @@ class LaboratoryUsageAnalyticsResponse(BaseModel):
     weekday_usage: list[WeekdayUsage] = []
     highest_usage_laboratory: LaboratoryUsageStats | None = None
     lowest_usage_laboratory: LaboratoryUsageStats | None = None
-lowest_usage_laboratory: LaboratoryUsageStats | None = None

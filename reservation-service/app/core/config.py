@@ -99,10 +99,6 @@ class Settings:
             10,
             int(os.getenv("RESERVATION_REMINDER_CHECK_INTERVAL_SECONDS", "60")),
         )
-        self.tutorial_sessions_storage_path = os.getenv(
-            "TUTORIAL_SESSIONS_STORAGE_PATH",
-            str((Path(__file__).resolve().parents[3] / "data" / "tutorial_sessions.json")),
-        ).strip()
 
 
 settings = Settings()

@@ -1,6 +1,6 @@
 import asyncio
 from calendar import monthrange
-from datetime import datetime
+from datetime import datetime, timedelta
 from time import monotonic
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -17,7 +17,7 @@ from app.core.datetime_utils import (
     parse_datetime,
 )
 from app.core.dependencies import get_current_user
-from app.schemas.availability import AvailabilitySlot, LabAvailabilityResponse
+from app.schemas.availability import AvailabilitySlot, LabAvailabilityResponse, LabAvailabilityWeekResponse
 
 router = APIRouter(prefix="/availability", tags=["availability"])
 
@@ -85,41 +85,17 @@ def invalidate_availability_cache(laboratory_id: str | None, day: str | None = N
             _AVAILABILITY_CACHE.pop(key, None)
 
 
-@router.get("/labs/{laboratory_id}", response_model=LabAvailabilityResponse)
-async def get_lab_availability(
+def _compute_slots_for_day(
+    *,
     laboratory_id: str,
-    day: str = Query(..., description="Fecha en formato YYYY-MM-DD"),
-    current_user: dict = Depends(get_current_user),
-) -> LabAvailabilityResponse:
-    try:
-        current_date = datetime.strptime(day, "%Y-%m-%d").date()
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="day debe tener formato YYYY-MM-DD") from exc
-
-    ensure_user_can_reserve_laboratory(laboratory_id, current_user)
-
-    current_local_time = now_local_naive()
-    max_allowed_day = _max_allowed_reservation_date(current_local_time.date())
-    if current_date > max_allowed_day:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Solo puedes consultar disponibilidad dentro del plazo maximo de un mes",
-        )
-
-    cached_response = _get_cached_availability(laboratory_id, day)
-    if cached_response is not None:
-        return cached_response
-
+    current_date,
+    current_local_time: datetime,
+    raw_reservations: list,
+    tutorial_sessions: list,
+    blocks: list,
+    classes: list,
+) -> list[AvailabilitySlot]:
     ranges = iter_lab_blocks(current_date)
-    slot_minutes = ACADEMIC_BLOCK_MINUTES
-
-    raw_reservations, tutorial_sessions, blocks, classes = await asyncio.gather(
-        asyncio.to_thread(lab_reservation_repo.list_for_laboratory_day, laboratory_id, day),
-        asyncio.to_thread(tutorial_session_repo.list_public_for_laboratory_day, laboratory_id, day),
-        asyncio.to_thread(lab_block_repo.list_for_laboratory_day, laboratory_id, day),
-        asyncio.to_thread(lab_schedule_repo.list_active_for_laboratory_weekday, laboratory_id, current_date.weekday()),
-    )
-
     reservations = [
         item for item in raw_reservations
         if item.status not in {"rejected", "cancelled", "completed", "absent"}
@@ -192,11 +168,55 @@ async def get_lab_availability(
                 status=source_status,
             )
         )
+    return slots
+
+
+@router.get("/labs/{laboratory_id}", response_model=LabAvailabilityResponse)
+async def get_lab_availability(
+    laboratory_id: str,
+    day: str = Query(..., description="Fecha en formato YYYY-MM-DD"),
+    current_user: dict = Depends(get_current_user),
+) -> LabAvailabilityResponse:
+    try:
+        current_date = datetime.strptime(day, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="day debe tener formato YYYY-MM-DD") from exc
+
+    ensure_user_can_reserve_laboratory(laboratory_id, current_user)
+
+    current_local_time = now_local_naive()
+    max_allowed_day = _max_allowed_reservation_date(current_local_time.date())
+    if current_date > max_allowed_day:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Solo puedes consultar disponibilidad dentro del plazo maximo de un mes",
+        )
+
+    cached_response = _get_cached_availability(laboratory_id, day)
+    if cached_response is not None:
+        return cached_response
+
+    raw_reservations, tutorial_sessions, blocks, classes = await asyncio.gather(
+        asyncio.to_thread(lab_reservation_repo.list_for_laboratory_day, laboratory_id, day),
+        asyncio.to_thread(tutorial_session_repo.list_public_for_laboratory_day, laboratory_id, day),
+        asyncio.to_thread(lab_block_repo.list_for_laboratory_day, laboratory_id, day),
+        asyncio.to_thread(lab_schedule_repo.list_active_for_laboratory_weekday, laboratory_id, current_date.weekday()),
+    )
+
+    slots = _compute_slots_for_day(
+        laboratory_id=laboratory_id,
+        current_date=current_date,
+        current_local_time=current_local_time,
+        raw_reservations=raw_reservations,
+        tutorial_sessions=tutorial_sessions,
+        blocks=blocks,
+        classes=classes,
+    )
 
     response = LabAvailabilityResponse(
         laboratory_id=laboratory_id,
         date=day,
-        slot_minutes=slot_minutes,
+        slot_minutes=ACADEMIC_BLOCK_MINUTES,
         slots=slots,
     )
     cache_ttl_seconds = (
@@ -206,3 +226,80 @@ async def get_lab_availability(
     )
     _set_cached_availability(laboratory_id, day, response, cache_ttl_seconds)
     return response
+
+
+@router.get("/labs/{laboratory_id}/week", response_model=LabAvailabilityWeekResponse)
+async def get_lab_availability_week(
+    laboratory_id: str,
+    monday: str = Query(..., description="Fecha del lunes en formato YYYY-MM-DD"),
+    current_user: dict = Depends(get_current_user),
+) -> LabAvailabilityWeekResponse:
+    """Devuelve los 7 dias de la semana en una sola respuesta.
+
+    Reusa el cache por dia, asi que dias ya solicitados individualmente vuelven
+    desde el cache. Para los dias faltantes, paraleliza las 4 consultas por dia
+    via asyncio.gather, reduciendo la latencia total al maximo round-trip.
+    """
+    try:
+        monday_date = datetime.strptime(monday, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="monday debe tener formato YYYY-MM-DD",
+        ) from exc
+
+    ensure_user_can_reserve_laboratory(laboratory_id, current_user)
+
+    current_local_time = now_local_naive()
+    max_allowed_day = _max_allowed_reservation_date(current_local_time.date())
+
+    week_days = [monday_date + timedelta(days=offset) for offset in range(7)]
+    if monday_date > max_allowed_day:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Solo puedes consultar disponibilidad dentro del plazo maximo de un mes",
+        )
+
+    async def _resolve_day(current_date) -> LabAvailabilityResponse:
+        day_iso = current_date.isoformat()
+        cached = _get_cached_availability(laboratory_id, day_iso)
+        if cached is not None:
+            return cached
+
+        raw_reservations, tutorial_sessions, blocks, classes = await asyncio.gather(
+            asyncio.to_thread(lab_reservation_repo.list_for_laboratory_day, laboratory_id, day_iso),
+            asyncio.to_thread(tutorial_session_repo.list_public_for_laboratory_day, laboratory_id, day_iso),
+            asyncio.to_thread(lab_block_repo.list_for_laboratory_day, laboratory_id, day_iso),
+            asyncio.to_thread(lab_schedule_repo.list_active_for_laboratory_weekday, laboratory_id, current_date.weekday()),
+        )
+        slots = _compute_slots_for_day(
+            laboratory_id=laboratory_id,
+            current_date=current_date,
+            current_local_time=current_local_time,
+            raw_reservations=raw_reservations,
+            tutorial_sessions=tutorial_sessions,
+            blocks=blocks,
+            classes=classes,
+        )
+        response = LabAvailabilityResponse(
+            laboratory_id=laboratory_id,
+            date=day_iso,
+            slot_minutes=ACADEMIC_BLOCK_MINUTES,
+            slots=slots,
+        )
+        cache_ttl_seconds = (
+            _AVAILABILITY_CACHE_TTL_TODAY
+            if current_date == current_local_time.date()
+            else _AVAILABILITY_CACHE_TTL_OTHER
+        )
+        _set_cached_availability(laboratory_id, day_iso, response, cache_ttl_seconds)
+        return response
+
+    days = await asyncio.gather(*[_resolve_day(d) for d in week_days])
+
+    return LabAvailabilityWeekResponse(
+        laboratory_id=laboratory_id,
+        monday=monday,
+        slot_minutes=ACADEMIC_BLOCK_MINUTES,
+        days=list(days),
+    )

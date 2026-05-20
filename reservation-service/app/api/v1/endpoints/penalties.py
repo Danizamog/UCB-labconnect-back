@@ -6,6 +6,14 @@ from datetime import UTC, datetime
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+# Cliente HTTP async compartido para todas las llamadas a servicios dependientes
+# (auth-service, inventory-service). Crear un AsyncClient por request rompe el
+# keep-alive y reabre conexion TCP en cada llamada.
+_penalty_http_client = httpx.AsyncClient(
+    timeout=httpx.Timeout(8.0, connect=4.0),
+    limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+)
+
 from app.application.container import penalty_reactivation_history_store, user_penalty_repo
 from app.core.config import settings
 from app.email.sender import send_penalty_email, send_penalty_reactivation_email
@@ -105,16 +113,15 @@ def _authorization_header(request: Request) -> str:
 
 async def _request_json(method: str, url: str, *, authorization: str, payload: dict | None = None) -> dict | list | None:
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=4.0)) as client:
-            response = await client.request(
-                method,
-                url,
-                json=payload,
-                headers={
-                    "Authorization": authorization,
-                    "Content-Type": "application/json",
-                },
-            )
+        response = await _penalty_http_client.request(
+            method,
+            url,
+            json=payload,
+            headers={
+                "Authorization": authorization,
+                "Content-Type": "application/json",
+            },
+        )
     except httpx.HTTPError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

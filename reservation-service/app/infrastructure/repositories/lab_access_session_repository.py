@@ -120,6 +120,27 @@ class LabAccessSessionRepository:
             return None
         return self._to_response(records[0])
 
+    def find_open_by_id_or_reservation(self, identifier: str) -> LabAccessSessionResponse | None:
+        """Busca una sesion abierta por reservation_id; si no existe, por id de sesion.
+
+        El fallback por id de sesion cubre estados de BD donde la reserva fue
+        borrada manualmente pero la sesion sigue abierta, evitando que el
+        check-out quede bloqueado sin acceso a atributos privados del repo.
+        """
+        normalized = str(identifier or "").strip()
+        if not normalized:
+            return None
+
+        by_reservation = self.get_open_by_reservation(normalized)
+        if by_reservation is not None:
+            return by_reservation
+
+        self._ensure_collection()
+        record = self._client.get_record(self._collection, normalized)
+        if record is None or record.get("status") != "open":
+            return None
+        return self._to_response(record)
+
     def create(
         self,
         *,

@@ -123,8 +123,17 @@ class TutorialSessionRepository:
         if not normalized_ids or not self._observation_admin.enabled:
             return {}
 
+        # Filtrar por session_id en PocketBase en lugar de traer toda la coleccion
+        # de observaciones para luego filtrar en Python.
+        filter_expression = " || ".join(
+            f'session_id="{_escape_filter_value(session_id)}"' for session_id in set(normalized_ids)
+        )
         try:
-            records = self._observation_admin.list_records(self._observation_collection, sort=None)
+            records = self._observation_admin.list_records(
+                self._observation_collection,
+                sort=None,
+                filter=filter_expression,
+            )
         except Exception:
             return {}
 
@@ -586,11 +595,17 @@ class TutorialSessionRepository:
             raise ValueError("La observacion no puede superar los 1000 caracteres")
 
         self._ensure_observation_collection()
-        existing_records = [
-            record
-            for record in self._observation_admin.list_records(self._observation_collection, sort=None)
-            if str(record.get("session_id") or "").strip() == session_id
-        ][:1]
+        # Filtrar por session_id directamente en PocketBase, antes scaneaba toda
+        # la coleccion para encontrar el unico registro relevante.
+        try:
+            existing_records = self._observation_admin.list_records(
+                self._observation_collection,
+                sort=None,
+                filter=f'session_id="{_escape_filter_value(session_id)}"',
+                per_page=1,
+            )[:1]
+        except Exception:
+            existing_records = []
 
         payload = {
             "session_id": session.id,

@@ -17,3 +17,10 @@ class LabAvailabilityResponse(BaseModel):
     date: str
     slot_minutes: int
     slots: list[AvailabilitySlot]
+
+
+class LabAvailabilityWeekResponse(BaseModel):
+    laboratory_id: str
+    monday: str
+    slot_minutes: int
+    days: list[LabAvailabilityResponse]

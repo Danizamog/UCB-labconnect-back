@@ -50,6 +50,7 @@ class PocketBaseAdminClient:
         self._auth_identity = auth_identity
         self._auth_password = auth_password
         self._auth_collection = auth_collection
+        self._collection_id_cache: dict[str, str] = {}
         self._fallback = LocalPocketBaseFallback(
             postgres_url=settings.postgres_url,
             namespace=settings.local_data_namespace,
@@ -131,7 +132,7 @@ class PocketBaseAdminClient:
                 return None
             return response.json()
         except httpx.HTTPStatusError as exc:
-            if self._fallback.enabled and exc.response.status_code >= 1000:
+            if self._fallback.enabled and exc.response.status_code >= 500:
                 return self._fallback_request(method, url, **kwargs)
             raise
         except httpx.HTTPError:
@@ -149,10 +150,19 @@ class PocketBaseAdminClient:
         return payload if isinstance(payload, dict) else None
 
     def _resolve_collection_ref(self, collection_name: str) -> str:
+        # Las colecciones de PocketBase no cambian de id en runtime, asi que
+        # cacheamos el mapeo nombre -> id para evitar un GET extra por cada
+        # list/get/create/update_record.
+        cached = self._collection_id_cache.get(collection_name)
+        if cached:
+            return cached
+
         collection = self.get_collection(collection_name)
         if not collection:
             return collection_name
-        return str(collection.get("id") or collection_name)
+        resolved = str(collection.get("id") or collection_name)
+        self._collection_id_cache[collection_name] = resolved
+        return resolved
 
     def ensure_collection(self, collection_name: str, fields: list[dict[str, Any]]) -> None:
         existing = self.get_collection(collection_name)
