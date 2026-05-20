@@ -2,7 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.application.container import laboratory_repo
 from app.core.dependencies import ensure_any_permission, get_current_user
-from app.schemas.laboratory import LaboratoryCreate, LaboratoryResponse, LaboratoryUpdate
+from app.schemas.laboratory import (
+    LaboratoryCreate,
+    LaboratoryResponse,
+    LaboratoryUpdate,
+    PaginatedLaboratoryResponse,
+)
 
 router = APIRouter(prefix="/laboratories", tags=["laboratories"])
 
@@ -16,6 +21,22 @@ def list_laboratories_all(
     _: dict = Depends(get_current_user),
 ) -> list[LaboratoryResponse]:
     return laboratory_repo.list_all(search=search, area_id=area_id)
+
+
+@router.get("/paginated", response_model=PaginatedLaboratoryResponse)
+def list_laboratories_paginated(
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=12, ge=1, le=200),
+    search: str | None = Query(None),
+    area_id: str | None = Query(None),
+    _: dict = Depends(get_current_user),
+) -> PaginatedLaboratoryResponse:
+    return laboratory_repo.list_paginated(
+        page=page,
+        per_page=per_page,
+        search=search,
+        area_id=area_id,
+    )
 
 
 @router.get("", response_model=list[LaboratoryResponse])

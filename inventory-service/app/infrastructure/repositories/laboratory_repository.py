@@ -2,7 +2,12 @@ import httpx
 
 from app.infrastructure.cache_utils import TTLCache
 from app.infrastructure.pocketbase_base import PocketBaseClient
-from app.schemas.laboratory import LaboratoryCreate, LaboratoryResponse, LaboratoryUpdate
+from app.schemas.laboratory import (
+    LaboratoryCreate,
+    LaboratoryResponse,
+    LaboratoryUpdate,
+    PaginatedLaboratoryResponse,
+)
 
 _COLLECTION = "laboratory"
 
@@ -91,6 +96,61 @@ class LaboratoryRepository:
             return items
 
         return self._list_cache.get_or_set(cache_key, load)
+
+    def list_paginated(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 12,
+        search: str | None = None,
+        area_id: str | None = None,
+    ) -> PaginatedLaboratoryResponse:
+        normalized_page = max(int(page or 1), 1)
+        normalized_per_page = max(min(int(per_page or 12), 200), 1)
+
+        clauses: list[str] = []
+        normalized_search = (search or "").strip()
+        if normalized_search:
+            escaped = normalized_search.replace('"', '\\"')
+            clauses.append(
+                f'(name ~ "{escaped}" || location ~ "{escaped}" || description ~ "{escaped}")'
+            )
+        if area_id:
+            clauses.append(f'area_id = "{area_id}"')
+
+        params: dict[str, object] = {
+            "page": normalized_page,
+            "perPage": normalized_per_page,
+            "sort": "name",
+            "expand": "area_id",
+        }
+        if clauses:
+            params["filter"] = " && ".join(clauses)
+
+        data = self._client.request("GET", self._base, params=params)
+        if not isinstance(data, dict):
+            return PaginatedLaboratoryResponse(
+                items=[],
+                page=normalized_page,
+                per_page=normalized_per_page,
+                total_items=0,
+                total_pages=0,
+            )
+
+        records = data.get("items", [])
+        items = [
+            _to_response(record)
+            for record in records
+            if isinstance(record, dict)
+        ] if isinstance(records, list) else []
+
+        return PaginatedLaboratoryResponse(
+            items=items,
+            page=int(data.get("page", normalized_page) or normalized_page),
+            per_page=int(data.get("perPage", normalized_per_page) or normalized_per_page),
+            total_items=int(data.get("totalItems", 0) or 0),
+            total_pages=int(data.get("totalPages", 0) or 0),
+        )
 
     def get_by_id(self, lab_id: str) -> LaboratoryResponse | None:
         normalized_id = str(lab_id or "").strip()

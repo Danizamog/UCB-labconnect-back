@@ -34,3 +34,11 @@ class LaboratoryResponse(BaseModel):
     manager: str = ""
     created: str
     updated: str
+
+
+class PaginatedLaboratoryResponse(BaseModel):
+    items: list[LaboratoryResponse]
+    page: int
+    per_page: int
+    total_items: int
+    total_pages: int
