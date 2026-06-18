@@ -1,3 +1,6 @@
+import logging
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -23,7 +26,10 @@ from app.interfaces.http.schemas.user import (
     UserProfileUpdateRequest,
 )
 
+logger = logging.getLogger(__name__)
+
 INVALID_CREDENTIALS_MESSAGE = "Cuenta no reconocida"
+SESSION_UNAVAILABLE_MESSAGE = "No se pudo validar la sesion actual"
 ALLOWED_PROFILE_TYPES = {"student", "teacher", "staff", "guest", "lab_manager"}
 PROFILE_MUTABLE_FIELDS = (
     "username",
@@ -122,7 +128,17 @@ def _build_live_session_payload(payload: dict) -> dict:
             "exp": payload.get("exp"),
         }
 
-    user = user_repository.get_by_username(subject)
+    try:
+        user = user_repository.get_by_username(subject)
+    except (ValueError, httpx.HTTPError) as exc:
+        # Fallo de infraestructura (PocketBase caido / no se pudo autenticar el admin):
+        # NO es una sesion invalida. Devolvemos 503 para no expulsar al usuario con un 401.
+        logger.warning("No se pudo validar la sesion contra PocketBase: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=SESSION_UNAVAILABLE_MESSAGE,
+        ) from exc
+
     if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

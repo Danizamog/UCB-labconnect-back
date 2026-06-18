@@ -6,6 +6,8 @@ from typing import Any
 import httpx
 from jose import jwt as jose_jwt
 
+from app.core.config import settings
+
 # Renovamos el token de superusuario de PocketBase un poco antes de su `exp`
 # para que nunca se use ya caducado (devolveria listados vacios / 401 silenciosos).
 _AUTH_TOKEN_REFRESH_MARGIN_SECONDS = 60.0
@@ -25,24 +27,24 @@ def _compute_token_refresh_at(token: str) -> float:
 
 
 class PocketBaseClient:
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        auth_token: str | None = None,
-        auth_identity: str | None = None,
-        auth_password: str | None = None,
-        auth_collection: str = "_superusers",
-        timeout_seconds: float = 10,
-    ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._auth_token = auth_token
+    """Admin PocketBase HTTP client with auto-authentication and token refresh.
+
+    Authenticates with the superuser identity so it can read collections whose
+    listRule is null (lab_access_session, inventory_loan_records_v2, stock_movement,
+    ...). Never forwards an end-user token; authorization is enforced at the
+    endpoint layer via ensure_any_permission.
+    """
+
+    def __init__(self) -> None:
+        self._base_url = settings.pocketbase_url.rstrip("/")
+        self._auth_identity = settings.pocketbase_auth_identity
+        self._auth_password = settings.pocketbase_auth_password
+        self._auth_collection = settings.pocketbase_auth_collection
+        self._timeout = settings.pocketbase_timeout_seconds
+        self._auth_token: str | None = None
         self._auth_token_refresh_at: float | None = None
-        self._auth_identity = auth_identity
-        self._auth_password = auth_password
-        self._auth_collection = auth_collection
         self._client = httpx.Client(
-            timeout=httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 5.0)),
+            timeout=httpx.Timeout(self._timeout, connect=min(self._timeout, 5.0)),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
 
@@ -67,15 +69,10 @@ class PocketBaseClient:
             return False
         return time.time() >= self._auth_token_refresh_at
 
-    def _auth_endpoint(self) -> str:
-        return f"{self._base_url}/api/collections/{self._auth_collection}/auth-with-password"
-
-    def _headers(self, extra_headers: dict[str, str] | None = None) -> dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self._auth_token:
             headers["Authorization"] = f"Bearer {self._auth_token}"
-        if extra_headers:
-            headers.update(extra_headers)
         return headers
 
     def _authenticate(self) -> None:
@@ -83,11 +80,11 @@ class PocketBaseClient:
             return
 
         payload = {"identity": self._auth_identity, "password": self._auth_password}
-        endpoints = [self._auth_endpoint()]
+        endpoints = [f"{self._base_url}/api/collections/{self._auth_collection}/auth-with-password"]
         if self._auth_collection in {"_superusers", "admins"}:
             endpoints.append(f"{self._base_url}/api/admins/auth-with-password")
 
-        last_exception: Exception | None = None
+        last_error: Exception | None = None
         for endpoint in endpoints:
             try:
                 response = self._client.post(endpoint, json=payload)
@@ -98,32 +95,43 @@ class PocketBaseClient:
                     self._store_auth_token(token)
                     return
             except httpx.HTTPStatusError as exc:
-                last_exception = exc
+                last_error = exc
                 if exc.response.status_code == 404:
                     continue
                 raise
 
-        if last_exception:
-            raise last_exception
+        if last_error:
+            raise last_error
         raise ValueError("No se pudo autenticar contra PocketBase")
 
-    def _request(self, method: str, url: str, **kwargs) -> dict[str, Any] | list[Any] | None:
+    def _request(self, method: str, url: str, **kwargs: Any) -> dict[str, Any] | list[Any] | None:
         if not self.enabled:
             raise RuntimeError("PocketBase no esta configurado")
 
         if self._has_credentials() and self._token_needs_refresh():
             self._authenticate()
 
-        extra_headers = kwargs.pop("headers", None)
-        response = self._client.request(method, url, headers=self._headers(extra_headers), **kwargs)
+        response = self._client.request(method, url, headers=self._headers(), **kwargs)
         if response.status_code == 401 and self._has_credentials():
+            self._auth_token = None
             self._authenticate()
-            response = self._client.request(method, url, headers=self._headers(extra_headers), **kwargs)
+            response = self._client.request(method, url, headers=self._headers(), **kwargs)
 
         response.raise_for_status()
         if not response.content:
             return None
         return response.json()
+
+    def get_record(self, collection_name: str, record_id: str) -> dict[str, Any] | None:
+        try:
+            payload = self._request(
+                "GET", f"{self._base_url}/api/collections/{collection_name}/records/{record_id}"
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        return payload if isinstance(payload, dict) else None
 
     def get_collection(self, collection_name: str) -> dict[str, Any] | None:
         try:
@@ -134,29 +142,31 @@ class PocketBaseClient:
             raise
         return payload if isinstance(payload, dict) else None
 
-    def ensure_collection(self, collection_name: str, fields: list[dict[str, Any]]) -> None:
-        existing = self.get_collection(collection_name)
-        if existing:
-            collection_id = existing.get("id") or collection_name
-            self._request(
-                "PATCH",
-                f"{self._base_url}/api/collections/{collection_id}",
-                json={"fields": fields},
-            )
-            return
+    def create_record(self, collection_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self._request(
+            "POST",
+            f"{self._base_url}/api/collections/{collection_name}/records",
+            json=payload,
+        )
+        if not isinstance(result, dict):
+            raise ValueError("PocketBase devolvio una respuesta invalida al crear el registro")
+        return result
 
-        payload = {
-            "name": collection_name,
-            "type": "base",
-            "fields": fields,
-        }
-        self._request("POST", f"{self._base_url}/api/collections", json=payload)
+    def update_record(self, collection_name: str, record_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self._request(
+            "PATCH",
+            f"{self._base_url}/api/collections/{collection_name}/records/{record_id}",
+            json=payload,
+        )
+        if not isinstance(result, dict):
+            raise ValueError("PocketBase devolvio una respuesta invalida al actualizar el registro")
+        return result
 
     def list_records(
         self,
         collection_name: str,
         *,
-        sort: str | None = "source_id",
+        sort: str | None = None,
         filter: str | None = None,
         per_page: int = 200,
         max_items: int | None = None,
@@ -170,6 +180,7 @@ class PocketBaseClient:
                 params["sort"] = sort
             if filter:
                 params["filter"] = filter
+
             payload = self._request(
                 "GET",
                 f"{self._base_url}/api/collections/{collection_name}/records",
@@ -185,19 +196,8 @@ class PocketBaseClient:
             records.extend(item for item in items if isinstance(item, dict))
             if max_items is not None and len(records) >= max_items:
                 return records[:max_items]
-            if page >= int(payload.get("totalPages", 1)):
+            if page >= int(payload.get("totalPages", 1) or 1):
                 break
             page += 1
 
         return records
-
-    def create_record(self, collection_name: str, payload: dict[str, Any]) -> dict[str, Any]:
-        result = self._request(
-            "POST",
-            f"{self._base_url}/api/collections/{collection_name}/records",
-            json=payload,
-        )
-        if not isinstance(result, dict):
-            raise ValueError("PocketBase devolvio una respuesta invalida al crear el registro")
-        return result
-

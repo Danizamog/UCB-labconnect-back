@@ -1,12 +1,23 @@
 import json
+import logging
+import time
 from urllib.parse import urlencode
 
 import httpx
+from jose import jwt as jose_jwt
 
 from app.domain.entities.user import User
 from app.infrastructure.cache import TTLCache
 
+logger = logging.getLogger(__name__)
+
 _ROLE_CACHE_TTL_SECONDS = 300.0
+# Renovamos el token de superusuario de PocketBase un poco antes de su `exp`
+# para que nunca se use ya caducado (PocketBase devolveria listados vacios y
+# los lookups de usuario fallarian con 401 silenciosos).
+_AUTH_TOKEN_REFRESH_MARGIN_SECONDS = 60.0
+# Si el token no trae `exp` legible, re-autenticamos al menos cada 30 minutos.
+_AUTH_TOKEN_FALLBACK_TTL_SECONDS = 1800.0
 
 
 class PocketBaseUserRepository:
@@ -29,6 +40,7 @@ class PocketBaseUserRepository:
         self._auth_password = auth_password
         self._auth_collection = auth_collection
         self._auth_token = auth_token
+        self._auth_token_refresh_at: float | None = None
         self._supported_fields: set[str] | None = None
         self._role_id_cache: TTLCache[str] = TTLCache(_ROLE_CACHE_TTL_SECONDS)
         self._client = httpx.Client(
@@ -38,6 +50,30 @@ class PocketBaseUserRepository:
 
     def _has_credentials(self) -> bool:
         return bool(self._auth_identity and self._auth_password)
+
+    def _store_auth_token(self, token: str) -> None:
+        self._auth_token = token
+        now = time.time()
+        try:
+            claims = jose_jwt.get_unverified_claims(token)
+            exp = claims.get("exp")
+        except Exception:
+            exp = None
+        if isinstance(exp, (int, float)) and exp > now:
+            self._auth_token_refresh_at = float(exp) - _AUTH_TOKEN_REFRESH_MARGIN_SECONDS
+        else:
+            self._auth_token_refresh_at = now + _AUTH_TOKEN_FALLBACK_TTL_SECONDS
+        logger.info(
+            "Token de superusuario PocketBase (re)obtenido; proxima renovacion en ~%ds",
+            int(self._auth_token_refresh_at - now),
+        )
+
+    def _token_needs_refresh(self) -> bool:
+        if not self._auth_token:
+            return True
+        if self._auth_token_refresh_at is None:
+            return False
+        return time.time() >= self._auth_token_refresh_at
 
     def _headers(self, extra_headers: dict[str, str] | None = None) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -138,9 +174,15 @@ class PocketBaseUserRepository:
 
             token = data.get("token") if isinstance(data, dict) else None
             if token:
-                self._auth_token = token
+                self._store_auth_token(token)
                 return
 
+        logger.warning(
+            "No se pudo autenticar el superusuario contra PocketBase (identity=%s, collection=%s): %s",
+            self._auth_identity,
+            self._auth_collection,
+            last_error,
+        )
         if last_error:
             raise ValueError("No se pudo autenticar contra PocketBase") from last_error
         raise ValueError("No se pudo autenticar contra PocketBase")
@@ -205,7 +247,7 @@ class PocketBaseUserRepository:
         return self._to_user(payload)
 
     def _ensure_authenticated(self) -> None:
-        if self._has_credentials() and not self._auth_token:
+        if self._has_credentials() and self._token_needs_refresh():
             self._authenticate()
 
     def _load_supported_fields(self) -> set[str]:
@@ -522,6 +564,18 @@ class PocketBaseUserRepository:
                 return expanded_user
 
         return self._to_user(record)
+
+    def check_ready(self) -> None:
+        """Readiness probe: confirma conectividad y auth de admin contra PocketBase.
+
+        Lanza (ValueError / httpx.HTTPError) si no se puede autenticar o alcanzar
+        PocketBase. Si no hay credenciales de admin configuradas, no hay nada que
+        comprobar y retorna sin error.
+        """
+        if not self._has_credentials():
+            return
+        self._ensure_authenticated()
+        self._request("GET", self._users_endpoint())
 
     def close(self) -> None:
         self._client.close()

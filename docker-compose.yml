@@ -142,6 +142,43 @@ services:
       retries: 5
       start_period: 10s
 
+  ml-service:
+    build:
+      context: ./ml-service
+    container_name: ml-service
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "8007:8007"
+    environment:
+      - AUTH_SERVICE_URL=http://auth-service:8001
+      - SECRET_KEY=${SECRET_KEY}
+      - POCKETBASE_URL=${POCKETBASE_URL}
+      - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
+      - POCKETBASE_AUTH_PASSWORD=${POCKETBASE_AUTH_PASSWORD}
+      - POCKETBASE_TIMEOUT_SECONDS=${POCKETBASE_TIMEOUT_SECONDS:-10}
+      - ML_APP_PORT=8007
+      - ML_CACHE_COLLECTION=${ML_CACHE_COLLECTION:-prediction_cache}
+      - POCKETBASE_SUPPLY_DEMAND_VIEW=${POCKETBASE_SUPPLY_DEMAND_VIEW:-vista_supply_demand_60d}
+      # Cron diario en la madrugada (hora local Bolivia UTC-4 por defecto).
+      - ML_REFRESH_HOUR=${ML_REFRESH_HOUR:-3}
+      - ML_REFRESH_MINUTE=${ML_REFRESH_MINUTE:-0}
+      - ML_REFRESH_TZ_OFFSET_HOURS=${ML_REFRESH_TZ_OFFSET_HOURS:--4}
+      - ML_PRECOMPUTE_SUPPLIES=${ML_PRECOMPUTE_SUPPLIES:-false}
+      - ML_CACHE_MAX_AGE_SECONDS=${ML_CACHE_MAX_AGE_SECONDS:-90000}
+    depends_on:
+      auth-service:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8007/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   api-gateway:
     build:
       context: ./api-gateway
@@ -157,6 +194,7 @@ services:
       - ROLE_SERVICE_URL=http://role-service:8004
       - RESERVATIONS_SERVICE_URL=http://reservation-service:8005
       - SUPPLY_RESERVATION_SERVICE_URL=http://supply-reservation-service:8006
+      - ML_SERVICE_URL=http://ml-service:8007
     ports:
       - "${API_GATEWAY_PORT:-8000}:8000"
     depends_on:
@@ -169,6 +207,8 @@ services:
       reservation-service:
         condition: service_started
       supply-reservation-service:
+        condition: service_started
+      ml-service:
         condition: service_started
 
 networks:

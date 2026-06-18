@@ -35,6 +35,7 @@ class Settings:
     supply_reservation_service_url: str = os.getenv(
         "SUPPLY_RESERVATION_SERVICE_URL", "http://127.0.0.1:8006"
     )
+    ml_service_url: str = os.getenv("ML_SERVICE_URL", "http://127.0.0.1:8007")
     cors_allowed_origins: list[str]
 
     def __init__(self) -> None:

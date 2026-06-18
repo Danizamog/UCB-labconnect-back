@@ -1,8 +1,27 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
+from jose import jwt as jose_jwt
+
+# Renovamos el token de superusuario de PocketBase un poco antes de su `exp`
+# para que nunca se use ya caducado (devolveria listados vacios / 401 silenciosos).
+_AUTH_TOKEN_REFRESH_MARGIN_SECONDS = 60.0
+# Si el token no trae `exp` legible, re-autenticamos al menos cada 30 minutos.
+_AUTH_TOKEN_FALLBACK_TTL_SECONDS = 1800.0
+
+
+def _compute_token_refresh_at(token: str) -> float:
+    now = time.time()
+    try:
+        exp = jose_jwt.get_unverified_claims(token).get("exp")
+    except Exception:
+        exp = None
+    if isinstance(exp, (int, float)) and exp > now:
+        return float(exp) - _AUTH_TOKEN_REFRESH_MARGIN_SECONDS
+    return now + _AUTH_TOKEN_FALLBACK_TTL_SECONDS
 
 
 class PocketBaseAdminClient:
@@ -43,6 +62,7 @@ class PocketBaseAdminClient:
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._auth_token: str | None = None
+        self._auth_token_refresh_at: float | None = None
         self._auth_identity = auth_identity
         self._auth_password = auth_password
         self._auth_collection = auth_collection
@@ -58,6 +78,17 @@ class PocketBaseAdminClient:
 
     def _has_credentials(self) -> bool:
         return bool(self._auth_identity and self._auth_password)
+
+    def _store_auth_token(self, token: str) -> None:
+        self._auth_token = token
+        self._auth_token_refresh_at = _compute_token_refresh_at(token)
+
+    def _token_needs_refresh(self) -> bool:
+        if not self._auth_token:
+            return True
+        if self._auth_token_refresh_at is None:
+            return False
+        return time.time() >= self._auth_token_refresh_at
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -82,7 +113,7 @@ class PocketBaseAdminClient:
                 data = response.json() if response.content else {}
                 token = data.get("token") if isinstance(data, dict) else None
                 if token:
-                    self._auth_token = token
+                    self._store_auth_token(token)
                     return
             except httpx.HTTPStatusError as exc:
                 last_exception = exc
@@ -98,7 +129,7 @@ class PocketBaseAdminClient:
         if not self.enabled:
             raise RuntimeError("PocketBase no esta configurado")
 
-        if not self._auth_token and self._has_credentials():
+        if self._has_credentials() and self._token_needs_refresh():
             self._authenticate()
 
         response = self._client.request(method, url, headers=self._headers(), **kwargs)

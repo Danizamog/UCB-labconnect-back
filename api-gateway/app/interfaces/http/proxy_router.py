@@ -320,3 +320,13 @@ async def proxy_penalties_path(path: str, request: Request) -> Response:
 async def proxy_penalties_root(request: Request) -> Response:
     target_url = f"{settings.reservations_service_url}/v1/penalties"
     return await forward_request(target_url, request)
+
+
+# ML Service - Predicciones IA (ocupacion de laboratorios / agotamiento de insumos)
+@router.api_route(
+    "/api/v1/analytics/predict/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_ml_predict_path(path: str, request: Request) -> Response:
+    target_url = f"{settings.ml_service_url}/v1/analytics/predict/{path}"
+    return await forward_request(target_url, request)

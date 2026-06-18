@@ -1,13 +1,32 @@
 import asyncio
 import json
 import logging
+import time
 from urllib.parse import urlencode
 
 import httpx
+from jose import jwt as jose_jwt
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Renovamos el token de superusuario de PocketBase un poco antes de su `exp`
+# para que nunca se use ya caducado (devolveria listados vacios / 401 silenciosos).
+_AUTH_TOKEN_REFRESH_MARGIN_SECONDS = 60.0
+# Si el token no trae `exp` legible, re-autenticamos al menos cada 30 minutos.
+_AUTH_TOKEN_FALLBACK_TTL_SECONDS = 1800.0
+
+
+def _compute_token_refresh_at(token: str) -> float:
+    now = time.time()
+    try:
+        exp = jose_jwt.get_unverified_claims(token).get("exp")
+    except Exception:
+        exp = None
+    if isinstance(exp, (int, float)) and exp > now:
+        return float(exp) - _AUTH_TOKEN_REFRESH_MARGIN_SECONDS
+    return now + _AUTH_TOKEN_FALLBACK_TTL_SECONDS
 
 
 class PocketBaseClient:
@@ -18,6 +37,7 @@ class PocketBaseClient:
         self._auth_collection = settings.pocketbase_auth_collection
         self._timeout = settings.pocketbase_timeout_seconds
         self._auth_token: str | None = None
+        self._auth_token_refresh_at: float | None = None
         self._client = httpx.Client(
             timeout=httpx.Timeout(self._timeout, connect=min(self._timeout, 5.0)),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
@@ -25,6 +45,17 @@ class PocketBaseClient:
 
     def _has_credentials(self) -> bool:
         return bool(self._auth_identity and self._auth_password)
+
+    def _store_auth_token(self, token: str) -> None:
+        self._auth_token = token
+        self._auth_token_refresh_at = _compute_token_refresh_at(token)
+
+    def _token_needs_refresh(self) -> bool:
+        if not self._auth_token:
+            return True
+        if self._auth_token_refresh_at is None:
+            return False
+        return time.time() >= self._auth_token_refresh_at
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -50,7 +81,7 @@ class PocketBaseClient:
                 data = response.json()
                 token = data.get("token") if isinstance(data, dict) else None
                 if token:
-                    self._auth_token = token
+                    self._store_auth_token(token)
                     return
             except httpx.HTTPStatusError as exc:
                 last_error = exc
@@ -65,7 +96,7 @@ class PocketBaseClient:
         raise ValueError("No se pudo autenticar contra PocketBase")
 
     def _ensure_authenticated(self) -> None:
-        if self._has_credentials() and not self._auth_token:
+        if self._has_credentials() and self._token_needs_refresh():
             self._authenticate()
 
     def request(

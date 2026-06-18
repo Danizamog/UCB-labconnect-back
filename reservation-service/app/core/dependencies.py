@@ -124,6 +124,15 @@ def _resolve_live_payload(token: str, fallback_payload: dict | None) -> dict:
             pass
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
 
+    if response.status_code >= 500:
+        # auth-service no pudo validar contra PocketBase (p. ej. 503): fail-closed.
+        # No servimos permisos potencialmente revocados desde el JWT local.
+        _invalidate_cached_token_payload(token)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo validar la sesion actual",
+        )
+
     if response.status_code >= 400:
         if fallback_payload:
             _set_cached_token_payload(token, fallback_payload)
