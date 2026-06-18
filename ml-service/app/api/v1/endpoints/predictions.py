@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.infrastructure import prediction_cache_repository as cache
@@ -19,13 +19,15 @@ _VIEW_PREDICTIONS = {"consultar_estadisticas"}
 
 @router.get("/overview", response_model=PredictionsOverviewResponse)
 def predictions_overview(
+    refresh: bool = Query(default=False, description="Fuerza recalculo ignorando la cache"),
     current_user: dict = Depends(get_current_user),
 ) -> PredictionsOverviewResponse:
     ensure_any_permission(current_user, _VIEW_PREDICTIONS, "No tienes permisos para consultar predicciones")
 
-    cached = _safe_read("overview", "")
-    if cached and cache.is_fresh(cached):
-        return PredictionsOverviewResponse(**cached)
+    if not refresh:
+        cached = _safe_read("overview", "")
+        if cached and cache.is_fresh(cached):
+            return PredictionsOverviewResponse(**cached)
 
     data = preds.compute_overview()
     _safe_upsert("overview", "", data)
