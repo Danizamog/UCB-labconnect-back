@@ -41,6 +41,7 @@ def compute_lab_forecast(lab_id: str) -> dict[str, Any] | None:
         "projected_peak": round(max((point.value for point in out.forecast), default=0.0), 3),
         "generated_at": _now_iso(),
         "data_quality": quality.as_dict(),
+        "metrics": out.metrics,
     }
 
 
@@ -94,4 +95,5 @@ def compute_supply_forecast(stock_item_id: str) -> dict[str, Any] | None:
         "alert_level": alert_level,
         "generated_at": _now_iso(),
         "data_quality": quality.as_dict(),
+        "metrics": out.metrics,
     }

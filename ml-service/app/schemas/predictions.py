@@ -18,6 +18,13 @@ class DataQualityModel(BaseModel):
     outliers_capped: int
 
 
+class ForecastMetrics(BaseModel):
+    mae: float       # error absoluto medio (mismas unidades del objetivo)
+    rmse: float      # raiz del error cuadratico medio (penaliza errores grandes)
+    test_days: int   # dias usados como prueba (backtesting)
+    train_days: int  # dias usados para entrenar
+
+
 class LaboratoryForecastResponse(BaseModel):
     laboratory_id: str
     laboratory_name: str
@@ -31,6 +38,7 @@ class LaboratoryForecastResponse(BaseModel):
     projected_peak: float
     generated_at: str
     data_quality: DataQualityModel
+    metrics: ForecastMetrics | None = None
 
 
 class SupplyForecastPoint(BaseModel):
@@ -55,6 +63,7 @@ class SupplyForecastResponse(BaseModel):
     alert_level: str
     generated_at: str
     data_quality: DataQualityModel
+    metrics: ForecastMetrics | None = None
 
 
 class SupplyRiskItem(BaseModel):
