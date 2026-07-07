@@ -96,9 +96,11 @@ def _compute_slots_for_day(
     classes: list,
 ) -> list[AvailabilitySlot]:
     ranges = iter_lab_blocks(current_date)
+    # Solo las reservas comprometidas (aprobadas/en curso) afectan la disponibilidad. Las
+    # 'pending' ya no ocupan el bloque: varios usuarios pueden solicitar el mismo horario.
     reservations = [
         item for item in raw_reservations
-        if item.status not in {"rejected", "cancelled", "completed", "absent"}
+        if item.status in {"approved", "in_progress"}
         and item.is_active
     ]
     class_windows = [
@@ -132,13 +134,19 @@ def _compute_slots_for_day(
                     break
 
         if state == "available":
-            for reservation in reservations:
-                if _has_overlap(start_dt, end_dt, reservation.start_at, reservation.end_at):
-                    state = "occupied"
-                    source = "lab_reservation"
-                    source_id = reservation.id
-                    source_status = reservation.status
-                    break
+            overlapping = [
+                reservation for reservation in reservations
+                if _has_overlap(start_dt, end_dt, reservation.start_at, reservation.end_at)
+            ]
+            if overlapping:
+                # Una reserva exclusiva ocupa todo el bloque; si solo hay compartidas, el
+                # bloque queda 'partial' (aun reservable para otra reserva compartida).
+                exclusive = next((r for r in overlapping if r.requires_full_lab), None)
+                chosen = exclusive or overlapping[0]
+                state = "occupied" if exclusive is not None else "partial"
+                source = "lab_reservation"
+                source_id = chosen.id
+                source_status = chosen.status
 
         if state == "available":
             for session in tutorial_sessions:

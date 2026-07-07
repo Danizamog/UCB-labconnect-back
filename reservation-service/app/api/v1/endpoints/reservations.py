@@ -45,6 +45,9 @@ _ABSENT_GRACE_PERIOD_SECONDS = 15 * 60
 
 _MANAGEMENT_PERMISSIONS = {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"}
 _FINAL_RESERVATION_STATUSES = {"rejected", "cancelled", "completed", "absent"}
+# Una reserva "comprometida" ya tomo (o esta tomando) el laboratorio. Solo estas
+# bloquean el horario; las 'pending' conviven libremente hasta que un admin apruebe.
+_COMMITTED_RESERVATION_STATUSES = {"approved", "in_progress"}
 _WHERE_PATTERN = re.compile(r"^(?P<field>[a-zA-Z_][a-zA-Z0-9_]*)(?P<operator>>=|<=|!=|=|~|>|<)(?P<value>.+)$")
 _SUPPORTED_SORT_FIELDS = {
     "start_at",
@@ -93,6 +96,12 @@ def _has_schedule_overlap(start_at: datetime, end_at: datetime, other_start_raw:
     return start_at < other_end and other_start < end_at
 
 
+def _reservations_conflict(candidate_full_lab: bool, other_full_lab: bool) -> bool:
+    """Dos reservas comprometidas que se cruzan en el tiempo chocan salvo que ambas sean
+    compartidas (ninguna requiere todo el laboratorio)."""
+    return bool(candidate_full_lab) or bool(other_full_lab)
+
+
 def _resolve_schedule_window(reservation_day) -> tuple[datetime, datetime]:
     day_start = combine_date_time(reservation_day, LAB_DAY_START)
     day_end = combine_date_time(reservation_day, LAB_DAY_END)
@@ -104,6 +113,7 @@ def _validate_reservation_time_rules(
     laboratory_id: str,
     start_at_raw: str,
     end_at_raw: str,
+    requires_full_lab: bool = False,
     skip_reservation_id: str | None = None,
 ) -> None:
     start_at = parse_datetime(start_at_raw)
@@ -169,22 +179,52 @@ def _validate_reservation_time_rules(
                 detail="El bloque seleccionado no esta disponible porque el laboratorio se encuentra bloqueado o en mantenimiento",
             )
 
+    # Solo las reservas comprometidas (aprobadas/en curso) bloquean el horario, y solo
+    # segun exclusividad: dos compartidas conviven, pero cualquiera exclusiva choca.
+    # Las 'pending' no bloquean: varios usuarios pueden solicitar el mismo bloque.
     for reservation in lab_reservation_repo.list_for_laboratory_day(laboratory_id, day):
         if skip_reservation_id and reservation.id == skip_reservation_id:
             continue
-        if reservation.status in {"rejected", "cancelled", "completed", "absent"}:
+        if reservation.status not in _COMMITTED_RESERVATION_STATUSES:
             continue
-        if _has_schedule_overlap(start_at, end_at, reservation.start_at, reservation.end_at):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Ese bloque ya no esta disponible porque existe otra reserva activa en el mismo horario",
-            )
+        if not _has_schedule_overlap(start_at, end_at, reservation.start_at, reservation.end_at):
+            continue
+        if _reservations_conflict(requires_full_lab, reservation.requires_full_lab):
+            if reservation.requires_full_lab:
+                detail = "Ese bloque ya tiene una reserva aprobada en uso exclusivo y no esta disponible"
+            else:
+                detail = "Ese bloque ya tiene reservas aprobadas; no puedes tomar el laboratorio en uso exclusivo"
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
 
     for tutorial_session in tutorial_session_repo.list_public_for_laboratory_day(laboratory_id, day):
         if _has_schedule_overlap(start_at, end_at, tutorial_session.start_at, tutorial_session.end_at):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Ese bloque ya no esta disponible porque existe una tutoria publicada en el mismo horario",
+            )
+
+
+def _validate_approval_no_conflict(reservation: LabReservationResponse) -> None:
+    """Revalida en el momento de aprobar: una reserva no puede aprobarse si choca (por
+    exclusividad) con otra ya comprometida en el mismo horario del laboratorio."""
+    start_at = parse_datetime(reservation.start_at)
+    end_at = parse_datetime(reservation.end_at)
+    day = start_at.date().isoformat()
+
+    for other in lab_reservation_repo.list_for_laboratory_day(reservation.laboratory_id, day):
+        if other.id == reservation.id:
+            continue
+        if other.status not in _COMMITTED_RESERVATION_STATUSES:
+            continue
+        if not _has_schedule_overlap(start_at, end_at, other.start_at, other.end_at):
+            continue
+        if _reservations_conflict(reservation.requires_full_lab, other.requires_full_lab):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "El horario ya fue tomado por otra reserva aprobada y esta reserva no "
+                    "puede aprobarse en conflicto"
+                ),
             )
 
 
@@ -545,6 +585,39 @@ async def _notify_status_change(
     )
 
 
+async def _auto_reject_conflicting_pending(
+    approved: LabReservationResponse,
+    current_user: dict,
+) -> None:
+    """Al aprobar una reserva EXCLUSIVA, rechaza automaticamente las solicitudes 'pending'
+    que se cruzan en el mismo horario del laboratorio, notificando a cada usuario."""
+    start_at = parse_datetime(approved.start_at)
+    end_at = parse_datetime(approved.end_at)
+    day = start_at.date().isoformat()
+
+    candidates = await asyncio.to_thread(
+        lab_reservation_repo.list_for_laboratory_day, approved.laboratory_id, day
+    )
+    for other in candidates:
+        if other.id == approved.id or other.status != "pending":
+            continue
+        if not _has_schedule_overlap(start_at, end_at, other.start_at, other.end_at):
+            continue
+
+        rejected = await lab_reservation_repo.aupdate(
+            other.id,
+            LabReservationUpdate(
+                status="rejected",
+                cancel_reason="Horario tomado en uso exclusivo por otra reserva aprobada",
+            ),
+        )
+        if rejected is None:
+            continue
+
+        await _notify_status_change(other, rejected, current_user)
+        await _broadcast_reservation_event("update", _serialize_reservation(rejected))
+
+
 async def _notify_operations_reservation_cancelled(
     reservation: LabReservationResponse,
     current_user: dict,
@@ -880,6 +953,7 @@ async def create_reservation(body: LabReservationCreate, current_user: dict = De
         end_at=body.end_at,
         attendees_count=body.attendees_count,
         notes=body.notes,
+        requires_full_lab=bool(body.requires_full_lab),
     )
 
     async with laboratory_lock_registry.lock(body.laboratory_id):
@@ -888,6 +962,7 @@ async def create_reservation(body: LabReservationCreate, current_user: dict = De
             laboratory_id=body.laboratory_id,
             start_at_raw=body.start_at,
             end_at_raw=body.end_at,
+            requires_full_lab=bool(body.requires_full_lab),
         )
 
         try:
@@ -1000,6 +1075,7 @@ async def update_reservation(
             end_at=body.end_at,
             attendees_count=body.attendees_count,
             notes=body.notes,
+            requires_full_lab=body.requires_full_lab,
         )
         if has_meaningful_schedule_change:
             payload = payload.model_copy(
@@ -1011,12 +1087,18 @@ async def update_reservation(
             ensure_user_can_reserve_laboratory(str(payload.laboratory_id or existing_reservation.laboratory_id), current_user)
 
     target_lab_id = str(payload.laboratory_id or existing_reservation.laboratory_id)
+    effective_full_lab = (
+        existing_reservation.requires_full_lab
+        if payload.requires_full_lab is None
+        else bool(payload.requires_full_lab)
+    )
     async with laboratory_lock_registry.lock(target_lab_id):
         await asyncio.to_thread(
             _validate_reservation_time_rules,
             laboratory_id=target_lab_id,
             start_at_raw=str(payload.start_at or existing_reservation.start_at),
             end_at_raw=str(payload.end_at or existing_reservation.end_at),
+            requires_full_lab=effective_full_lab,
             skip_reservation_id=reservation_id,
         )
 
@@ -1076,13 +1158,27 @@ async def update_reservation_status(
         approved_at=datetime.utcnow().isoformat() if body.status == "approved" else None,
     )
 
-    try:
-        updated = await lab_reservation_repo.aupdate(reservation_id, payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-
-    if updated is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+    if body.status == "approved":
+        # Aprobar bloquea el horario: revalidamos contra las ya comprometidas y, si esta
+        # reserva es exclusiva, rechazamos las pendientes que se cruzan. Todo bajo el lock
+        # del laboratorio para serializar aprobaciones concurrentes del mismo bloque.
+        async with laboratory_lock_registry.lock(existing_reservation.laboratory_id):
+            await asyncio.to_thread(_validate_approval_no_conflict, existing_reservation)
+            try:
+                updated = await lab_reservation_repo.aupdate(reservation_id, payload)
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+            if updated is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+            if updated.requires_full_lab:
+                await _auto_reject_conflicting_pending(updated, current_user)
+    else:
+        try:
+            updated = await lab_reservation_repo.aupdate(reservation_id, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        if updated is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
     await _notify_status_change(existing_reservation, updated, current_user)
 

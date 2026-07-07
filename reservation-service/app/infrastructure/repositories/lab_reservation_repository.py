@@ -53,6 +53,9 @@ def _to_response(record: dict) -> LabReservationResponse:
         check_out_at=record.get("check_out_at", ""),
         is_walk_in=bool(record.get("is_walk_in", False)),
         user_modification_count=int(record.get("user_modification_count") or 0),
+        # Registros verdaderamente legacy sin el campo se tratan como exclusivos para no
+        # perder el bloqueo previo. Los registros ya migrados traen el valor explicito.
+        requires_full_lab=bool(record.get("requires_full_lab", True)),
     )
 
 
@@ -406,36 +409,6 @@ class LabReservationRepository:
             return None
         return _to_response(data)
 
-    def _validate_no_overlap(self, laboratory_id: str, start_at: str, end_at: str, skip_id: str | None = None) -> None:
-        normalized_lab = _escape_filter_value(str(laboratory_id or "").strip())
-        if not normalized_lab:
-            return
-
-        clauses = [
-            f'laboratory_id="{normalized_lab}"',
-            'status!="rejected"',
-            'status!="cancelled"',
-            'status!="completed"',
-            'status!="absent"',
-            f'start_at<"{_escape_filter_value(end_at)}"',
-            f'end_at>"{_escape_filter_value(start_at)}"',
-        ]
-        if skip_id:
-            clauses.append(f'id!="{_escape_filter_value(skip_id)}"')
-
-        data = self._client.request(
-            "GET",
-            self._base,
-            params={
-                "page": 1,
-                "perPage": 1,
-                "filter": " && ".join(clauses),
-                "fields": "id",
-            },
-        )
-        if isinstance(data, dict) and data.get("items"):
-            raise ValueError("Existe una reserva activa que se cruza con ese horario")
-
     def create(self, body: LabReservationCreate, current_user: dict | None = None) -> LabReservationResponse:
         start_at = parse_datetime(body.start_at)
         end_at = parse_datetime(body.end_at)
@@ -447,6 +420,8 @@ class LabReservationRepository:
 
         payload["is_active"] = True if payload.get("is_active") is None else bool(payload.get("is_active"))
         payload["user_modification_count"] = int(payload.get("user_modification_count") or 0)
+        # Default: compartida (varias reservas pueden coexistir en el mismo horario).
+        payload["requires_full_lab"] = bool(payload.get("requires_full_lab"))
         payload["requested_by"] = payload.get("requested_by") or (current_user or {}).get("user_id") or ""
         if current_user:
             payload["requested_by_name"] = str(current_user.get("name") or current_user.get("username") or "").strip()
