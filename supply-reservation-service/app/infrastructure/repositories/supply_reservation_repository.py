@@ -39,6 +39,9 @@ def _to_response(record: dict) -> SupplyReservationResponse:
         notes=record.get("notes", ""),
         tutorial_session_id=str(record.get("tutorial_session_id") or ""),
         lab_reservation_id=str(record.get("lab_reservation_id") or ""),
+        recurrence=str(record.get("recurrence") or ""),
+        recurrence_end_date=str(record.get("recurrence_end_date") or ""),
+        recurrence_group_id=str(record.get("recurrence_group_id") or ""),
         created=record.get("created", ""),
         updated=record.get("updated", ""),
     )

@@ -9,6 +9,9 @@ class SupplyReservationCreate(BaseModel):
     laboratory_id: str = ""
     tutorial_session_id: str = ""
     lab_reservation_id: str = ""
+    recurrence: str = ""
+    recurrence_end_date: str = ""
+    recurrence_group_id: str = ""
 
 
 class SupplyReservationStatusUpdate(BaseModel):
@@ -30,5 +33,8 @@ class SupplyReservationResponse(BaseModel):
     notes: str
     tutorial_session_id: str = ""
     lab_reservation_id: str = ""
+    recurrence: str = ""
+    recurrence_end_date: str = ""
+    recurrence_group_id: str = ""
     created: str
     updated: str

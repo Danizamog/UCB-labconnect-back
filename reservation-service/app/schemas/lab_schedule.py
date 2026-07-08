@@ -42,6 +42,8 @@ class LabScheduleCreate(_LabScheduleBase):
     subject: str = Field(min_length=1)
     description: str | None = None
     is_active: bool | None = None
+    teacher_id: str | None = None
+    teacher_name: str | None = None
 
     @model_validator(mode="after")
     def _validate_range(self) -> "LabScheduleCreate":
@@ -58,6 +60,8 @@ class LabScheduleUpdate(_LabScheduleBase):
     subject: str | None = None
     description: str | None = None
     is_active: bool | None = None
+    teacher_id: str | None = None
+    teacher_name: str | None = None
 
     @model_validator(mode="after")
     def _validate_range(self) -> "LabScheduleUpdate":
@@ -75,5 +79,7 @@ class LabScheduleResponse(BaseModel):
     subject: str
     description: str
     is_active: bool
+    teacher_id: str = ""
+    teacher_name: str = ""
     created: str
     updated: str

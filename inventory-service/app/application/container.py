@@ -3,6 +3,7 @@ from app.infrastructure.repositories.area_repository import AreaRepository
 from app.infrastructure.repositories.asset_maintenance_repository import AssetMaintenanceRepository
 from app.infrastructure.repositories.laboratory_repository import LaboratoryRepository
 from app.infrastructure.repositories.asset_repository import AssetRepository
+from app.infrastructure.repositories.equipment_request_repository import EquipmentRequestRepository
 from app.infrastructure.repositories.loan_record_repository import LoanRecordRepository
 from app.infrastructure.repositories.stock_item_repository import StockItemRepository
 from app.infrastructure.repositories.stock_movement_repository import StockMovementRepository
@@ -14,5 +15,6 @@ laboratory_repo = LaboratoryRepository(_pb_client)
 asset_repo = AssetRepository(_pb_client)
 asset_maintenance_repo = AssetMaintenanceRepository(_pb_client, asset_repo=asset_repo)
 loan_record_repo = LoanRecordRepository(_pb_client, asset_repo=asset_repo, asset_maintenance_repo=asset_maintenance_repo)
+equipment_request_repo = EquipmentRequestRepository(_pb_client, asset_repo=asset_repo, loan_record_repo=loan_record_repo)
 stock_item_repo = StockItemRepository(_pb_client)
 stock_movement_repo = StockMovementRepository(_pb_client)

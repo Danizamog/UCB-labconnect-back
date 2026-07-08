@@ -121,6 +121,17 @@ def create_supply_reservation(
     if lab_reservation_id:
         payload["lab_reservation_id"] = lab_reservation_id
 
+    recurrence = str(body.recurrence or "").strip().lower()
+    if recurrence in {"once", "weekly"}:
+        payload["recurrence"] = recurrence
+        if recurrence == "weekly":
+            recurrence_end_date = str(body.recurrence_end_date or "").strip()
+            if recurrence_end_date:
+                payload["recurrence_end_date"] = recurrence_end_date
+    recurrence_group_id = str(body.recurrence_group_id or "").strip()
+    if recurrence_group_id:
+        payload["recurrence_group_id"] = recurrence_group_id
+
     return supply_reservation_repo.create(payload)
 
 
@@ -163,7 +174,13 @@ async def update_supply_reservation_status(
         current_qty = int(stock_item.get("quantity_available") or 0)
         stock_item_name = str(stock_item.get("name") or "")
 
-        if new_status == "approved" and existing.status != "approved":
+        # Las solicitudes semanales (recurrentes) quedan AUTORIZADAS al aprobarse,
+        # pero el stock no se descuenta de una vez: se entrega/consume cada semana
+        # con los movimientos de stock normales. Asi el inventario no se vacia por
+        # todo el semestre al dar una sola aprobacion.
+        is_weekly = str(existing.recurrence or "").strip().lower() == "weekly"
+
+        if new_status == "approved" and existing.status != "approved" and not is_weekly:
             if existing.quantity > current_qty:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -186,7 +203,7 @@ async def update_supply_reservation_status(
                 notes=f"Aprobacion de reserva {reservation_id}",
             )
 
-        elif new_status == "cancelled" and existing.status == "approved":
+        elif new_status == "cancelled" and existing.status == "approved" and not is_weekly:
             # Reponer stock que se habia descontado al aprobar.
             new_qty = current_qty + existing.quantity
             updated_item = stock_item_repo.update_available_quantity(existing.stock_item_id, new_qty)
@@ -202,7 +219,8 @@ async def update_supply_reservation_status(
                 notes=f"Cancelacion de reserva aprobada {reservation_id}",
             )
 
-        # Estados restantes (pending->cancelled, approved->delivered) no tocan stock.
+        # Estados restantes (pending->cancelled, approved->delivered, y toda
+        # solicitud semanal) no tocan stock automaticamente.
 
         updated = supply_reservation_repo.update(
             reservation_id,

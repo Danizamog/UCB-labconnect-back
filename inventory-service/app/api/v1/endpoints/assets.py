@@ -28,6 +28,27 @@ def list_assets(current_user: dict = Depends(get_current_user)) -> list[AssetRes
     return _filter_assets_in_scope(asset_repo.list_all(), accessible)
 
 
+@router.get("/catalog", response_model=list[AssetResponse])
+def list_assets_catalog(
+    available_only: bool = False,
+    laboratory_id: str | None = None,
+    current_user: dict = Depends(get_current_user),
+) -> list[AssetResponse]:
+    """Catalogo de equipos de solo lectura para cualquier usuario autenticado.
+
+    Lo usa el portal del docente para elegir equipos a solicitar. No aplica el
+    filtro de laboratorios asignados (un docente no gestiona laboratorios) y no
+    expone acciones de gestion, solo la lista de equipos.
+    """
+    items = asset_repo.list_all()
+    normalized_lab = str(laboratory_id or "").strip()
+    if normalized_lab:
+        items = [item for item in items if str(item.laboratory_id or "") == normalized_lab]
+    if available_only:
+        items = [item for item in items if item.status == "available"]
+    return items
+
+
 @router.get("/{asset_id}", response_model=AssetResponse)
 def get_asset(asset_id: str, current_user: dict = Depends(get_current_user)) -> AssetResponse:
     ensure_any_permission(current_user, _VIEW_ASSETS, "No tienes permisos para consultar el inventario")

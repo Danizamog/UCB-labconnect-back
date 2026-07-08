@@ -125,6 +125,12 @@ PERMISSION_CATALOG = [
         "description": "Permite controlar reactivos, su cantidad disponible y su uso dentro del laboratorio.",
         "icon": "⚗️",
     },
+    {
+        "value": "solicitar_recursos_clase",
+        "label": "Solicitar recursos para clases",
+        "description": "Permite a un docente ver sus clases asignadas y solicitar materiales o equipos para ellas (una vez o cada semana).",
+        "icon": "📚",
+    },
 ]
 
 DEFAULT_ROLE_TEMPLATES = [
@@ -164,6 +170,7 @@ DEFAULT_ROLE_TEMPLATES = [
             "gestionar_asistencia_tutorias",
             "gestionar_observaciones_tutorias",
             "gestionar_notificaciones",
+            "solicitar_recursos_clase",
         ],
     },
     {

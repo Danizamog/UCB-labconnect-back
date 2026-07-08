@@ -16,8 +16,15 @@ router = APIRouter(prefix="/lab-schedules", tags=["lab-schedules"])
 async def list_schedules(
     laboratory_id: str | None = Query(default=None),
     weekday: int | None = Query(default=None, ge=0, le=6),
-    _: dict = Depends(get_current_user),
+    teacher_id: str | None = Query(default=None),
+    current_user: dict = Depends(get_current_user),
 ) -> list[LabScheduleResponse]:
+    # "mine" resuelve al docente autenticado para que pueda ver sus clases sin
+    # exponer el id de otros usuarios.
+    if teacher_id == "me" or teacher_id == "mine":
+        teacher_id = str(current_user.get("user_id") or "")
+    if teacher_id:
+        return await asyncio.to_thread(lab_schedule_repo.list_for_teacher, teacher_id)
     if laboratory_id and weekday is not None:
         return await asyncio.to_thread(
             lab_schedule_repo.list_active_for_laboratory_weekday, laboratory_id, weekday

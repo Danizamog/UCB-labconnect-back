@@ -817,7 +817,7 @@ async def list_my_reservations(
 @router.get("/summary", response_model=AgendaSummaryResponse)
 async def get_my_agenda_summary(
     current_user: dict = Depends(get_current_user),
-    limit: int = Query(default=5, ge=1, le=12),
+    limit: int = Query(default=5, ge=1, le=50),
 ) -> AgendaSummaryResponse:
     requester = str(current_user.get("user_id") or "").strip()
     now = now_local_naive()

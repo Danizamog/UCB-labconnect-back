@@ -21,6 +21,8 @@ def _to_response(record: dict) -> LabScheduleResponse:
         subject=record.get("subject", ""),
         description=record.get("description", ""),
         is_active=bool(record.get("is_active", True)),
+        teacher_id=str(record.get("teacher_id") or ""),
+        teacher_name=str(record.get("teacher_name") or ""),
         created=record.get("created", ""),
         updated=record.get("updated", ""),
     )
@@ -70,6 +72,13 @@ class LabScheduleRepository:
         filter_expr = f'laboratory_id="{_escape_filter_value(normalized_laboratory_id)}"'
         return self._list_with_filter(filter_expr)
 
+    def list_for_teacher(self, teacher_id: str) -> list[LabScheduleResponse]:
+        normalized_teacher_id = str(teacher_id or "").strip()
+        if not normalized_teacher_id:
+            return []
+        filter_expr = f'teacher_id="{_escape_filter_value(normalized_teacher_id)}" && is_active=true'
+        return self._list_with_filter(filter_expr)
+
     def list_all_active(self) -> list[LabScheduleResponse]:
         """Trae todos los horarios activos en un solo round-trip.
 
@@ -115,6 +124,8 @@ class LabScheduleRepository:
     def create(self, body: LabScheduleCreate) -> LabScheduleResponse:
         payload = body.model_dump(exclude_none=True)
         payload.setdefault("description", "")
+        payload.setdefault("teacher_id", "")
+        payload.setdefault("teacher_name", "")
         payload["is_active"] = True if payload.get("is_active") is None else bool(payload.get("is_active"))
 
         data = self._client.request("POST", self._base, payload=payload)
