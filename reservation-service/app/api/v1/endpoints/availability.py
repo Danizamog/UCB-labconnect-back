@@ -134,28 +134,33 @@ def _compute_slots_for_day(
                     break
 
         if state == "available":
-            overlapping = [
+            # Reservas comprometidas y tutorias publicadas compiten por el bloque bajo la
+            # misma regla de exclusividad: si CUALQUIER ocupante requiere todo el laboratorio
+            # el bloque queda 'occupied'; si todos son compartidos queda 'partial' (aun
+            # reservable por otra reserva/tutoria compartida).
+            overlapping_res = [
                 reservation for reservation in reservations
                 if _has_overlap(start_dt, end_dt, reservation.start_at, reservation.end_at)
             ]
-            if overlapping:
-                # Una reserva exclusiva ocupa todo el bloque; si solo hay compartidas, el
-                # bloque queda 'partial' (aun reservable para otra reserva compartida).
-                exclusive = next((r for r in overlapping if r.requires_full_lab), None)
-                chosen = exclusive or overlapping[0]
-                state = "occupied" if exclusive is not None else "partial"
-                source = "lab_reservation"
-                source_id = chosen.id
-                source_status = chosen.status
-
-        if state == "available":
-            for session in tutorial_sessions:
-                if _has_overlap(start_dt, end_dt, session.start_at, session.end_at):
-                    state = "occupied"
-                    source = "tutorial_session"
-                    source_id = session.id
-                    source_status = "published"
-                    break
+            overlapping_tut = [
+                session for session in tutorial_sessions
+                if _has_overlap(start_dt, end_dt, session.start_at, session.end_at)
+            ]
+            if overlapping_res or overlapping_tut:
+                exclusive_res = next((r for r in overlapping_res if r.requires_full_lab), None)
+                exclusive_tut = next(
+                    (s for s in overlapping_tut if getattr(s, "requires_full_lab", True)), None
+                )
+                state = "occupied" if (exclusive_res or exclusive_tut) else "partial"
+                # Fuente a mostrar: preferimos el ocupante exclusivo.
+                if exclusive_res is not None:
+                    source, source_id, source_status = "lab_reservation", exclusive_res.id, exclusive_res.status
+                elif exclusive_tut is not None:
+                    source, source_id, source_status = "tutorial_session", exclusive_tut.id, "published"
+                elif overlapping_res:
+                    source, source_id, source_status = "lab_reservation", overlapping_res[0].id, overlapping_res[0].status
+                else:
+                    source, source_id, source_status = "tutorial_session", overlapping_tut[0].id, "published"
 
         if state == "available" and (
             current_date < current_local_time.date() or (

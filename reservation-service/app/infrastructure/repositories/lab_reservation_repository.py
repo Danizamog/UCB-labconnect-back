@@ -56,6 +56,9 @@ def _to_response(record: dict) -> LabReservationResponse:
         # Registros verdaderamente legacy sin el campo se tratan como exclusivos para no
         # perder el bloqueo previo. Los registros ya migrados traen el valor explicito.
         requires_full_lab=bool(record.get("requires_full_lab", True)),
+        responsible_teacher=record.get("responsible_teacher", "") or "",
+        responsible_teacher_name=record.get("responsible_teacher_name", "") or "",
+        project_description=record.get("project_description", "") or "",
     )
 
 
@@ -422,6 +425,11 @@ class LabReservationRepository:
         payload["user_modification_count"] = int(payload.get("user_modification_count") or 0)
         # Default: compartida (varias reservas pueden coexistir en el mismo horario).
         payload["requires_full_lab"] = bool(payload.get("requires_full_lab"))
+        # Campos opcionales de docente responsable / descripcion del proyecto: PocketBase
+        # espera cadenas (relacion vacia = "") en vez de None.
+        payload["responsible_teacher"] = str(payload.get("responsible_teacher") or "")
+        payload["responsible_teacher_name"] = str(payload.get("responsible_teacher_name") or "")
+        payload["project_description"] = str(payload.get("project_description") or "")
         payload["requested_by"] = payload.get("requested_by") or (current_user or {}).get("user_id") or ""
         if current_user:
             payload["requested_by_name"] = str(current_user.get("name") or current_user.get("username") or "").strip()

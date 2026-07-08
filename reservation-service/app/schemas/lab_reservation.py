@@ -21,6 +21,9 @@ class LabReservationCreate(BaseModel):
     is_active: bool | None = None
     user_modification_count: int | None = None
     requires_full_lab: bool | None = None
+    responsible_teacher: str | None = None
+    responsible_teacher_name: str | None = None
+    project_description: str | None = None
 
 
 class LabReservationUpdate(BaseModel):
@@ -39,6 +42,9 @@ class LabReservationUpdate(BaseModel):
     is_active: bool | None = None
     user_modification_count: int | None = None
     requires_full_lab: bool | None = None
+    responsible_teacher: str | None = None
+    responsible_teacher_name: str | None = None
+    project_description: str | None = None
 
 
 class LabReservationStatusUpdate(BaseModel):
@@ -71,6 +77,9 @@ class LabReservationResponse(BaseModel):
     is_walk_in: bool = False
     user_modification_count: int = 0
     requires_full_lab: bool = False
+    responsible_teacher: str = ""
+    responsible_teacher_name: str = ""
+    project_description: str = ""
 
 
 class PaginatedLabReservationResponse(BaseModel):

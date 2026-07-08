@@ -73,14 +73,9 @@ def create_supply_reservation(
             detail="Has superado la cantidad maxima permitida para este insumo",
         )
 
-    item_lab_id = str(stock_item.get("laboratory_id") or "")
-    requested_lab_id = str(body.laboratory_id or "").strip()
-    if requested_lab_id and item_lab_id and requested_lab_id != item_lab_id:
-        # PA 3: el material no pertenece al laboratorio que el usuario seleccionó.
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="El material no pertenece al laboratorio seleccionado",
-        )
+    # Materiales globales: cualquier reserva puede solicitar cualquier material sin importar
+    # el laboratorio. Antes se exigia que el material perteneciera al lab seleccionado; esa
+    # validacion se elimina para permitir un catalogo compartido entre laboratorios.
 
     current_qty = int(stock_item.get("quantity_available") or 0)
     if current_qty <= 0:

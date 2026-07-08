@@ -85,6 +85,48 @@ def list_stock_items(
     return stock_item_repo.list_by_laboratories(list(accessible))
 
 
+# Lista fija de categorias de material (debe coincidir con MATERIAL_CATEGORIES del front).
+MATERIAL_CATEGORIES = [
+    "Reactivos",
+    "Cristalería",
+    "Electrónica",
+    "Redes",
+    "Seguridad",
+    "Herramientas",
+    "Mobiliario",
+    "Consumibles",
+    "Otros",
+]
+
+
+class StockCatalogResponse(BaseModel):
+    items: list[StockItemResponse]
+    page: int
+    perPage: int
+    totalItems: int
+    totalPages: int
+
+
+@router.get("/catalog", response_model=StockCatalogResponse)
+def get_stock_catalog(
+    search: str = Query(default=""),
+    category: str = Query(default=""),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=24, ge=1, le=100, alias="perPage"),
+    current_user: dict = Depends(get_current_user),
+) -> StockCatalogResponse:
+    """Catalogo GLOBAL de materiales para reservar: cualquier usuario autenticado puede
+    verlo (independiente de laboratorio), con busqueda, filtro por categoria y paginacion."""
+    result = stock_item_repo.search_catalog(
+        search=search,
+        category=category,
+        page=page,
+        per_page=per_page,
+        known_categories=MATERIAL_CATEGORIES,
+    )
+    return StockCatalogResponse(**result)
+
+
 @router.get("/movements", response_model=list[StockMovementResponse])
 def list_movements(
     limit: int = Query(default=40, ge=1, le=200),

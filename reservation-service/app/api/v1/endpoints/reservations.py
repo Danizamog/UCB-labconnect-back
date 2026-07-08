@@ -196,12 +196,19 @@ def _validate_reservation_time_rules(
                 detail = "Ese bloque ya tiene reservas aprobadas; no puedes tomar el laboratorio en uso exclusivo"
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
 
+    # Las tutorias publicadas tambien participan de la exclusividad: una tutoria que ocupa
+    # todo el laboratorio choca con cualquier reserva; una tutoria compartida solo choca con
+    # una reserva de uso exclusivo.
     for tutorial_session in tutorial_session_repo.list_public_for_laboratory_day(laboratory_id, day):
-        if _has_schedule_overlap(start_at, end_at, tutorial_session.start_at, tutorial_session.end_at):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Ese bloque ya no esta disponible porque existe una tutoria publicada en el mismo horario",
-            )
+        if not _has_schedule_overlap(start_at, end_at, tutorial_session.start_at, tutorial_session.end_at):
+            continue
+        tutorial_full_lab = bool(getattr(tutorial_session, "requires_full_lab", True))
+        if _reservations_conflict(requires_full_lab, tutorial_full_lab):
+            if tutorial_full_lab:
+                detail = "Ese bloque esta ocupado por una tutoria que usa todo el laboratorio"
+            else:
+                detail = "Ese bloque tiene una tutoria publicada; no puedes tomar el laboratorio en uso exclusivo"
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
 
 
 def _validate_approval_no_conflict(reservation: LabReservationResponse) -> None:
@@ -225,6 +232,17 @@ def _validate_approval_no_conflict(reservation: LabReservationResponse) -> None:
                     "El horario ya fue tomado por otra reserva aprobada y esta reserva no "
                     "puede aprobarse en conflicto"
                 ),
+            )
+
+    # Tambien revalidamos contra tutorias publicadas (una tutoria puede haberse publicado
+    # despues de crear la reserva), aplicando la misma matriz de exclusividad.
+    for tutorial_session in tutorial_session_repo.list_public_for_laboratory_day(reservation.laboratory_id, day):
+        if not _has_schedule_overlap(start_at, end_at, tutorial_session.start_at, tutorial_session.end_at):
+            continue
+        if _reservations_conflict(reservation.requires_full_lab, bool(getattr(tutorial_session, "requires_full_lab", True))):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="El horario tiene una tutoria publicada que impide aprobar esta reserva",
             )
 
 
@@ -954,6 +972,9 @@ async def create_reservation(body: LabReservationCreate, current_user: dict = De
         attendees_count=body.attendees_count,
         notes=body.notes,
         requires_full_lab=bool(body.requires_full_lab),
+        responsible_teacher=str(body.responsible_teacher or "").strip(),
+        responsible_teacher_name=str(body.responsible_teacher_name or "").strip(),
+        project_description=str(body.project_description or "").strip(),
     )
 
     async with laboratory_lock_registry.lock(body.laboratory_id):
@@ -1076,6 +1097,9 @@ async def update_reservation(
             attendees_count=body.attendees_count,
             notes=body.notes,
             requires_full_lab=body.requires_full_lab,
+            responsible_teacher=body.responsible_teacher,
+            responsible_teacher_name=body.responsible_teacher_name,
+            project_description=body.project_description,
         )
         if has_meaningful_schedule_change:
             payload = payload.model_copy(

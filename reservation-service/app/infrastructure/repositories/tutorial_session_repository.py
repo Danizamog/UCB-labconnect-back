@@ -225,6 +225,9 @@ class TutorialSessionRepository:
             end_at=_format_iso_utc(end_dt),
             max_students=max_students,
             is_published=True if body.is_published is None else bool(body.is_published),
+            # Default: la tutoria ocupa todo el laboratorio (exclusiva), preservando el
+            # comportamiento previo. El docente puede desmarcar para compartir el horario.
+            requires_full_lab=True if body.requires_full_lab is None else bool(body.requires_full_lab),
             approval_status="pending",
             approval_reason="",
             enrolled_students=[],
@@ -310,6 +313,7 @@ class TutorialSessionRepository:
             end_at=str(record.get("end_at") or ""),
             max_students=int(record.get("max_students") or 0),
             is_published=bool(record.get("is_published", True)),
+            requires_full_lab=bool(record.get("requires_full_lab", True)),
             approval_status=str(record.get("approval_status") or "pending").strip() or "pending",
             approval_reason=str(record.get("approval_reason") or "").strip(),
             tutor_observation=str(tutor_observation or "").strip(),
@@ -688,6 +692,7 @@ class TutorialSessionRepository:
                 "end_at": candidate.end_at,
                 "max_students": candidate.max_students,
                 "is_published": candidate.is_published,
+                "requires_full_lab": candidate.requires_full_lab,
                 "approval_status": "pending",
                 "approval_reason": "",
             },
@@ -713,6 +718,7 @@ class TutorialSessionRepository:
             tutor_name=body.tutor_name or existing.tutor_name,
             tutor_email=body.tutor_email or existing.tutor_email,
             is_published=existing.is_published if body.is_published is None else body.is_published,
+            requires_full_lab=existing.requires_full_lab if body.requires_full_lab is None else body.requires_full_lab,
         )
 
         candidate = self._build_session(session_id, merged_body)
@@ -738,6 +744,7 @@ class TutorialSessionRepository:
                 "end_at": candidate.end_at,
                 "max_students": candidate.max_students,
                 "is_published": candidate.is_published,
+                "requires_full_lab": candidate.requires_full_lab,
             },
         )
         if not isinstance(data, dict):

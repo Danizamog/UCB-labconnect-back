@@ -25,6 +25,7 @@ class TutorialSessionCreate(BaseModel):
     tutor_name: str | None = None
     tutor_email: str | None = None
     is_published: bool | None = None
+    requires_full_lab: bool | None = None
 
 
 class TutorialSessionObservationUpdate(BaseModel):
@@ -57,6 +58,7 @@ class TutorialSessionResponse(BaseModel):
     end_at: str
     max_students: int
     is_published: bool
+    requires_full_lab: bool = False
     approval_status: str = "pending"
     approval_reason: str = ""
     tutor_observation: str = ""

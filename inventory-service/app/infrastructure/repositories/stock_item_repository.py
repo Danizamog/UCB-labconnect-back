@@ -84,6 +84,52 @@ class StockItemRepository:
         items.sort(key=lambda x: (x.name or "").lower())
         return items
 
+    def search_catalog(
+        self,
+        *,
+        search: str = "",
+        category: str = "",
+        page: int = 1,
+        per_page: int = 24,
+        known_categories: list[str] | None = None,
+    ) -> dict:
+        """Catalogo global paginado para reservar: busqueda por nombre/categoria y filtro
+        por categoria, resuelto server-side en PocketBase (no trae todo el inventario)."""
+        clauses: list[str] = []
+
+        term = str(search or "").strip()
+        if term:
+            esc = self._escape_filter_value(term)
+            clauses.append(f'(name~"{esc}" || category~"{esc}")')
+
+        cat = str(category or "").strip()
+        if cat:
+            if cat == "Otros":
+                # "Otros" = categoria fuera de la lista conocida (incluye vacias).
+                known = [c for c in (known_categories or []) if c and c != "Otros"]
+                for c in known:
+                    clauses.append(f'category!="{self._escape_filter_value(c)}"')
+            else:
+                clauses.append(f'category="{self._escape_filter_value(cat)}"')
+
+        params: dict = {"page": max(1, int(page or 1)), "perPage": max(1, int(per_page or 24)), "sort": "name"}
+        if clauses:
+            params["filter"] = " && ".join(clauses)
+
+        data = self._client.request("GET", self._base, params=params)
+        if not isinstance(data, dict):
+            return {"items": [], "page": page, "perPage": per_page, "totalItems": 0, "totalPages": 0}
+
+        records = data.get("items", [])
+        items = [_to_response(r) for r in records if isinstance(r, dict)]
+        return {
+            "items": items,
+            "page": int(data.get("page", page)),
+            "perPage": int(data.get("perPage", per_page)),
+            "totalItems": int(data.get("totalItems", len(items))),
+            "totalPages": int(data.get("totalPages", 1)),
+        }
+
     def list_all(self, page: int = 1, per_page: int = 200) -> list[StockItemResponse]:
         cache_key = ("list_all", page, per_page)
 
