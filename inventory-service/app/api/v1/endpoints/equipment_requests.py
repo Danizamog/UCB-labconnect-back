@@ -16,12 +16,7 @@ _CREATE_EQUIPMENT_REQUESTS = {"solicitar_recursos_clase"} | _MANAGE_LOANS
 
 
 def _can_manage(current_user: dict) -> bool:
-    role = str(current_user.get("role") or "").strip().lower()
-    if role in {"admin", "administrador"}:
-        return True
     permissions = set(current_user.get("permissions") or [])
-    if "*" in permissions:
-        return True
     return bool(permissions.intersection(_MANAGE_LOANS))
 
 
@@ -77,6 +72,11 @@ def update_equipment_request_status(
         _MANAGE_LOANS,
         "No tienes permisos para gestionar solicitudes de equipo",
     )
+    accessible = resolve_accessible_lab_ids(current_user)
+    if accessible is not None:
+        existing = equipment_request_repo.get_by_id(request_id)
+        if existing is None or str(existing.laboratory_id or "") not in accessible:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solicitud de equipo no encontrada")
     try:
         return equipment_request_repo.update_status(
             request_id,

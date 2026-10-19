@@ -11,7 +11,7 @@ from app.schemas.laboratory import (
 
 router = APIRouter(prefix="/laboratories", tags=["laboratories"])
 
-_MANAGE_LABS = {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"}
+_MANAGE_LABS = {"gestionar_estructura_laboratorios"}
 
 
 @router.get("/all", response_model=list[LaboratoryResponse])

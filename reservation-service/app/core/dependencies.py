@@ -94,10 +94,7 @@ def _resolve_live_payload(token: str, fallback_payload: dict | None) -> dict:
     fallback_payload = fallback_payload or {}
 
     if not auth_service_url:
-        if not fallback_payload:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalido o expirado")
-        _set_cached_token_payload(token, fallback_payload)
-        return fallback_payload
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No se pudo validar la sesion actual")
 
     try:
         response = auth_validation_client.get(
@@ -105,9 +102,6 @@ def _resolve_live_payload(token: str, fallback_payload: dict | None) -> dict:
             headers={"Authorization": f"Bearer {token}"},
         )
     except httpx.HTTPError as exc:
-        if fallback_payload:
-            _set_cached_token_payload(token, fallback_payload)
-            return fallback_payload
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No se pudo validar la sesion actual",
@@ -134,9 +128,6 @@ def _resolve_live_payload(token: str, fallback_payload: dict | None) -> dict:
         )
 
     if response.status_code >= 400:
-        if fallback_payload:
-            _set_cached_token_payload(token, fallback_payload)
-            return fallback_payload
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No se pudo validar la sesion actual",
@@ -144,13 +135,13 @@ def _resolve_live_payload(token: str, fallback_payload: dict | None) -> dict:
 
     body = response.json()
     if not isinstance(body, dict):
-        if not fallback_payload:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalido o expirado")
-        return fallback_payload
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Respuesta de sesion invalida")
 
     live_permissions = body.get("permissions")
     if not isinstance(live_permissions, list):
-        live_permissions = fallback_payload.get("permissions") or []
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Permisos de sesion invalidos")
+    if body.get("must_change_password"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Debes cambiar tu contrasena antes de continuar")
 
     resolved_payload = {
         "username": str(body.get("subject") or body.get("sub") or fallback_payload.get("username", "")),
@@ -183,12 +174,11 @@ def validate_token(token: str) -> dict:
 
 
 def is_admin_role(current_user: dict) -> bool:
-    role = str(current_user.get("role") or "").strip().lower()
-    return role in {"admin", "administrador"}
+    return False
 
 
 def ensure_any_permission(current_user: dict, required_permissions: set[str], detail: str) -> None:
     permissions = set(current_user.get("permissions") or [])
-    if is_admin_role(current_user) or "*" in permissions or permissions.intersection(required_permissions):
+    if permissions.intersection(required_permissions):
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)

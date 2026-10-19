@@ -15,7 +15,7 @@ _MANAGEMENT_PERMISSIONS = {
     "gestionar_reglas_reserva",
     "gestionar_accesos_laboratorio",
     "gestionar_penalizaciones",
-    "gestionar_horarios",
+        "gestionar_horarios_laboratorio",
 }
 
 _PERSONAL_TOPICS = {"user_notification", "user_penalty"}
@@ -35,10 +35,6 @@ class ClientContext:
     laboratory_ids: frozenset[str] = field(default_factory=frozenset)
 
     def is_manager(self) -> bool:
-        if str(self.role or "").strip().lower() in {"admin", "administrador"}:
-            return True
-        if "*" in self.permissions:
-            return True
         return bool(self.permissions.intersection(_MANAGEMENT_PERMISSIONS))
 
 

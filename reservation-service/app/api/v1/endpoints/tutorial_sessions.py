@@ -85,7 +85,7 @@ def list_public_tutorial_sessions(
 def list_my_tutorial_sessions(current_user: dict = Depends(get_current_user)) -> list[TutorialSessionResponse]:
     ensure_any_permission(
         current_user,
-        {"gestionar_tutorias"},
+        {"gestionar_tutorias_propias"},
         "No tienes permisos para gestionar tutorias",
     )
     return tutorial_session_repo.list_for_tutor(current_user.get("user_id") or "")
@@ -97,7 +97,7 @@ def list_pending_tutorial_sessions(
 ) -> list[TutorialSessionResponse]:
     ensure_any_permission(
         current_user,
-        {"gestionar_reservas", "gestionar_tutorias"},
+        {"aprobar_tutorias"},
         "No tienes permisos para revisar tutorias pendientes",
     )
     return tutorial_session_repo.list_pending()
@@ -111,7 +111,7 @@ async def set_tutorial_session_approval(
 ) -> TutorialSessionResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_reservas", "gestionar_tutorias"},
+        {"aprobar_tutorias"},
         "No tienes permisos para aprobar o rechazar tutorias",
     )
 
@@ -181,7 +181,7 @@ def get_tutorial_session(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
 
     is_admin = is_admin_role(current_user)
-    can_manage = "gestionar_tutorias" in set(current_user.get("permissions") or [])
+    can_manage = "gestionar_tutorias_propias" in set(current_user.get("permissions") or [])
     is_owner = session.tutor_id == (current_user.get("user_id") or "")
 
     if not session.is_published and not (is_admin or can_manage or is_owner):
@@ -197,7 +197,7 @@ async def create_tutorial_session(
 ) -> TutorialSessionResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_tutorias"},
+        {"gestionar_tutorias_propias"},
         "No tienes permisos para publicar tutorias",
     )
 
@@ -234,7 +234,7 @@ async def update_tutorial_session(
 ) -> TutorialSessionResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_tutorias"},
+        {"gestionar_tutorias_propias"},
         "No tienes permisos para actualizar tutorias",
     )
 
@@ -315,7 +315,7 @@ async def save_tutorial_session_observation(
 ) -> TutorialSessionResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_tutorias", "gestionar_observaciones_tutorias"},
+        {"gestionar_tutorias_propias", "gestionar_observaciones_tutorias"},
         "No tienes permisos para registrar observaciones de tutorias",
     )
 
@@ -358,6 +358,8 @@ async def enroll_in_tutorial_session(
     session_id: str,
     current_user: dict = Depends(get_current_user),
 ) -> TutorialSessionResponse:
+    if str(current_user.get("role") or "").strip().lower() != "estudiante":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo Estudiante puede inscribirse a tutorias")
     try:
         updated = await asyncio.to_thread(
             tutorial_session_repo.enroll,
@@ -387,6 +389,8 @@ async def cancel_tutorial_enrollment(
     session_id: str,
     current_user: dict = Depends(get_current_user),
 ) -> TutorialSessionResponse:
+    if str(current_user.get("role") or "").strip().lower() != "estudiante":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo Estudiante puede gestionar su inscripcion")
     try:
         updated = await asyncio.to_thread(
             tutorial_session_repo.cancel_enrollment,
@@ -418,7 +422,7 @@ async def update_tutorial_attendance(
 ) -> TutorialSessionResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_tutorias", "gestionar_observaciones_tutorias"},
+        {"gestionar_tutorias_propias", "gestionar_observaciones_tutorias"},
         "No tienes permisos para registrar asistencia de tutorias",
     )
 
@@ -464,7 +468,7 @@ async def delete_tutorial_session(
 ) -> None:
     ensure_any_permission(
         current_user,
-        {"gestionar_tutorias"},
+        {"gestionar_tutorias_propias"},
         "No tienes permisos para eliminar tutorias",
     )
 

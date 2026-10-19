@@ -78,3 +78,19 @@ class StockMovementRepository:
         result.sort(key=lambda r: r.created_at, reverse=True)
         return result[:limit]
 
+    def list_all_for_item(self, stock_item_id: str) -> list[StockMovementRecord]:
+        records: list[StockMovementRecord] = []
+        page = 1
+        while True:
+            data = self._client.request("GET", self._base, params={
+                "perPage": 200,
+                "page": page,
+                "filter": f'stock_item_id = "{stock_item_id}"',
+            })
+            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+                raise ValueError("No se pudo verificar el historial de prestamos")
+            records.extend(StockMovementRecord(item) for item in data["items"])
+            if page >= int(data.get("totalPages") or 1):
+                return records
+            page += 1
+

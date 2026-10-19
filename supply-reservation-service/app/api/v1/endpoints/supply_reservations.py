@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.application.container import stock_item_repo, stock_movement_repo, supply_reservation_repo
+from app.application.container import _pb_client, stock_item_repo, stock_movement_repo, supply_reservation_repo
 from app.core.dependencies import ensure_any_permission, get_current_user
 from app.core.locks import stock_item_lock_registry
 from app.schemas.supply_reservation import (
@@ -14,7 +14,39 @@ router = APIRouter(prefix="/supply-reservations", tags=["supply-reservations"])
 _ALLOWED_STATUSES = {"pending", "approved", "delivered", "cancelled"}
 _VIEW_SUPPLY_RESERVATIONS = {"gestionar_reservas_materiales", "gestionar_stock", "gestionar_reactivos_quimicos"}
 _MANAGE_SUPPLY_RESERVATIONS = {"gestionar_reservas_materiales", "gestionar_stock", "gestionar_reactivos_quimicos"}
-_TUTORIAL_SUPPLY_RESERVATIONS = {"gestionar_tutorias"}
+_TUTORIAL_SUPPLY_RESERVATIONS = {"gestionar_tutorias_propias"}
+
+
+def _is_global_supply_manager(current_user: dict) -> bool:
+    permissions = set(current_user.get("permissions") or [])
+    return "*" in permissions or "gestionar_estructura_laboratorios" in permissions
+
+
+def _managed_laboratory_ids(current_user: dict) -> set[str]:
+    user_id = str(current_user.get("user_id") or "").strip()
+    if not user_id:
+        return set()
+    result: set[str] = set()
+    page = 1
+    while True:
+        payload = _pb_client.request(
+            "GET", "/api/collections/laboratory/records",
+            params={"page": page, "perPage": 200, "filter": f'manager = "{user_id}"'},
+        )
+        if not isinstance(payload, dict):
+            return result
+        result.update(str(item.get("id") or "") for item in payload.get("items", []) if isinstance(item, dict))
+        if page >= int(payload.get("totalPages") or 1):
+            return result
+        page += 1
+
+
+def _ensure_stock_item_scope(stock_item_id: str, current_user: dict) -> None:
+    if _is_global_supply_manager(current_user):
+        return
+    stock_item = stock_item_repo.get_raw_by_id(stock_item_id)
+    if not stock_item or str(stock_item.get("laboratory_id") or "") not in _managed_laboratory_ids(current_user):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Material no encontrado en tu laboratorio")
 
 # Lock por stock_item para serializar la verificacion+descuento al aprobar y
 # evitar que dos aprobaciones simultaneas descuenten dos veces sobre el mismo
@@ -33,13 +65,17 @@ def list_supply_reservations(
     can_manage = _can_manage(current_user) or _can_manage_tutorial_supplies(current_user)
     requester_filter = None if can_manage else str(current_user.get("user_id") or current_user.get("username") or "")
 
-    return supply_reservation_repo.list_all(
+    records = supply_reservation_repo.list_all(
         status_filter=status_filter,
         tutorial_session_id=tutorial_session_id,
         stock_item_id=stock_item_id,
         lab_reservation_id=lab_reservation_id,
         requested_by=requester_filter,
     )
+    if _can_manage(current_user) and not _is_global_supply_manager(current_user):
+        managed = _managed_laboratory_ids(current_user)
+        return [record for record in records if record.laboratory_id in managed]
+    return records
 
 
 @router.get("/{reservation_id}", response_model=SupplyReservationResponse)
@@ -47,6 +83,8 @@ def get_supply_reservation(reservation_id: str, current_user: dict = Depends(get
     reservation = supply_reservation_repo.get_by_id(reservation_id)
     if reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva de insumo no encontrada")
+    if _can_manage(current_user):
+        _ensure_stock_item_scope(reservation.stock_item_id, current_user)
     if not _can_manage(current_user) and reservation.requested_by != (current_user.get("username") or current_user.get("user_id") or ""):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta reserva")
     return reservation
@@ -156,6 +194,8 @@ async def update_supply_reservation_status(
     existing = supply_reservation_repo.get_by_id(reservation_id)
     if existing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva de insumo no encontrada")
+    if _can_manage(current_user):
+        _ensure_stock_item_scope(existing.stock_item_id, current_user)
 
     if existing.status == "cancelled":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="La reserva ya esta cancelada")
@@ -235,20 +275,10 @@ async def update_supply_reservation_status(
 
 
 def _can_manage(current_user: dict) -> bool:
-    role = str(current_user.get("role") or "").strip().lower()
-    if role in {"admin", "administrador"}:
-        return True
     permissions = set(current_user.get("permissions") or [])
-    if "*" in permissions:
-        return True
     return bool(permissions.intersection(_MANAGE_SUPPLY_RESERVATIONS))
 
 
 def _can_manage_tutorial_supplies(current_user: dict) -> bool:
-    role = str(current_user.get("role") or "").strip().lower()
-    if role in {"admin", "administrador"}:
-        return True
     permissions = set(current_user.get("permissions") or [])
-    if "*" in permissions:
-        return True
     return bool(permissions.intersection(_TUTORIAL_SUPPLY_RESERVATIONS))

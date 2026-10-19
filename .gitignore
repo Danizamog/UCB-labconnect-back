@@ -185,3 +185,4 @@ cython_debug/
 *.db-shm
 *.db-wal
 .mcp.json
+.backups/

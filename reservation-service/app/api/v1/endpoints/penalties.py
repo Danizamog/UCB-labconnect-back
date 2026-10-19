@@ -35,8 +35,8 @@ from app.schemas.penalty import (
 
 router = APIRouter(prefix="/penalties", tags=["penalties"])
 _MANAGE_PENALTIES = {"gestionar_penalizaciones"}
-_REACTIVATE_ACCOUNT = {"gestionar_penalizaciones", "reactivar_cuentas"}
-_VIEW_PENALTIES = {"gestionar_penalizaciones", "reactivar_cuentas", "gestionar_roles_permisos"}
+_REACTIVATE_ACCOUNT = {"gestionar_penalizaciones", "gestionar_estado_cuentas"}
+_VIEW_PENALTIES = {"gestionar_penalizaciones", "gestionar_estado_cuentas", "consultar_usuarios"}
 
 
 def _notify_payload(penalty: PenaltyResponse) -> dict:

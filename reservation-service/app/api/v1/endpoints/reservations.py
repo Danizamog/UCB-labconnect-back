@@ -279,6 +279,51 @@ def _can_manage_reservations(current_user: dict) -> bool:
     return is_admin_role(current_user) or "*" in permissions or bool(permissions.intersection(_MANAGEMENT_PERMISSIONS))
 
 
+def _has_global_reservation_scope(current_user: dict) -> bool:
+    permissions = {str(value).strip() for value in current_user.get("permissions") or []}
+    return "*" in permissions or "gestionar_estructura_laboratorios" in permissions
+
+
+def _managed_laboratory_ids(current_user: dict) -> set[str]:
+    if _has_global_reservation_scope(current_user):
+        return set()
+    user_id = str(current_user.get("user_id") or "").strip()
+    if not user_id:
+        return set()
+    return {
+        str(lab.get("id") or "").strip()
+        for lab in laboratory_access_repo.list_all()
+        if str(lab.get("manager") or "").strip() == user_id
+    }
+
+
+def _is_laboratory_in_management_scope(laboratory_id: str, current_user: dict) -> bool:
+    return _has_global_reservation_scope(current_user) or str(laboratory_id or "").strip() in _managed_laboratory_ids(current_user)
+
+
+def _ensure_laboratory_management_scope(laboratory_id: str, current_user: dict) -> None:
+    if not _is_laboratory_in_management_scope(laboratory_id, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo puedes operar reservas de tu laboratorio asignado",
+        )
+
+
+def _filter_reservations_for_user(items: list[LabReservationResponse], current_user: dict) -> list[LabReservationResponse]:
+    if _has_global_reservation_scope(current_user):
+        return items
+    if _can_manage_reservations(current_user):
+        managed = _managed_laboratory_ids(current_user)
+        return [item for item in items if str(item.laboratory_id or "").strip() in managed]
+    user_id = str(current_user.get("user_id") or "").strip()
+    return [item for item in items if str(item.requested_by or "").strip() == user_id]
+
+
+def _can_access_reservation(reservation: LabReservationResponse, current_user: dict) -> bool:
+    is_owner = str(reservation.requested_by or "").strip() == str(current_user.get("user_id") or "").strip()
+    return is_owner or (_can_manage_reservations(current_user) and _is_laboratory_in_management_scope(reservation.laboratory_id, current_user))
+
+
 def _reservation_field_value(reservation: LabReservationResponse, field: str) -> str:
     if field == "date":
         return extract_iso_date(reservation.start_at)
@@ -695,7 +740,8 @@ async def list_reservations(
     )
 
     enriched = await asyncio.to_thread(lab_access_session_repo.enrich_reservations, data)
-    return [LabReservationResponse.model_validate(item) for item in enriched]
+    serialized = [LabReservationResponse.model_validate(item) for item in enriched]
+    return _filter_reservations_for_user(serialized, current_user)
 
 
 @router.get("/stats", response_model=LabReservationStatsResponse)
@@ -704,6 +750,7 @@ async def get_reservation_stats(
 ) -> LabReservationStatsResponse:
     requester = None if _can_manage_reservations(current_user) else str(current_user.get("user_id") or "")
     items = await lab_reservation_repo.alist_filtered(requested_by=requester)
+    items = _filter_reservations_for_user(items, current_user)
 
     pending = 0
     walk_in = 0
@@ -736,7 +783,8 @@ async def search_reservations(
     requester = None if _can_manage_reservations(current_user) else str(current_user.get("user_id") or "")
     normalized_where = str(where or "").strip() or None
 
-    if normalized_where is None:
+    limited_manager = _can_manage_reservations(current_user) and not _has_global_reservation_scope(current_user)
+    if normalized_where is None and not limited_manager:
         paginated_source_items, total_elements = await lab_reservation_repo.asearch_page(
             laboratory_id=laboratory_id,
             day=day,
@@ -764,7 +812,8 @@ async def search_reservations(
             lab_access_session_repo.enrich_reservations, source_items
         )
         serialized = [LabReservationResponse.model_validate(item) for item in enriched]
-        filtered = _apply_where_filter(serialized, normalized_where)
+        scoped = _filter_reservations_for_user(serialized, current_user)
+        filtered = _apply_where_filter(scoped, normalized_where)
         ordered = _sort_reservations(filtered, normalized_sort_by, normalized_sort_type)
 
         total_elements = len(ordered)
@@ -930,6 +979,13 @@ async def get_occupancy_dashboard(
         {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
         "No tienes permisos para consultar la ocupacion del laboratorio",
     )
+    if laboratory_id:
+        _ensure_laboratory_management_scope(laboratory_id, current_user)
+    elif not _has_global_reservation_scope(current_user):
+        managed_labs = sorted(_managed_laboratory_ids(current_user))
+        if not managed_labs:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes un laboratorio asignado")
+        laboratory_id = managed_labs[0]
     return await asyncio.to_thread(
         lab_access_session_repo.get_dashboard, laboratory_id=laboratory_id
     )
@@ -941,8 +997,7 @@ async def get_reservation(reservation_id: str, current_user: dict = Depends(get_
     if reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
-    can_manage = _can_manage_reservations(current_user)
-    if not can_manage and reservation.requested_by != (current_user.get("user_id") or ""):
+    if not _can_access_reservation(reservation, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta reserva")
 
     return _serialize_reservation(reservation)
@@ -950,6 +1005,10 @@ async def get_reservation(reservation_id: str, current_user: dict = Depends(get_
 
 @router.post("", response_model=LabReservationResponse, status_code=status.HTTP_201_CREATED)
 async def create_reservation(body: LabReservationCreate, current_user: dict = Depends(get_current_user)) -> LabReservationResponse:
+    role = str(current_user.get("role") or "").strip().lower()
+    permissions = set(current_user.get("permissions") or [])
+    if role not in {"estudiante", "docente", "encargado de laboratorio"} and "gestionar_reservas" not in permissions:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tu rol no permite crear reservas")
     active_penalty = user_penalty_repo.get_active_for_user(str(current_user.get("user_id") or "").strip())
     if active_penalty is not None:
         raise HTTPException(
@@ -1005,6 +1064,7 @@ async def create_walk_in_reservation(
         {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
         "No tienes permisos para registrar ingresos rapidos",
     )
+    _ensure_laboratory_management_scope(body.laboratory_id, current_user)
 
     active_penalty = user_penalty_repo.get_active_for_user(str(body.requested_by or "").strip())
     if active_penalty is not None:
@@ -1071,7 +1131,7 @@ async def update_reservation(
     if existing_reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
-    can_manage = _can_manage_reservations(current_user)
+    can_manage = _can_manage_reservations(current_user) and _is_laboratory_in_management_scope(existing_reservation.laboratory_id, current_user)
     if not can_manage and existing_reservation.requested_by != (current_user.get("user_id") or ""):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta reserva")
 
@@ -1111,6 +1171,8 @@ async def update_reservation(
             ensure_user_can_reserve_laboratory(str(payload.laboratory_id or existing_reservation.laboratory_id), current_user)
 
     target_lab_id = str(payload.laboratory_id or existing_reservation.laboratory_id)
+    if can_manage:
+        _ensure_laboratory_management_scope(target_lab_id, current_user)
     effective_full_lab = (
         existing_reservation.requires_full_lab
         if payload.requires_full_lab is None
@@ -1162,6 +1224,7 @@ async def update_reservation_status(
     existing_reservation = await lab_reservation_repo.aget_by_id(reservation_id)
     if existing_reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+    _ensure_laboratory_management_scope(existing_reservation.laboratory_id, current_user)
 
     if existing_reservation.status in _FINAL_RESERVATION_STATUSES:
         raise HTTPException(
@@ -1226,6 +1289,7 @@ async def register_reservation_entry(
     reservation = await lab_reservation_repo.aget_by_id(reservation_id)
     if reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+    _ensure_laboratory_management_scope(reservation.laboratory_id, current_user)
     if reservation.status not in {"approved", "in_progress"}:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Solo puedes registrar entrada sobre reservas aprobadas")
     if await asyncio.to_thread(lab_access_session_repo.get_open_by_reservation, reservation_id):
@@ -1280,6 +1344,10 @@ async def register_reservation_exit(
         if reservation is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva o sesión no encontrada")
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="La reserva no tiene una entrada activa")
+    _ensure_laboratory_management_scope(
+        reservation.laboratory_id if reservation is not None else session.laboratory_id,
+        current_user,
+    )
 
     await asyncio.to_thread(lab_access_session_repo.close, session.id)
 
@@ -1330,6 +1398,7 @@ async def mark_reservation_absent(
     reservation = await lab_reservation_repo.aget_by_id(reservation_id)
     if reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
+    _ensure_laboratory_management_scope(reservation.laboratory_id, current_user)
     if reservation.status != "approved":
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Solo las reservas aprobadas pueden marcarse como ausentes")
     if await asyncio.to_thread(lab_access_session_repo.get_open_by_reservation, reservation_id):
@@ -1357,7 +1426,7 @@ async def cancel_reservation(reservation_id: str, current_user: dict = Depends(g
     if reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
-    can_manage = _can_manage_reservations(current_user)
+    can_manage = _can_manage_reservations(current_user) and _is_laboratory_in_management_scope(reservation.laboratory_id, current_user)
     if not can_manage and reservation.requested_by != (current_user.get("user_id") or ""):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta reserva")
 

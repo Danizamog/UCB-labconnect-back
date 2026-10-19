@@ -12,6 +12,7 @@ from app.schemas.asset_maintenance import (
 
 router = APIRouter(prefix="/asset-maintenance", tags=["asset-maintenance"])
 _MANAGE_MAINTENANCE = {"gestionar_mantenimiento", "gestionar_estado_equipos", "gestionar_inventario"}
+_REGISTER_TICKETS = {"registrar_tickets_equipo"} | _MANAGE_MAINTENANCE
 
 _TICKET_NOT_FOUND_DETAIL = "Ticket no encontrado"
 _ASSET_OUT_OF_SCOPE_DETAIL = "Equipo no encontrado"
@@ -22,7 +23,7 @@ def list_tickets(
     status_filter: str | None = Query(default=None, alias="status"),
     current_user: dict = Depends(get_current_user),
 ) -> list[AssetMaintenanceTicketResponse]:
-    ensure_any_permission(current_user, _MANAGE_MAINTENANCE, "No tienes permisos para gestionar mantenimiento")
+    ensure_any_permission(current_user, _REGISTER_TICKETS, "No tienes permisos para consultar tickets")
     accessible = resolve_accessible_lab_ids(current_user)
     return asset_maintenance_repo.list_all(status_filter=status_filter, lab_ids=accessible)
 
@@ -31,7 +32,7 @@ def list_tickets(
 def list_user_flags(current_user: dict = Depends(get_current_user)) -> list[AssetResponsibilityFlagResponse]:
     ensure_any_permission(
         current_user,
-        {"gestionar_roles_permisos", "reactivar_cuentas", * _MANAGE_MAINTENANCE},
+        {"consultar_directorio_operativo", *_MANAGE_MAINTENANCE},
         "No tienes permisos para consultar banderas de responsabilidad",
     )
     accessible = resolve_accessible_lab_ids(current_user)
@@ -40,7 +41,7 @@ def list_user_flags(current_user: dict = Depends(get_current_user)) -> list[Asse
 
 @router.get("/assets/{asset_id}/history", response_model=list[AssetMaintenanceTicketResponse])
 def list_asset_history(asset_id: str, current_user: dict = Depends(get_current_user)) -> list[AssetMaintenanceTicketResponse]:
-    ensure_any_permission(current_user, _MANAGE_MAINTENANCE, "No tienes permisos para gestionar mantenimiento")
+    ensure_any_permission(current_user, _REGISTER_TICKETS, "No tienes permisos para consultar tickets")
     accessible = resolve_accessible_lab_ids(current_user)
     asset = asset_repo.get_by_id(asset_id)
     if asset is None:
@@ -56,7 +57,7 @@ def create_ticket(
     body: AssetMaintenanceTicketCreate,
     current_user: dict = Depends(get_current_user),
 ) -> AssetMaintenanceTicketResponse:
-    ensure_any_permission(current_user, _MANAGE_MAINTENANCE, "No tienes permisos para gestionar mantenimiento")
+    ensure_any_permission(current_user, _REGISTER_TICKETS, "No tienes permisos para registrar tickets")
     accessible = resolve_accessible_lab_ids(current_user)
     asset = asset_repo.get_by_id(asset_id)
     if asset is None:

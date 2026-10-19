@@ -88,7 +88,7 @@ def _build_client(repo: _StubTutorialRepo) -> TestClient:
     app.include_router(tutorial_sessions_endpoints.router, prefix="/api/v1")
     app.dependency_overrides[get_current_user] = lambda: {
         "user_id": "tutor-1",
-        "permissions": ["gestionar_tutorias", "gestionar_observaciones_tutorias"],
+        "permissions": ["gestionar_tutorias_propias", "gestionar_observaciones_tutorias"],
         "role": "tutor",
     }
     tutorial_sessions_endpoints.tutorial_session_repo = repo

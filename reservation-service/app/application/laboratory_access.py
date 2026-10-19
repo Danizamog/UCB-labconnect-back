@@ -29,12 +29,7 @@ def _normalize_bool(value: Any, *, default: bool = True) -> bool:
 
 def can_manage_laboratory_reservations(current_user: dict) -> bool:
     permissions = set(current_user.get("permissions") or [])
-    role = str(current_user.get("role") or "").strip().lower()
-    return (
-        role in {"admin", "administrador"}
-        or "*" in permissions
-        or bool(permissions.intersection(_MANAGEMENT_PERMISSIONS))
-    )
+    return "*" in permissions or "gestionar_estructura_laboratorios" in permissions
 
 
 def ensure_user_can_reserve_laboratory(laboratory_id: str, current_user: dict) -> dict:
@@ -59,11 +54,14 @@ def ensure_user_can_reserve_laboratory(laboratory_id: str, current_user: dict) -
         return laboratory
 
     user_role_key = str(current_user.get("role") or "").strip().lower()
+    effective_role_keys = {user_role_key}
+    if user_role_key == "encargado de laboratorio":
+        effective_role_keys.add("estudiante")
     user_id = str(current_user.get("user_id") or "").strip()
     permissions = {str(permission).strip() for permission in current_user.get("permissions") or [] if str(permission).strip()}
 
     allowed_roles = _normalize_string_list(laboratory.get("allowed_roles"))
-    if allowed_roles and user_role_key not in {role.lower() for role in allowed_roles}:
+    if allowed_roles and not effective_role_keys.intersection({role.lower() for role in allowed_roles}):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="No tienes permisos para reservar este laboratorio por tu rol actual",

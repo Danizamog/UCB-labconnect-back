@@ -16,7 +16,7 @@ class UserProfileBase(BaseModel):
 
 class UserProfileCreateRequest(UserProfileBase):
     username: str = Field(min_length=5)
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=12, max_length=128)
     name: str = Field(min_length=2)
     profile_type: str = "student"
     is_active: bool = True
@@ -24,7 +24,6 @@ class UserProfileCreateRequest(UserProfileBase):
 
 class UserProfileUpdateRequest(UserProfileBase):
     username: str | None = Field(default=None, min_length=5)
-    password: str | None = Field(default=None, min_length=8)
 
 
 class UserProfileResponse(BaseModel):
@@ -43,3 +42,16 @@ class UserProfileResponse(BaseModel):
     is_active: bool = True
     created_at: str | None = None
     updated_at: str | None = None
+    auth_provider: str = "local"
+    password_changed_at: str | None = None
+    user_code: str | None = None
+    security_locked: bool = False
+    failed_login_attempts: int = 0
+    locked_at: str | None = None
+    password_expires_at: str | None = None
+    must_change_password: bool = False
+
+
+class PasswordResetResponse(BaseModel):
+    temporary_password: str
+    must_change_password: bool = True

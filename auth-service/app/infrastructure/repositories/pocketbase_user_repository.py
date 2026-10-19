@@ -97,6 +97,7 @@ class PocketBaseUserRepository:
         method: str,
         url: str,
         payload: dict | None = None,
+        params: dict | None = None,
         headers: dict[str, str] | None = None,
         retry_on_auth_error: bool = True,
     ) -> dict | list | None:
@@ -105,6 +106,7 @@ class PocketBaseUserRepository:
                 method,
                 url,
                 json=payload,
+                params=params,
                 headers=self._headers(headers),
             )
             response.raise_for_status()
@@ -116,6 +118,7 @@ class PocketBaseUserRepository:
                     method,
                     url,
                     payload=payload,
+                    params=params,
                     headers=headers,
                     retry_on_auth_error=False,
                 )
@@ -232,6 +235,15 @@ class PocketBaseUserRepository:
             created_at=record.get("created"),
             updated_at=record.get("updated"),
             permissions=permissions,
+            auth_provider=(str(record.get("auth_provider", "local")).strip().lower() or "local"),
+            password_changed_at=record.get("password_changed_at"),
+            session_version=max(1, int(record.get("session_version") or 1)),
+            security_locked=bool(record.get("security_locked", False)),
+            user_code=(str(record.get("user_code", "")).strip() or None),
+            failed_login_attempts=max(0, int(record.get("failed_login_attempts") or 0)),
+            locked_at=record.get("locked_at"),
+            password_expires_at=record.get("password_expires_at"),
+            must_change_password=bool(record.get("must_change_password", False)),
         )
 
     def _fetch_record_by_id(self, user_id: str) -> User | None:
@@ -339,6 +351,15 @@ class PocketBaseUserRepository:
             "campus": user.campus,
             "bio": user.bio,
             "is_active": user.is_active,
+            "auth_provider": user.auth_provider,
+            "password_changed_at": user.password_changed_at,
+            "session_version": user.session_version,
+            "security_locked": user.security_locked,
+            "user_code": user.user_code,
+            "failed_login_attempts": user.failed_login_attempts,
+            "locked_at": user.locked_at,
+            "password_expires_at": user.password_expires_at,
+            "must_change_password": user.must_change_password,
         }
         for key, value in optional_fields.items():
             if key not in supported_fields:
@@ -465,6 +486,15 @@ class PocketBaseUserRepository:
                 campus=user.campus,
                 bio=user.bio,
                 is_active=user.is_active,
+                auth_provider=user.auth_provider or existing_user.auth_provider,
+                password_changed_at=user.password_changed_at,
+                session_version=user.session_version,
+                security_locked=user.security_locked,
+                user_code=user.user_code,
+                failed_login_attempts=user.failed_login_attempts,
+                locked_at=user.locked_at,
+                password_expires_at=user.password_expires_at,
+                must_change_password=user.must_change_password,
             )
         )
 
@@ -504,6 +534,15 @@ class PocketBaseUserRepository:
                 campus=user.campus,
                 bio=user.bio,
                 is_active=user.is_active,
+                auth_provider=user.auth_provider,
+                password_changed_at=user.password_changed_at,
+                session_version=user.session_version,
+                security_locked=user.security_locked,
+                user_code=user.user_code,
+                failed_login_attempts=user.failed_login_attempts,
+                locked_at=user.locked_at,
+                password_expires_at=user.password_expires_at,
+                must_change_password=user.must_change_password,
             ),
             password=password,
         )
@@ -546,7 +585,7 @@ class PocketBaseUserRepository:
                 retry_on_auth_error=False,
             )
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in {400, 401, 404}:
+            if exc.response.status_code in {400, 401, 403, 404}:
                 return None
             raise
 
@@ -564,6 +603,53 @@ class PocketBaseUserRepository:
                 return expanded_user
 
         return self._to_user(record)
+
+    def change_password(self, user: User, password: str) -> User:
+        if not user.id:
+            raise ValueError("Usuario no encontrado")
+        payload = self._build_payload(user, password=password)
+        try:
+            data = self._request("PATCH", f"{self._records_endpoint()}/{user.id}", payload=payload)
+        except httpx.HTTPStatusError as exc:
+            detail = self._extract_http_status_message(exc, "No se pudo cambiar la contrasena")
+            raise ValueError(detail) from exc
+        if not isinstance(data, dict):
+            raise ValueError("PocketBase devolvio una respuesta invalida")
+        return self._fetch_record_by_id(user.id) or self._to_user(data)
+
+    def list_security_records(self, collection: str, page: int = 1, per_page: int = 100) -> list[dict]:
+        self._ensure_authenticated()
+        endpoint = f"{self._base_url}/api/collections/{collection}/records"
+        payload = self._request(
+            "GET",
+            endpoint,
+            params={"page": max(1, page), "perPage": max(1, min(per_page, 200)), "sort": "-created"},
+        )
+        return payload.get("items", []) if isinstance(payload, dict) else []
+
+    def create_security_record(self, collection: str, payload: dict) -> None:
+        self._ensure_authenticated()
+        endpoint = f"{self._base_url}/api/collections/{collection}/records"
+        self._request("POST", endpoint, payload=payload)
+
+    def revoke_security_sessions(self, user_id: str, reason: str) -> None:
+        endpoint = f"{self._base_url}/api/collections/auth_session/records"
+        escaped = self._escape_filter_value(user_id)
+        payload = self._request("GET", endpoint, params={"page": 1, "perPage": 200, "filter": f'user_id="{escaped}" && status="active"'})
+        records = payload.get("items", []) if isinstance(payload, dict) else []
+        revoked_at = time.strftime("%Y-%m-%d %H:%M:%S.000Z", time.gmtime())
+        for record in records:
+            self._request("PATCH", f"{endpoint}/{record['id']}", payload={"status": "revoked", "revoked_at": revoked_at, "reason": reason})
+
+    def list_password_hashes(self, user_id: str, limit: int = 5) -> list[str]:
+        endpoint = f"{self._base_url}/api/collections/password_history/records"
+        escaped = self._escape_filter_value(user_id)
+        payload = self._request("GET", endpoint, params={"page": 1, "perPage": max(1, min(limit, 20)), "sort": "-created", "filter": f'user_id="{escaped}"'})
+        return [str(item.get("password_hash") or "") for item in payload.get("items", []) if item.get("password_hash")]
+
+    def record_password_hash(self, user_id: str, password_hash: str, reason: str) -> None:
+        endpoint = f"{self._base_url}/api/collections/password_history/records"
+        self._request("POST", endpoint, payload={"user_id": user_id, "password_hash": password_hash, "reason": reason})
 
     def check_ready(self) -> None:
         """Readiness probe: confirma conectividad y auth de admin contra PocketBase.

@@ -38,6 +38,8 @@ _MOVE_STOCK = {"gestionar_stock", "gestionar_reactivos_quimicos", "gestionar_res
 
 _OUT_OF_SCOPE_DETAIL = "Stock item no encontrado"
 _OUT_OF_SCOPE_LAB_DETAIL = "Solo puedes operar sobre materiales de tus laboratorios asignados"
+_LOAN_TAG = "[PRESTAMO ENCARGADO]"
+_RETURN_TAG = "[DEVOLUCION ENCARGADO]"
 
 
 class StockMovementCreate(BaseModel):
@@ -172,12 +174,21 @@ def create_movement(
     body: StockMovementCreate,
     current_user: dict = Depends(get_current_user),
 ) -> StockMovementResponse:
-    print(f"[DEBUG] create_movement called for {item_id} with body: {body.model_dump()}")
     if body.quantity <= 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="La cantidad del movimiento debe ser mayor a cero",
         )
+
+    ensure_any_permission(current_user, _MOVE_STOCK, "No tienes permisos para mover materiales")
+    if body.movement_type not in {"entry", "return", "consumption"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Tipo de movimiento invalido")
+    if body.movement_type == "entry":
+        ensure_any_permission(current_user, _MANAGE_STOCK, "No tienes permisos para ingresar stock nuevo")
+    limited_manager = not set(current_user.get("permissions") or []).intersection(_MANAGE_STOCK)
+    notes = body.notes.strip()
+    if limited_manager and not notes:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Indica a quien se presto o quien devuelve el material")
 
     accessible = resolve_accessible_lab_ids(current_user)
 
@@ -187,6 +198,19 @@ def create_movement(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
         if not is_lab_in_scope(item.laboratory_id, accessible):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+
+        if limited_manager and body.movement_type == "return":
+            try:
+                history = stock_movement_repo.list_all_for_item(item_id)
+            except Exception as exc:
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No se pudo verificar el historial de prestamos") from exc
+            outstanding = sum(
+                -record.quantity_change if record.notes.startswith(_LOAN_TAG) else
+                -record.quantity_change if record.notes.startswith(_RETURN_TAG) else 0
+                for record in history
+            )
+            if body.quantity > outstanding:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Solo se pueden recibir {max(0, outstanding)} unidades prestadas")
 
         if body.movement_type in ("entry", "return"):
             change = body.quantity
@@ -227,7 +251,7 @@ def create_movement(
                 quantity_change=change,
                 quantity_after=new_qty,
                 performed_by=performed_by,
-                notes=body.notes or "",
+                notes=f"{_RETURN_TAG if body.movement_type == 'return' else _LOAN_TAG} {notes}" if limited_manager else notes,
             )
         except Exception as movement_error:
             # Saga: el stock ya se actualizo en PB pero el movimiento fallo.
@@ -321,7 +345,7 @@ def update_stock_item_quantity(
     current_user: dict = Depends(get_current_user),
 ) -> StockItemResponse:
     print(f"[DEBUG] update_stock_item_quantity called for {item_id} with body: {body.model_dump()}")
-    ensure_any_permission(current_user, _MOVE_STOCK, "No tienes permisos para ajustar cantidades de stock")
+    ensure_any_permission(current_user, _MANAGE_STOCK, "No tienes permisos para fijar cantidades de stock")
     
     accessible = resolve_accessible_lab_ids(current_user)
 

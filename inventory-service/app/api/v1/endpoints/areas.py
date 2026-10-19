@@ -6,7 +6,7 @@ from app.schemas.area import AreaCreate, AreaResponse, AreaUpdate
 
 router = APIRouter(prefix="/areas", tags=["areas"])
 
-_MANAGE_AREAS = {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"}
+_MANAGE_AREAS = {"gestionar_estructura_laboratorios"}
 
 
 @router.get("/all", response_model=list[AreaResponse])

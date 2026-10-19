@@ -132,7 +132,7 @@ class PenaltyReactivationTests(unittest.IsolatedAsyncioTestCase):
     async def test_context_marks_user_as_ready_when_regularized(self) -> None:
         repo = _FakePenaltyRepo([_penalty()])
         history = _FakeHistoryStore()
-        current_user = {"user_id": "admin-1", "permissions": ["reactivar_cuentas"], "role": "staff", "name": "Admin User"}
+        current_user = {"user_id": "admin-1", "permissions": ["gestionar_estado_cuentas"], "role": "staff", "name": "Admin User"}
 
         async def _fake_profile(*args, **kwargs):
             return {
@@ -160,7 +160,7 @@ class PenaltyReactivationTests(unittest.IsolatedAsyncioTestCase):
     async def test_reactivate_user_account_lifts_penalty_reactivates_user_and_writes_history(self) -> None:
         repo = _FakePenaltyRepo([_penalty()])
         history = _FakeHistoryStore()
-        current_user = {"user_id": "admin-1", "permissions": ["reactivar_cuentas"], "role": "staff", "name": "Admin User"}
+        current_user = {"user_id": "admin-1", "permissions": ["gestionar_estado_cuentas"], "role": "staff", "name": "Admin User"}
         activation_updates: list[tuple[str, bool]] = []
         notifications: list[str] = []
         broadcasts: list[str] = []
@@ -219,7 +219,7 @@ class PenaltyReactivationTests(unittest.IsolatedAsyncioTestCase):
     async def test_reactivation_is_rejected_when_user_still_has_open_damage_flags(self) -> None:
         repo = _FakePenaltyRepo([_penalty()])
         history = _FakeHistoryStore()
-        current_user = {"user_id": "admin-1", "permissions": ["reactivar_cuentas"], "role": "staff", "name": "Admin User"}
+        current_user = {"user_id": "admin-1", "permissions": ["gestionar_estado_cuentas"], "role": "staff", "name": "Admin User"}
 
         async def _fake_profile(*args, **kwargs):
             return {

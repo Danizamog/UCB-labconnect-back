@@ -15,12 +15,13 @@ router = APIRouter(prefix="/v1/roles", tags=["roles"])
 
 @router.get("/", response_model=list[RoleResponse])
 def list_roles(current_user: dict = Depends(get_current_user_payload)):
-    ensure_any_permission(current_user, {"gestionar_roles_permisos"}, "No autorizado para ver roles")
+    ensure_any_permission(current_user, {"consultar_roles", "revisar_accesos_rbac"}, "No autorizado para ver roles")
     return manage_roles_use_case.list_roles()
 
 
 @router.get("/permissions/catalog")
-def list_permissions_catalog():
+def list_permissions_catalog(current_user: dict = Depends(get_current_user_payload)):
+    ensure_any_permission(current_user, {"consultar_roles", "gestionar_roles", "revisar_accesos_rbac"}, "No autorizado para ver permisos")
     return manage_roles_use_case.list_permissions_catalog()
 
 
@@ -29,12 +30,13 @@ def create_role(
     payload: RoleCreateRequest,
     current_user: dict = Depends(get_current_user_payload),
 ):
-    ensure_any_permission(current_user, {"gestionar_roles_permisos"}, "No autorizado para crear roles")
+    ensure_any_permission(current_user, {"gestionar_roles"}, "No autorizado para crear roles")
     try:
         return manage_roles_use_case.create_role(
             nombre=payload.nombre,
             descripcion=payload.descripcion,
             permisos=payload.permisos,
+            actor_permissions=current_user.get("permissions") or [],
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -42,7 +44,7 @@ def create_role(
 
 @router.get("/users", response_model=list[UserWithRoleResponse])
 def list_users_with_roles(current_user: dict = Depends(get_current_user_payload)):
-    ensure_any_permission(current_user, {"gestionar_roles_permisos"}, "No autorizado para ver usuarios y roles")
+    ensure_any_permission(current_user, {"asignar_roles", "revisar_accesos_rbac"}, "No autorizado para ver usuarios y roles")
     return manage_roles_use_case.list_users_with_roles()
 
 
@@ -52,9 +54,9 @@ def assign_role_to_user(
     payload: AssignUserRoleRequest,
     current_user: dict = Depends(get_current_user_payload),
 ):
-    ensure_any_permission(current_user, {"gestionar_roles_permisos"}, "No autorizado para asignar roles")
+    ensure_any_permission(current_user, {"asignar_roles"}, "No autorizado para asignar roles")
     try:
-        return manage_roles_use_case.assign_user_role(user_id=user_id, role_name=payload.roleId)
+        return manage_roles_use_case.assign_user_role(user_id=user_id, role_id=payload.roleId, actor_email=current_user.get("username", ""), actor_role=current_user.get("role", ""))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except LookupError as exc:
@@ -67,9 +69,9 @@ def assign_role_to_user_shortcut(
     payload: AssignUserRoleRequest,
     current_user: dict = Depends(get_current_user_payload),
 ):
-    ensure_any_permission(current_user, {"gestionar_roles_permisos"}, "No autorizado para asignar roles")
+    ensure_any_permission(current_user, {"asignar_roles"}, "No autorizado para asignar roles")
     try:
-        return manage_roles_use_case.assign_user_role(user_id=user_id, role_id=payload.roleId)
+        return manage_roles_use_case.assign_user_role(user_id=user_id, role_id=payload.roleId, actor_email=current_user.get("username", ""), actor_role=current_user.get("role", ""))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except LookupError as exc:
@@ -78,7 +80,7 @@ def assign_role_to_user_shortcut(
 
 @router.get("/{role_id}", response_model=RoleResponse)
 def get_role(role_id: str, current_user: dict = Depends(get_current_user_payload)):
-    ensure_any_permission(current_user, {"gestionar_roles_permisos"}, "No autorizado para ver roles")
+    ensure_any_permission(current_user, {"consultar_roles", "revisar_accesos_rbac"}, "No autorizado para ver roles")
     try:
         return manage_roles_use_case.get_role(role_id)
     except LookupError as exc:
@@ -91,13 +93,14 @@ def update_role(
     payload: RoleUpdateRequest,
     current_user: dict = Depends(get_current_user_payload),
 ):
-    ensure_any_permission(current_user, {"gestionar_roles_permisos"}, "No autorizado para editar roles")
+    ensure_any_permission(current_user, {"gestionar_roles"}, "No autorizado para editar roles")
     try:
         return manage_roles_use_case.update_role(
             role_id=role_id,
             nombre=payload.nombre,
             descripcion=payload.descripcion,
             permisos=payload.permisos,
+            actor_permissions=current_user.get("permissions") or [],
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -107,8 +110,10 @@ def update_role(
 
 @router.delete("/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_role(role_id: str, current_user: dict = Depends(get_current_user_payload)):
-    ensure_any_permission(current_user, {"gestionar_roles_permisos"}, "No autorizado para eliminar roles")
+    ensure_any_permission(current_user, {"gestionar_roles"}, "No autorizado para eliminar roles")
     try:
         manage_roles_use_case.delete_role(role_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
