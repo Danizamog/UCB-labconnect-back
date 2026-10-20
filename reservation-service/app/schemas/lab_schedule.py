@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.datetime_utils import is_valid_block_end, is_valid_block_start
@@ -44,6 +46,10 @@ class LabScheduleCreate(_LabScheduleBase):
     is_active: bool | None = None
     teacher_id: str | None = None
     teacher_name: str | None = None
+    approval_status: Literal["pending", "approved", "rejected"] = "pending"
+    approval_reason: str = ""
+    approved_by: str = ""
+    approved_at: str = ""
 
     @model_validator(mode="after")
     def _validate_range(self) -> "LabScheduleCreate":
@@ -62,6 +68,10 @@ class LabScheduleUpdate(_LabScheduleBase):
     is_active: bool | None = None
     teacher_id: str | None = None
     teacher_name: str | None = None
+    approval_status: Literal["pending", "approved", "rejected"] | None = None
+    approval_reason: str | None = None
+    approved_by: str | None = None
+    approved_at: str | None = None
 
     @model_validator(mode="after")
     def _validate_range(self) -> "LabScheduleUpdate":
@@ -81,5 +91,21 @@ class LabScheduleResponse(BaseModel):
     is_active: bool
     teacher_id: str = ""
     teacher_name: str = ""
+    approval_status: str = "approved"
+    approval_reason: str = ""
+    approved_by: str = ""
+    approved_at: str = ""
     created: str
     updated: str
+
+
+class LabScheduleApproval(BaseModel):
+    status: Literal["approved", "rejected"]
+    reason: str = Field(default="", max_length=1000)
+
+    @model_validator(mode="after")
+    def _require_rejection_reason(self) -> "LabScheduleApproval":
+        self.reason = self.reason.strip()
+        if self.status == "rejected" and not self.reason:
+            raise ValueError("Debes indicar un motivo para rechazar la clase")
+        return self

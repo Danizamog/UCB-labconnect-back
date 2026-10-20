@@ -24,9 +24,12 @@ ALL_PERMISSIONS = [
     "gestionar_penalizaciones", "gestionar_inventario", "gestionar_stock", "gestionar_estado_equipos",
     "gestionar_mantenimiento", "registrar_tickets_equipo", "gestionar_prestamos", "gestionar_reactivos_quimicos",
     "gestionar_tutorias_propias", "aprobar_tutorias", "gestionar_asistencia_tutorias",
+    "gestionar_clases_propias", "aprobar_clases",
     "gestionar_observaciones_tutorias", "solicitar_recursos_clase", "generar_reportes", "consultar_estadisticas",
     "consultar_auditoria_seguridad", "consultar_eventos_autenticacion", "consultar_sesiones_usuarios",
     "consultar_incidentes_seguridad", "revisar_accesos_rbac", "exportar_reportes_seguridad",
+    "gestionar_clases_propias", "solicitar_recursos_clase", "gestionar_tutorias_propias",
+    "gestionar_asistencia_tutorias", "gestionar_observaciones_tutorias",
 ]
 
 ADMIN_OPERATIONAL_PERMISSIONS = [permission for permission in ALL_PERMISSIONS if permission not in {
@@ -57,6 +60,7 @@ ROLE_TEMPLATES = {
     "Docente": [
         "gestionar_tutorias_propias", "gestionar_asistencia_tutorias",
         "gestionar_observaciones_tutorias", "solicitar_recursos_clase",
+        "gestionar_clases_propias",
     ],
     "Estudiante": [],
     "Invitado": [],

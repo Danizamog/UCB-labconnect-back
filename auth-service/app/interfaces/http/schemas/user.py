@@ -16,7 +16,6 @@ class UserProfileBase(BaseModel):
 
 class UserProfileCreateRequest(UserProfileBase):
     username: str = Field(min_length=5)
-    password: str = Field(min_length=12, max_length=128)
     name: str = Field(min_length=2)
     profile_type: str = "student"
     is_active: bool = True
@@ -55,3 +54,7 @@ class UserProfileResponse(BaseModel):
 class PasswordResetResponse(BaseModel):
     temporary_password: str
     must_change_password: bool = True
+
+
+class UserProfileCreatedResponse(UserProfileResponse):
+    temporary_password: str

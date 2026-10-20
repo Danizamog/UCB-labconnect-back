@@ -10,6 +10,7 @@ from app.domain.repositories.role_repository import RoleRepository
 
 PRIVILEGED_ROLE_NAMES = {"Administrador", "Administrador de Accesos", "OSI - Auditor de Seguridad"}
 PRIVILEGED_PERMISSIONS = {
+    "aprobar_clases",
     "crear_usuarios", "modificar_usuarios", "dar_baja_usuarios", "desbloquear_usuarios",
     "reiniciar_credenciales", "gestionar_roles", "asignar_roles",
     "consultar_auditoria_seguridad", "consultar_eventos_autenticacion", "consultar_sesiones_usuarios",

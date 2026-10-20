@@ -1,3 +1,5 @@
+import secrets
+
 from app.domain.entities.user import User
 from app.infrastructure.security.password import hash_password, verify_password
 
@@ -33,7 +35,7 @@ class InMemoryUserRepository:
 
     def save_with_password(self, user: User, password: str) -> User:
         stored_user = User(
-            id=user.id,
+            id=user.id or secrets.token_hex(8),
             username=user.username,
             hashed_password=hash_password(password),
             name=user.name,

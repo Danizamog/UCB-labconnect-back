@@ -28,6 +28,8 @@ PERMISSIONS = {
     "gestionar_asistencia_tutorias": ("Gestionar asistencia", "Registrar asistencia en tutorias propias."),
     "gestionar_observaciones_tutorias": ("Gestionar observaciones", "Registrar observaciones propias."),
     "solicitar_recursos_clase": ("Solicitar recursos", "Solicitar recursos para clases."),
+    "gestionar_clases_propias": ("Gestionar clases propias", "Crear y modificar clases propias sujetas a aprobacion."),
+    "aprobar_clases": ("Aprobar clases", "Aprobar o rechazar clases docentes desde Solicitudes y acceso."),
     "generar_reportes": ("Generar reportes", "Exportar reportes operativos."),
     "consultar_estadisticas": ("Consultar estadisticas", "Consultar analitica operativa."),
     "consultar_auditoria_seguridad": ("Consultar auditoria", "Leer eventos sanitizados."),
@@ -58,6 +60,8 @@ PERMISSION_ICONS = {
     "revisar_accesos_rbac": "🧭", "exportar_reportes_seguridad": "📤",
 }
 
+PERMISSION_ICONS.update({"gestionar_clases_propias": "📚", "aprobar_clases": "✅"})
+
 PERMISSION_CATALOG = [
     {"value": value, "label": label, "description": description, "icon": PERMISSION_ICONS.get(value, "•")}
     for value, (label, description) in PERMISSIONS.items()
@@ -69,6 +73,8 @@ ADMIN_OPERATIONAL_PERMISSIONS = [value for value in PERMISSIONS if value not in 
     "iniciar_restablecimiento_credencial", "consultar_auditoria_seguridad",
     "consultar_eventos_autenticacion", "consultar_sesiones_usuarios",
     "consultar_incidentes_seguridad", "revisar_accesos_rbac", "exportar_reportes_seguridad",
+    "gestionar_clases_propias", "solicitar_recursos_clase", "gestionar_tutorias_propias",
+    "gestionar_asistencia_tutorias", "gestionar_observaciones_tutorias",
 }]
 # Consultas compartidas: ambos administradores pueden identificar usuarios y
 # comprender la matriz, pero solo Accesos puede mutar identidades o RBAC.
@@ -92,6 +98,7 @@ DEFAULT_ROLE_TEMPLATES = [
     {"nombre": "Docente", "descripcion": "Tutorias propias y solicitudes de recursos docentes.", "permisos": [
         "gestionar_tutorias_propias", "gestionar_asistencia_tutorias", "gestionar_observaciones_tutorias",
         "solicitar_recursos_clase",
+        "gestionar_clases_propias",
     ]},
     {"nombre": "Estudiante", "descripcion": "Autoservicio academico sujeto a propiedad.", "permisos": []},
     {"nombre": "Invitado", "descripcion": "Solo consulta de cuenta; sin reservas ni tutorias.", "permisos": []},

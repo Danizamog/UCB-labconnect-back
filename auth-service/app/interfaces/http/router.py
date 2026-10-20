@@ -4,7 +4,7 @@ import string
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.application.container import (
@@ -26,6 +26,7 @@ from app.interfaces.http.schemas.auth import (
 )
 from app.interfaces.http.schemas.user import (
     UserProfileCreateRequest,
+    UserProfileCreatedResponse,
     UserProfileResponse,
     UserProfileUpdateRequest,
     PasswordResetResponse,
@@ -547,13 +548,14 @@ def get_user(user_id: str, current_user: dict = Depends(_require_user_directory_
     return _to_user_response(user, include_security=include_security)
 
 
-@users_router.post("/", response_model=UserProfileResponse, status_code=status.HTTP_201_CREATED)
+@users_router.post("/", response_model=UserProfileCreatedResponse, status_code=status.HTTP_201_CREATED)
 def create_user_profile(
     payload: UserProfileCreateRequest,
+    response: Response,
     current_user: dict = Depends(_require_profile_editor),
-) -> UserProfileResponse:
+) -> UserProfileCreatedResponse:
     normalized_username = payload.username.strip().lower()
-    if not normalized_username.endswith(settings.institutional_email_domain):
+    if normalized_username.count("@") != 1 or not normalized_username.split("@", 1)[0] or any(char.isspace() for char in normalized_username) or not normalized_username.endswith(settings.institutional_email_domain):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Solo se permiten correos institucionales UCB",
@@ -561,10 +563,7 @@ def create_user_profile(
     if user_repository.get_by_username(normalized_username):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El usuario ya existe")
 
-    try:
-        validate_password(payload.password)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    temporary_password = _generate_temporary_password()
     user = user_repository.save_with_password(
         User(
             username=normalized_username,
@@ -582,13 +581,15 @@ def create_user_profile(
             user_code=_new_user_code(),
             password_changed_at=datetime.now(timezone.utc).isoformat(),
             password_expires_at=password_expires_at(),
+            must_change_password=True,
         ),
-        payload.password,
+        temporary_password,
     )
-    _record_password(user, payload.password, "account_created")
+    _record_password(user, temporary_password, "account_created")
     session_cache.invalidate(user.username)
     _audit("user.created", actor_email=current_user.get("username", ""), actor_id=current_user.get("user_id", ""), target_type="user", target_id=user.id or "")
-    return _to_user_response(user)
+    response.headers["Cache-Control"] = "no-store"
+    return UserProfileCreatedResponse(**_to_user_response(user, include_security=True).model_dump(), temporary_password=temporary_password)
 
 
 @users_router.put("/{user_id}", response_model=UserProfileResponse)

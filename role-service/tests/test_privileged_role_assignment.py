@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.application.use_cases.manage_roles import ManageRolesUseCase
+from app.domain.permission_catalog import DEFAULT_ROLE_TEMPLATES
 
 
 class FakeRepository:
@@ -77,3 +78,11 @@ def test_different_admin_can_bootstrap_first_access_admin():
     assert result["roleId"] == "Administrador de Accesos"
     assert repository.updated_role is not None
     assert "asignar_roles" not in repository.updated_role.permisos
+
+
+def test_default_matrix_separates_teaching_approval_and_osi():
+    roles = {role["nombre"]: set(role["permisos"]) for role in DEFAULT_ROLE_TEMPLATES}
+    assert {"aprobar_clases", "aprobar_tutorias"} <= roles["Administrador"]
+    assert not roles["Administrador"].intersection({"gestionar_clases_propias", "solicitar_recursos_clase", "gestionar_tutorias_propias", "gestionar_asistencia_tutorias", "gestionar_observaciones_tutorias", "consultar_auditoria_seguridad", "revisar_accesos_rbac"})
+    assert "gestionar_clases_propias" in roles["Docente"]
+    assert all("aprobar_clases" not in permissions for name, permissions in roles.items() if name != "Administrador")

@@ -23,6 +23,10 @@ def _to_response(record: dict) -> LabScheduleResponse:
         is_active=bool(record.get("is_active", True)),
         teacher_id=str(record.get("teacher_id") or ""),
         teacher_name=str(record.get("teacher_name") or ""),
+        approval_status=str(record.get("approval_status") or "approved"),
+        approval_reason=str(record.get("approval_reason") or ""),
+        approved_by=str(record.get("approved_by") or ""),
+        approved_at=str(record.get("approved_at") or ""),
         created=record.get("created", ""),
         updated=record.get("updated", ""),
     )
@@ -61,7 +65,7 @@ class LabScheduleRepository:
             return []
         filter_expr = (
             f'laboratory_id="{_escape_filter_value(normalized_laboratory_id)}" '
-            f'&& weekday={int(weekday)} && is_active=true'
+            f'&& weekday={int(weekday)} && is_active=true && approval_status="approved"'
         )
         return self._list_with_filter(filter_expr)
 
@@ -76,7 +80,7 @@ class LabScheduleRepository:
         normalized_teacher_id = str(teacher_id or "").strip()
         if not normalized_teacher_id:
             return []
-        filter_expr = f'teacher_id="{_escape_filter_value(normalized_teacher_id)}" && is_active=true'
+        filter_expr = f'teacher_id="{_escape_filter_value(normalized_teacher_id)}"'
         return self._list_with_filter(filter_expr)
 
     def list_all_active(self) -> list[LabScheduleResponse]:
@@ -85,7 +89,10 @@ class LabScheduleRepository:
         Usado por analytics para evitar N x M queries cuando se calcula la
         ocupacion semanal/mensual por laboratorio.
         """
-        return self._list_with_filter("is_active=true", sort="laboratory_id,weekday,start_time")
+        return self._list_with_filter('is_active=true && approval_status="approved"', sort="laboratory_id,weekday,start_time")
+
+    def list_pending(self) -> list[LabScheduleResponse]:
+        return self._list_with_filter('approval_status="pending"')
 
     def list_all(self, page: int = 1, per_page: int = 200) -> list[LabScheduleResponse]:
         items: list[LabScheduleResponse] = []
