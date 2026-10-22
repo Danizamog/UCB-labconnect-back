@@ -1,0 +1,520 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+
+from app.application.container import tutorial_session_repo
+from app.api.v1.endpoints.availability import invalidate_availability_cache
+from app.core.datetime_utils import extract_iso_date, now_local_naive, parse_timestamp_to_local_naive
+from app.core.dependencies import ensure_any_permission, get_current_user, is_admin_role
+from app.notifications.store import notification_store
+from app.realtime.manager import realtime_manager
+from app.schemas.tutorial_session import (
+    TutorialEnrollmentAttendanceUpdate,
+    TutorialSessionApprovalUpdate,
+    TutorialSessionCreate,
+    TutorialSessionObservationUpdate,
+    TutorialSessionResponse,
+)
+
+
+def _session_has_started(session: TutorialSessionResponse) -> bool:
+    try:
+        start = parse_timestamp_to_local_naive(session.start_at)
+    except ValueError:
+        return False
+    return start <= now_local_naive()
+
+
+def _tutorial_day(session: TutorialSessionResponse) -> str:
+    return session.session_date or extract_iso_date(session.start_at)
+
+
+def _invalidate_tutorial_availability(session: TutorialSessionResponse) -> None:
+    invalidate_availability_cache(session.laboratory_id, _tutorial_day(session))
+
+
+router = APIRouter(prefix="/tutorial-sessions", tags=["tutorial-sessions"])
+
+
+async def _broadcast_tutorial_notification(
+    *,
+    recipient_user_id: str,
+    notification_type: str,
+    title: str,
+    message: str,
+    payload: dict,
+) -> None:
+    notification = await asyncio.to_thread(
+        notification_store.create,
+        recipient_user_id=recipient_user_id,
+        notification_type=notification_type,
+        title=title,
+        message=message,
+        payload=payload,
+    )
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "user_notification",
+            "action": "create",
+            "recipients": [recipient_user_id],
+            "record": notification.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+
+
+@router.get("", response_model=list[TutorialSessionResponse])
+def list_public_tutorial_sessions(
+    topic_search: str | None = Query(None),
+    session_date: str | None = Query(None),
+    laboratory_id: str | None = Query(None),
+    _: dict = Depends(get_current_user),
+) -> list[TutorialSessionResponse]:
+    return tutorial_session_repo.list_public(
+        topic_search=topic_search,
+        session_date=session_date,
+        laboratory_id=laboratory_id,
+    )
+
+
+@router.get("/mine", response_model=list[TutorialSessionResponse])
+def list_my_tutorial_sessions(current_user: dict = Depends(get_current_user)) -> list[TutorialSessionResponse]:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_tutorias_propias"},
+        "No tienes permisos para gestionar tutorias",
+    )
+    return tutorial_session_repo.list_for_tutor(current_user.get("user_id") or "")
+
+
+@router.get("/pending", response_model=list[TutorialSessionResponse])
+def list_pending_tutorial_sessions(
+    current_user: dict = Depends(get_current_user),
+) -> list[TutorialSessionResponse]:
+    ensure_any_permission(
+        current_user,
+        {"aprobar_tutorias"},
+        "No tienes permisos para revisar tutorias pendientes",
+    )
+    return tutorial_session_repo.list_pending()
+
+
+@router.patch("/{session_id}/approval", response_model=TutorialSessionResponse)
+async def set_tutorial_session_approval(
+    session_id: str,
+    body: TutorialSessionApprovalUpdate,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    ensure_any_permission(
+        current_user,
+        {"aprobar_tutorias"},
+        "No tienes permisos para aprobar o rechazar tutorias",
+    )
+
+    try:
+        updated = await asyncio.to_thread(
+            tutorial_session_repo.set_approval_status,
+            session_id,
+            status_value=body.status,
+            reason=body.reason,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    _invalidate_tutorial_availability(updated)
+
+    await _broadcast_tutorial_notification(
+        recipient_user_id=updated.tutor_id,
+        notification_type=(
+            "tutorial_session_approved"
+            if updated.approval_status == "approved"
+            else "tutorial_session_rejected"
+        ),
+        title=(
+            "Tutoria aprobada"
+            if updated.approval_status == "approved"
+            else "Tutoria rechazada"
+        ),
+        message=(
+            f"Tu tutoria '{updated.topic}' fue aprobada y ya esta visible para los estudiantes."
+            if updated.approval_status == "approved"
+            else f"Tu tutoria '{updated.topic}' fue rechazada. Motivo: {updated.approval_reason or 'Sin detalle'}"
+        ),
+        payload={
+            "tutorial_session_id": updated.id,
+            "topic": updated.topic,
+            "approval_status": updated.approval_status,
+            "approval_reason": updated.approval_reason,
+            "target_path": "/app/tutorias",
+        },
+    )
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "update",
+            "record": updated.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return updated
+
+
+@router.get("/my-enrollments", response_model=list[TutorialSessionResponse])
+def list_my_enrolled_tutorial_sessions(current_user: dict = Depends(get_current_user)) -> list[TutorialSessionResponse]:
+    return tutorial_session_repo.list_for_student(current_user.get("user_id") or "")
+
+
+@router.get("/{session_id}", response_model=TutorialSessionResponse)
+def get_tutorial_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    session = tutorial_session_repo.get_by_id(session_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
+
+    is_admin = is_admin_role(current_user)
+    can_manage = "gestionar_tutorias_propias" in set(current_user.get("permissions") or [])
+    is_owner = session.tutor_id == (current_user.get("user_id") or "")
+
+    if not session.is_published and not (is_admin or can_manage or is_owner):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta tutoria")
+
+    return session
+
+
+@router.post("", response_model=TutorialSessionResponse, status_code=status.HTTP_201_CREATED)
+async def create_tutorial_session(
+    body: TutorialSessionCreate,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_tutorias_propias"},
+        "No tienes permisos para publicar tutorias",
+    )
+
+    payload = body.model_copy(
+        update={
+            "tutor_id": body.tutor_id or current_user.get("user_id") or "",
+            "tutor_name": body.tutor_name or current_user.get("name") or current_user.get("username") or "Tutor",
+            "tutor_email": body.tutor_email or "",
+        }
+    )
+
+    try:
+        created = await asyncio.to_thread(tutorial_session_repo.create, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    _invalidate_tutorial_availability(created)
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "create",
+            "record": created.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return created
+
+
+@router.patch("/{session_id}", response_model=TutorialSessionResponse)
+async def update_tutorial_session(
+    session_id: str,
+    body: TutorialSessionCreate,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_tutorias_propias"},
+        "No tienes permisos para actualizar tutorias",
+    )
+
+    existing = await asyncio.to_thread(tutorial_session_repo.get_by_id, session_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
+
+    is_admin = is_admin_role(current_user)
+    if not is_admin and existing.tutor_id != (current_user.get("user_id") or ""):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No puedes editar una tutoria de otro tutor")
+
+    if _session_has_started(existing):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No puedes editar una tutoria que ya inicio o ya termino.",
+        )
+
+    payload = body.model_copy(
+        update={
+            "tutor_id": existing.tutor_id,
+            "tutor_name": body.tutor_name or existing.tutor_name,
+            "tutor_email": body.tutor_email or existing.tutor_email,
+            "is_published": existing.is_published if body.is_published is None else body.is_published,
+        }
+    )
+
+    try:
+        updated = await asyncio.to_thread(tutorial_session_repo.update, session_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    await asyncio.gather(*[
+        _broadcast_tutorial_notification(
+            recipient_user_id=enrollment.student_id,
+            notification_type="tutorial_session_updated",
+            title="Tutoria actualizada",
+            message=(
+                f"La tutoria '{updated.topic}' cambio de horario, laboratorio o cupos. "
+                "Revisa el detalle actualizado antes de asistir."
+            ),
+            payload={
+                "tutorial_session_id": updated.id,
+                "topic": updated.topic,
+                "old_location": existing.location,
+                "new_location": updated.location,
+                "old_session_date": existing.session_date,
+                "new_session_date": updated.session_date,
+                "old_start_time": existing.start_time,
+                "old_end_time": existing.end_time,
+                "new_start_time": updated.start_time,
+                "new_end_time": updated.end_time,
+                "target_path": "/app/tutorias",
+            },
+        )
+        for enrollment in existing.enrolled_students
+    ])
+
+    _invalidate_tutorial_availability(existing)
+    _invalidate_tutorial_availability(updated)
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "update",
+            "record": updated.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return updated
+
+
+@router.patch("/{session_id}/observation", response_model=TutorialSessionResponse)
+async def save_tutorial_session_observation(
+    session_id: str,
+    body: TutorialSessionObservationUpdate,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_tutorias_propias", "gestionar_observaciones_tutorias"},
+        "No tienes permisos para registrar observaciones de tutorias",
+    )
+
+    existing = await asyncio.to_thread(tutorial_session_repo.get_by_id, session_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
+
+    is_admin = is_admin_role(current_user)
+    if not is_admin and existing.tutor_id != (current_user.get("user_id") or ""):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No puedes registrar observaciones de una tutoria de otro tutor",
+        )
+
+    try:
+        updated = await asyncio.to_thread(
+            tutorial_session_repo.save_observation,
+            session_id,
+            tutor_id=current_user.get("user_id") or existing.tutor_id,
+            observation=body.tutor_observation,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "update",
+            "record": updated.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return updated
+
+
+@router.post("/{session_id}/enroll", response_model=TutorialSessionResponse)
+async def enroll_in_tutorial_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    if str(current_user.get("role") or "").strip().lower() != "estudiante":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo Estudiante puede inscribirse a tutorias")
+    try:
+        updated = await asyncio.to_thread(
+            tutorial_session_repo.enroll,
+            session_id,
+            student_id=current_user.get("user_id") or "",
+            student_name=current_user.get("name") or current_user.get("username") or "Estudiante",
+            student_email=current_user.get("email") or current_user.get("username") or "",
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "update",
+            "record": updated.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return updated
+
+
+@router.delete("/{session_id}/enroll", response_model=TutorialSessionResponse)
+async def cancel_tutorial_enrollment(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    if str(current_user.get("role") or "").strip().lower() != "estudiante":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo Estudiante puede gestionar su inscripcion")
+    try:
+        updated = await asyncio.to_thread(
+            tutorial_session_repo.cancel_enrollment,
+            session_id,
+            student_id=current_user.get("user_id") or "",
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "update",
+            "record": updated.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return updated
+
+
+@router.patch("/{session_id}/attendance/{student_id}", response_model=TutorialSessionResponse)
+async def update_tutorial_attendance(
+    session_id: str,
+    student_id: str,
+    body: TutorialEnrollmentAttendanceUpdate,
+    current_user: dict = Depends(get_current_user),
+) -> TutorialSessionResponse:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_tutorias_propias", "gestionar_observaciones_tutorias"},
+        "No tienes permisos para registrar asistencia de tutorias",
+    )
+
+    existing = await asyncio.to_thread(tutorial_session_repo.get_by_id, session_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
+
+    is_admin = is_admin_role(current_user)
+    if not is_admin and existing.tutor_id != (current_user.get("user_id") or ""):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No puedes registrar asistencia en una tutoria de otro tutor",
+        )
+
+    try:
+        updated = await asyncio.to_thread(
+            tutorial_session_repo.save_enrollment_attendance,
+            session_id,
+            student_id=student_id,
+            attended=body.attended,
+            performance_observation=body.performance_observation,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "update",
+            "record": updated.model_dump(),
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return updated
+
+
+@router.delete("/{session_id}", response_class=Response)
+async def delete_tutorial_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> None:
+    ensure_any_permission(
+        current_user,
+        {"gestionar_tutorias_propias"},
+        "No tienes permisos para eliminar tutorias",
+    )
+
+    existing = await asyncio.to_thread(tutorial_session_repo.get_by_id, session_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
+
+    is_admin = is_admin_role(current_user)
+    if not is_admin and existing.tutor_id != (current_user.get("user_id") or ""):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No puedes eliminar una tutoria de otro tutor")
+
+    deleted_result = await asyncio.to_thread(tutorial_session_repo.delete, session_id)
+    if deleted_result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
+
+    deleted_session, enrollments = deleted_result
+    _invalidate_tutorial_availability(deleted_session)
+    await asyncio.gather(*[
+        _broadcast_tutorial_notification(
+            recipient_user_id=enrollment.student_id,
+            notification_type="tutorial_session_cancelled",
+            title="Tutoria Cancelada",
+            message=(
+                f"La tutoria '{deleted_session.topic}' fue cancelada por el tutor. "
+                "Tu inscripcion quedo anulada automaticamente."
+            ),
+            payload={
+                "tutorial_session_id": deleted_session.id,
+                "topic": deleted_session.topic,
+                "tutor_name": deleted_session.tutor_name,
+                "session_date": deleted_session.session_date,
+                "start_time": deleted_session.start_time,
+                "end_time": deleted_session.end_time,
+                "location": deleted_session.location,
+                "target_path": "/app/tutorias",
+            },
+        )
+        for enrollment in enrollments
+    ])
+
+    await realtime_manager.broadcast(
+        {
+            "topic": "tutorial_session",
+            "action": "delete",
+            "record": {"id": session_id},
+            "at": datetime.utcnow().isoformat(),
+        }
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
