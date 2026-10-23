@@ -1,0 +1,1055 @@
+from __future__ import annotations
+
+import json
+from calendar import monthrange
+from datetime import UTC, datetime
+from pathlib import Path
+from threading import Lock
+
+from app.core.config import settings
+from app.core.datetime_utils import combine_date_time, now_local_naive, parse_datetime
+from app.infrastructure.pocketbase_admin import PocketBaseAdminClient
+from app.infrastructure.pocketbase_base import PocketBaseClient
+from app.infrastructure.repositories.lab_reservation_repository import LabReservationRepository
+from app.schemas.tutorial_session import (
+    TutorialEnrollmentResponse,
+    TutorialSessionCreate,
+    TutorialSessionResponse,
+)
+
+
+def _iso_now() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _format_iso_utc(value: datetime) -> str:
+    return value.replace(tzinfo=UTC).isoformat().replace("+00:00", "Z")
+
+
+def _has_overlap(start_a: str, end_a: str, start_b: str, end_b: str) -> bool:
+    a_start = parse_datetime(start_a)
+    a_end = parse_datetime(end_a)
+    b_start = parse_datetime(start_b)
+    b_end = parse_datetime(end_b)
+    return a_start < b_end and b_start < a_end
+
+
+def _max_allowed_session_date(base_day):
+    next_month = base_day.month + 1
+    year = base_day.year
+    if next_month > 12:
+        next_month = 1
+        year += 1
+
+    day = min(base_day.day, monthrange(year, next_month)[1])
+    return base_day.replace(year=year, month=next_month, day=day)
+
+
+def _escape_filter_value(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _normalize_hhmm(value: str) -> str:
+    raw = str(value or "").strip()
+    parts = raw.split(":")
+    if len(parts) not in {2, 3}:
+        raise ValueError("Hora invalida, formato esperado HH:MM")
+
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError as exc:
+        raise ValueError("Hora invalida, formato esperado HH:MM") from exc
+
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ValueError("Hora invalida, formato esperado HH:MM")
+
+    return f"{hour:02d}:{minute:02d}"
+
+
+class TutorialSessionRepository:
+    def __init__(self, client: PocketBaseClient | None = None, reservation_repo: LabReservationRepository | None = None) -> None:
+        if reservation_repo is None and client is not None and hasattr(client, "list_for_laboratory_day"):
+            reservation_repo = client
+            client = None
+
+        self._legacy_mode = client is None and reservation_repo is not None
+        self._client = client
+        self._reservation_repo = reservation_repo
+        if self._legacy_mode:
+            self._legacy_storage_path = Path(getattr(settings, "tutorial_sessions_storage_path", "/tmp/tutorial_sessions.json")).expanduser()
+            self._legacy_storage_path.parent.mkdir(parents=True, exist_ok=True)
+            self._legacy_lock = Lock()
+            self._legacy_sessions = self._legacy_load_sessions()
+            return
+
+        self._sessions_base = f"/api/collections/{settings.pb_tutorial_session_collection}/records"
+        self._enrollments_base = f"/api/collections/{settings.pb_tutorial_enrollment_collection}/records"
+        self._observation_collection = settings.pb_tutorial_observation_collection
+        self._attendance_collection = settings.pb_tutorial_attendance_collection
+        self._observation_admin = PocketBaseAdminClient(
+            base_url=settings.pocketbase_url,
+            auth_identity=settings.pocketbase_auth_identity,
+            auth_password=settings.pocketbase_auth_password,
+            auth_collection=settings.pocketbase_auth_collection,
+            timeout_seconds=settings.pocketbase_timeout_seconds,
+        )
+        self._attendance_collection_ready = False
+        self._attendance_lock = Lock()
+        self._observation_collection_ready = False
+        self._observation_lock = Lock()
+
+    def _legacy_load_sessions(self) -> dict[str, dict]:
+        if not self._legacy_storage_path.exists():
+            return {}
+        try:
+            raw = json.loads(self._legacy_storage_path.read_text(encoding="utf-8"))
+        except (TypeError, ValueError, OSError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        cleaned: dict[str, dict] = {}
+        for session_id, item in raw.items():
+            if isinstance(item, dict):
+                cleaned[str(session_id)] = item
+        return cleaned
+
+    def _legacy_save_sessions(self) -> None:
+        self._legacy_storage_path.write_text(json.dumps(self._legacy_sessions, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _legacy_session_response(self, session: dict) -> TutorialSessionResponse:
+        enrolled_students = [
+            TutorialEnrollmentResponse(
+                student_id=str(item.get("student_id") or ""),
+                student_name=str(item.get("student_name") or ""),
+                student_email=str(item.get("student_email") or ""),
+                created_at=str(item.get("created_at") or ""),
+            )
+            for item in session.get("enrolled_students", [])
+            if isinstance(item, dict)
+        ]
+        return TutorialSessionResponse(
+            id=str(session.get("id") or ""),
+            tutor_id=str(session.get("tutor_id") or ""),
+            tutor_name=str(session.get("tutor_name") or "Tutor"),
+            tutor_email=str(session.get("tutor_email") or ""),
+            topic=str(session.get("topic") or ""),
+            description=str(session.get("description") or ""),
+            laboratory_id=str(session.get("laboratory_id") or ""),
+            location=str(session.get("location") or ""),
+            session_date=str(session.get("session_date") or ""),
+            start_time=str(session.get("start_time") or ""),
+            end_time=str(session.get("end_time") or ""),
+            start_at=str(session.get("start_at") or ""),
+            end_at=str(session.get("end_at") or ""),
+            max_students=int(session.get("max_students") or 0),
+            is_published=bool(session.get("is_published", True)),
+            requires_full_lab=bool(session.get("requires_full_lab", True)),
+            approval_status=str(session.get("approval_status") or "pending").strip() or "pending",
+            approval_reason=str(session.get("approval_reason") or "").strip(),
+            tutor_observation=str(session.get("tutor_observation") or "").strip(),
+            enrolled_students=enrolled_students,
+            created=str(session.get("created") or ""),
+            updated=str(session.get("updated") or ""),
+        )
+
+    def _legacy_validate_no_conflicts(self, candidate: TutorialSessionResponse) -> None:
+        if not self._reservation_repo:
+            return
+        reservations = self._reservation_repo.list_for_laboratory_day(candidate.laboratory_id, candidate.session_date)
+        for reservation in reservations:
+            if reservation.laboratory_id != candidate.laboratory_id:
+                continue
+            if reservation.status not in {"approved", "in_progress"}:
+                continue
+            if reservation.requested_by and reservation.requested_by == candidate.tutor_id:
+                start_a = parse_datetime(candidate.start_at)
+                end_a = parse_datetime(candidate.end_at)
+                start_b = parse_datetime(reservation.start_at)
+                end_b = parse_datetime(reservation.end_at)
+                if start_a < end_b and start_b < end_a:
+                    raise ValueError("La tutoria cruza con una reserva de laboratorio propia")
+
+    def _legacy_create_session_record(self, body: TutorialSessionCreate) -> TutorialSessionResponse:
+        normalized_topic = str(body.topic or "").strip()
+        if len(normalized_topic) < 5:
+            raise ValueError("Debes ingresar un tema claro de al menos 5 caracteres")
+
+        normalized_location = str(body.location or "").strip()
+        if not normalized_location:
+            raise ValueError("Debes seleccionar el laboratorio donde se realiza la tutoria")
+
+        session_id = f"session-{len(self._legacy_sessions) + 1:04d}"
+        session_date = str(body.session_date or "").strip()
+        start_time = str(body.start_time or "").strip()
+        end_time = str(body.end_time or "").strip()
+        start_dt = combine_date_time(datetime.fromisoformat(session_date).date(), start_time)
+        end_dt = combine_date_time(datetime.fromisoformat(session_date).date(), end_time)
+        start_at = start_dt.isoformat()
+        end_at = end_dt.isoformat()
+        session = {
+            "id": session_id,
+            "tutor_id": str(body.tutor_id or ""),
+            "tutor_name": str(body.tutor_name or "Tutor"),
+            "tutor_email": str(body.tutor_email or ""),
+            "topic": normalized_topic,
+            "description": str(body.description or ""),
+            "laboratory_id": str(body.laboratory_id or ""),
+            "location": normalized_location,
+            "session_date": session_date,
+            "start_time": start_time,
+            "end_time": end_time,
+            "start_at": start_at,
+            "end_at": end_at,
+            "max_students": int(body.max_students or 0),
+            "is_published": bool(body.is_published if body.is_published is not None else True),
+            "requires_full_lab": bool(body.requires_full_lab if body.requires_full_lab is not None else True),
+            "approval_status": "pending",
+            "approval_reason": "",
+            "tutor_observation": "",
+            "enrolled_students": [],
+            "created": datetime.utcnow().replace(tzinfo=UTC).isoformat().replace("+00:00", "Z"),
+            "updated": datetime.utcnow().replace(tzinfo=UTC).isoformat().replace("+00:00", "Z"),
+        }
+        response = self._legacy_session_response(session)
+        self._legacy_validate_no_conflicts(response)
+        self._legacy_sessions[session_id] = session
+        self._legacy_save_sessions()
+        return response
+
+    def _ensure_attendance_collection(self) -> None:
+        if self._attendance_collection_ready or not self._observation_admin.enabled:
+            return
+        with self._attendance_lock:
+            if self._attendance_collection_ready:
+                return
+            self._observation_admin.ensure_collection(
+                self._attendance_collection,
+                [
+                    {"name": "session_id", "type": "text", "required": True, "max": 120},
+                    {"name": "student_id", "type": "text", "required": True, "max": 120},
+                    {"name": "attended", "type": "bool", "required": False},
+                    {"name": "performance_observation", "type": "text", "required": False, "max": 200},
+                ],
+            )
+            self._attendance_collection_ready = True
+
+    def _ensure_observation_collection(self) -> None:
+        if self._observation_collection_ready or not self._observation_admin.enabled:
+            return
+        with self._observation_lock:
+            if self._observation_collection_ready:
+                return
+            self._observation_admin.ensure_collection(
+                self._observation_collection,
+                [
+                    {"name": "session_id", "type": "text", "required": True, "max": 120},
+                    {"name": "tutor_id", "type": "text", "required": True, "max": 120},
+                    {"name": "observation", "type": "text", "required": False, "max": 1000},
+                ],
+            )
+            self._observation_collection_ready = True
+
+    def _build_observation_map(self, session_ids: list[str]) -> dict[str, str]:
+        normalized_ids = [session_id for session_id in session_ids if session_id]
+        if not normalized_ids or not self._observation_admin.enabled:
+            return {}
+
+        # Filtrar por session_id en PocketBase en lugar de traer toda la coleccion
+        # de observaciones para luego filtrar en Python.
+        filter_expression = " || ".join(
+            f'session_id="{_escape_filter_value(session_id)}"' for session_id in set(normalized_ids)
+        )
+        try:
+            records = self._observation_admin.list_records(
+                self._observation_collection,
+                sort=None,
+                filter=filter_expression,
+            )
+        except Exception:
+            return {}
+
+        target_ids = set(normalized_ids)
+        observation_map: dict[str, str] = {}
+        for record in records:
+            session_id = str(record.get("session_id") or "").strip()
+            if not session_id or session_id not in target_ids or session_id in observation_map:
+                continue
+            observation_map[session_id] = str(record.get("observation") or "").strip()
+        return observation_map
+
+    def list_public_for_laboratory_day(self, laboratory_id: str, day: str) -> list[TutorialSessionResponse]:
+        if self._legacy_mode:
+            normalized_laboratory_id = str(laboratory_id or "").strip()
+            normalized_day = str(day or "").strip()
+            if not normalized_laboratory_id or not normalized_day:
+                return []
+            sessions = [
+                self._legacy_session_response(session)
+                for session in self._legacy_sessions.values()
+                if str(session.get("laboratory_id") or "") == normalized_laboratory_id
+                and str(session.get("session_date") or "") == normalized_day
+            ]
+            return [
+                session for session in sessions
+                if session.is_published
+                and session.approval_status != "rejected"
+                and parse_datetime(session.end_at) >= now_local_naive()
+            ]
+
+        normalized_laboratory_id = str(laboratory_id or "").strip()
+        normalized_day = str(day or "").strip()
+        if not normalized_laboratory_id or not normalized_day:
+            return []
+
+        filter_expression = (
+            f'laboratory_id="{_escape_filter_value(normalized_laboratory_id)}" '
+            f'&& session_date="{_escape_filter_value(normalized_day)}"'
+        )
+        session_records = self._list_records(self._sessions_base, filter_expression=filter_expression, sort="session_date,start_time")
+        enrollment_map = self._build_enrollment_map(session_records)
+        observation_map = self._build_observation_map([str(record.get("id") or "").strip() for record in session_records])
+        now = now_local_naive()
+        sessions = [
+            self._map_session(
+                record,
+                enrollment_map.get(str(record.get("id") or ""), []),
+                observation_map.get(str(record.get("id") or "").strip(), ""),
+            )
+            for record in session_records
+        ]
+        return [
+            session for session in sessions
+            if session.is_published
+            and session.approval_status != "rejected"
+            and parse_datetime(session.end_at) >= now
+        ]
+
+    def _build_session(self, session_id: str, body: TutorialSessionCreate) -> TutorialSessionResponse:
+        topic = str(body.topic or "").strip()
+        description = str(body.description or "").strip()
+        location = str(body.location or "").strip()
+        max_students = int(body.max_students or 0)
+        normalized_start_time = _normalize_hhmm(body.start_time)
+        normalized_end_time = _normalize_hhmm(body.end_time)
+
+        if len(topic) < 5:
+            raise ValueError("Debes ingresar un tema claro de al menos 5 caracteres")
+
+        if not location:
+            raise ValueError("Debes seleccionar el laboratorio donde se realizara la tutoria")
+
+        if max_students <= 0 or max_students > 50:
+            raise ValueError("La capacidad maxima debe estar entre 1 y 50 estudiantes")
+
+        start_dt = combine_date_time(datetime.fromisoformat(body.session_date).date(), normalized_start_time)
+        end_dt = combine_date_time(datetime.fromisoformat(body.session_date).date(), normalized_end_time)
+        if end_dt <= start_dt:
+            raise ValueError("La hora de fin debe ser posterior a la hora de inicio")
+
+        now = now_local_naive()
+        if start_dt <= now:
+            raise ValueError("No puedes publicar tutorias en horarios pasados o que ya comenzaron")
+
+        max_allowed_day = _max_allowed_session_date(now.date())
+        if start_dt.date() > max_allowed_day:
+            raise ValueError("Solo puedes publicar tutorias con un maximo de un mes de anticipacion")
+
+        if len(description) > 400:
+            raise ValueError("La descripcion no puede superar los 400 caracteres")
+
+        created_at = _iso_now()
+        return TutorialSessionResponse(
+            id=session_id,
+            tutor_id=str(body.tutor_id or "").strip(),
+            tutor_name=str(body.tutor_name or "").strip() or "Tutor",
+            tutor_email=str(body.tutor_email or "").strip(),
+            topic=topic,
+            description=description,
+            laboratory_id=str(body.laboratory_id or "").strip(),
+            location=location,
+            session_date=str(body.session_date),
+            start_time=normalized_start_time,
+            end_time=normalized_end_time,
+            start_at=_format_iso_utc(start_dt),
+            end_at=_format_iso_utc(end_dt),
+            max_students=max_students,
+            is_published=True if body.is_published is None else bool(body.is_published),
+            # Default: la tutoria ocupa todo el laboratorio (exclusiva), preservando el
+            # comportamiento previo. El docente puede desmarcar para compartir el horario.
+            requires_full_lab=True if body.requires_full_lab is None else bool(body.requires_full_lab),
+            approval_status="pending",
+            approval_reason="",
+            enrolled_students=[],
+            created=created_at,
+            updated=created_at,
+        )
+
+    def _list_attendance_records(self, *, session_id: str | None = None, student_id: str | None = None) -> list[dict]:
+        if not self._observation_admin.enabled:
+            return []
+
+        clauses: list[str] = []
+        if session_id:
+            clauses.append(f'session_id="{_escape_filter_value(session_id)}"')
+        if student_id:
+            clauses.append(f'student_id="{_escape_filter_value(student_id)}"')
+        filter_expression = " && ".join(clauses) if clauses else None
+
+        try:
+            return self._observation_admin.list_records(self._attendance_collection, sort=None, filter=filter_expression)
+        except Exception:
+            return []
+
+    def _build_attendance_map(self, session_ids: list[str]) -> dict[tuple[str, str], dict]:
+        normalized_ids = [session_id for session_id in session_ids if session_id]
+        if not normalized_ids:
+            return {}
+
+        attendance_records: list[dict]
+        if self._observation_admin.enabled:
+            filter_expression = " || ".join(
+                f'session_id="{_escape_filter_value(session_id)}"' for session_id in normalized_ids
+            )
+            try:
+                attendance_records = self._observation_admin.list_records(
+                    self._attendance_collection,
+                    sort=None,
+                    filter=filter_expression,
+                )
+            except Exception:
+                attendance_records = []
+        else:
+            attendance_records = []
+
+        attendance_map: dict[tuple[str, str], dict] = {}
+        for record in attendance_records:
+            session_id = str(record.get("session_id") or "").strip()
+            student_id = str(record.get("student_id") or "").strip()
+            if not session_id or not student_id:
+                continue
+            attendance_map[(session_id, student_id)] = record
+        return attendance_map
+
+    def _map_enrollment(self, record: dict, attendance_record: dict | None = None) -> TutorialEnrollmentResponse:
+        return TutorialEnrollmentResponse(
+            student_id=str(record.get("student_id") or ""),
+            student_name=str(record.get("student_name") or "Estudiante"),
+            student_email=str(record.get("student_email") or ""),
+            created_at=str(record.get("created_at") or record.get("created") or ""),
+            attended=bool((attendance_record or {}).get("attended", False)),
+            performance_observation=str((attendance_record or {}).get("performance_observation") or "").strip(),
+        )
+
+    def _map_session(
+        self,
+        record: dict,
+        enrollments: list[TutorialEnrollmentResponse],
+        tutor_observation: str = "",
+    ) -> TutorialSessionResponse:
+        return TutorialSessionResponse(
+            id=str(record.get("id") or ""),
+            tutor_id=str(record.get("tutor_id") or ""),
+            tutor_name=str(record.get("tutor_name") or "Tutor"),
+            tutor_email=str(record.get("tutor_email") or ""),
+            topic=str(record.get("topic") or ""),
+            description=str(record.get("description") or ""),
+            laboratory_id=str(record.get("laboratory_id") or ""),
+            location=str(record.get("location") or ""),
+            session_date=str(record.get("session_date") or ""),
+            start_time=str(record.get("start_time") or ""),
+            end_time=str(record.get("end_time") or ""),
+            start_at=str(record.get("start_at") or ""),
+            end_at=str(record.get("end_at") or ""),
+            max_students=int(record.get("max_students") or 0),
+            is_published=bool(record.get("is_published", True)),
+            requires_full_lab=bool(record.get("requires_full_lab", True)),
+            approval_status=str(record.get("approval_status") or "pending").strip() or "pending",
+            approval_reason=str(record.get("approval_reason") or "").strip(),
+            tutor_observation=str(tutor_observation or "").strip(),
+            enrolled_students=enrollments,
+            created=str(record.get("created") or ""),
+            updated=str(record.get("updated") or ""),
+        )
+
+    def _list_records(self, base_path: str, *, filter_expression: str | None = None, sort: str | None = "created") -> list[dict]:
+        items: list[dict] = []
+        page = 1
+
+        while True:
+            params = {
+                "page": page,
+                "perPage": 200,
+                **({"filter": filter_expression} if filter_expression else {}),
+            }
+            if sort:
+                params["sort"] = sort
+
+            data = self._client.request(
+                "GET",
+                base_path,
+                params=params,
+            )
+
+            if not isinstance(data, dict):
+                break
+
+            batch = data.get("items", [])
+            if not isinstance(batch, list) or not batch:
+                break
+
+            items.extend(item for item in batch if isinstance(item, dict))
+            total_pages = int(data.get("totalPages", page))
+            if page >= total_pages:
+                break
+            page += 1
+
+        return items
+
+    def _list_session_records(self) -> list[dict]:
+        return self._list_records(self._sessions_base, sort="session_date,start_time")
+
+    def _list_enrollment_records(self, *, session_id: str | None = None, student_id: str | None = None) -> list[dict]:
+        clauses: list[str] = []
+        if session_id:
+            clauses.append(f'session_id="{_escape_filter_value(session_id)}"')
+        if student_id:
+            clauses.append(f'student_id="{_escape_filter_value(student_id)}"')
+        filter_expression = " && ".join(clauses) if clauses else None
+        return self._list_records(self._enrollments_base, filter_expression=filter_expression, sort=None)
+
+    def _build_enrollment_map(self, session_records: list[dict]) -> dict[str, list[TutorialEnrollmentResponse]]:
+        session_ids = [str(record.get("id") or "").strip() for record in session_records if str(record.get("id") or "").strip()]
+        if not session_ids:
+            return {}
+
+        filter_expression = " || ".join(
+            f'session_id="{_escape_filter_value(session_id)}"' for session_id in session_ids
+        )
+        enrollments = self._list_records(self._enrollments_base, filter_expression=filter_expression, sort=None)
+        attendance_map = self._build_attendance_map(session_ids)
+        grouped: dict[str, list[TutorialEnrollmentResponse]] = {session_id: [] for session_id in session_ids}
+        for record in enrollments:
+            session_id = str(record.get("session_id") or "").strip()
+            student_id = str(record.get("student_id") or "").strip()
+            if session_id not in grouped:
+                continue
+            grouped[session_id].append(self._map_enrollment(record, attendance_map.get((session_id, student_id))))
+        return grouped
+
+    def _get_session_record(self, session_id: str) -> dict | None:
+        try:
+            data = self._client.request("GET", f"{self._sessions_base}/{session_id}")
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _get_session_or_raise(self, session_id: str) -> TutorialSessionResponse:
+        session = self.get_by_id(session_id)
+        if session is None:
+            raise KeyError("Tutoria no encontrada")
+        return session
+
+    def _validate_no_conflicts(self, candidate: TutorialSessionResponse, skip_id: str | None = None) -> None:
+        tutor_id = str(candidate.tutor_id or "").strip()
+        if not tutor_id:
+            raise ValueError("No se pudo identificar al tutor que publica la sesion")
+
+        candidate_day = str(candidate.session_date or candidate.start_at[:10]).strip()
+        session_records = self._list_records(
+            self._sessions_base,
+            filter_expression=f'session_date="{_escape_filter_value(candidate_day)}"',
+            sort="session_date,start_time",
+        )
+        for record in session_records:
+            session = self._map_session(record, [])
+            if skip_id and session.id == skip_id:
+                continue
+            if session.approval_status == "rejected":
+                continue
+            if session.laboratory_id == candidate.laboratory_id and _has_overlap(
+                candidate.start_at,
+                candidate.end_at,
+                session.start_at,
+                session.end_at,
+            ):
+                raise ValueError("Ya existe otra tutoria publicada en ese laboratorio y horario")
+            if session.tutor_id != tutor_id:
+                continue
+            if _has_overlap(candidate.start_at, candidate.end_at, session.start_at, session.end_at):
+                raise ValueError("Ya tienes otra tutoria publicada que se cruza con ese horario")
+
+        for reservation in self._reservation_repo.list_for_laboratory_day(candidate.laboratory_id, candidate_day):
+            if reservation.requested_by != tutor_id:
+                continue
+            if reservation.status in {"rejected", "cancelled"}:
+                continue
+            if _has_overlap(candidate.start_at, candidate.end_at, reservation.start_at, reservation.end_at):
+                raise ValueError(
+                    "Este horario se cruza con una reserva de laboratorio propia. Ajusta la tutoria antes de publicarla",
+                )
+
+    def list_all(
+        self,
+        *,
+        include_past: bool = False,
+        topic_search: str | None = None,
+        session_date: str | None = None,
+        laboratory_id: str | None = None,
+    ) -> list[TutorialSessionResponse]:
+        clauses = []
+        if topic_search:
+            clauses.append(f'topic ~ "{_escape_filter_value(topic_search)}"')
+        if session_date:
+            clauses.append(f'session_date = "{_escape_filter_value(session_date)}"')
+        if laboratory_id:
+            clauses.append(f'laboratory_id = "{_escape_filter_value(laboratory_id)}"')
+
+        filter_expression = " && ".join(clauses) if clauses else None
+        return self._list_sessions_with(filter_expression=filter_expression, include_past=include_past)
+
+    def _list_sessions_with(
+        self,
+        *,
+        filter_expression: str | None,
+        include_past: bool,
+    ) -> list[TutorialSessionResponse]:
+        session_records = self._list_records(
+            self._sessions_base,
+            filter_expression=filter_expression,
+            sort="session_date,start_time",
+        )
+        if not session_records:
+            return []
+        enrollment_map = self._build_enrollment_map(session_records)
+        observation_map = self._build_observation_map([str(record.get("id") or "").strip() for record in session_records])
+        now = now_local_naive()
+
+        sessions: list[TutorialSessionResponse] = []
+        for record in session_records:
+            session_id = str(record.get("id") or "").strip()
+            session = self._map_session(
+                record,
+                enrollment_map.get(session_id, []),
+                observation_map.get(session_id, ""),
+            )
+            if not include_past:
+                try:
+                    if parse_datetime(session.end_at) < now:
+                        continue
+                except ValueError:
+                    continue
+            sessions.append(session)
+
+        return sorted(sessions, key=lambda item: (item.session_date, item.start_time, item.topic))
+
+    def list_public(
+        self,
+        *,
+        topic_search: str | None = None,
+        session_date: str | None = None,
+        laboratory_id: str | None = None,
+    ) -> list[TutorialSessionResponse]:
+        clauses = ['is_published=true', 'approval_status="approved"']
+        if topic_search:
+            clauses.append(f'topic ~ "{_escape_filter_value(topic_search)}"')
+        if session_date:
+            clauses.append(f'session_date = "{_escape_filter_value(session_date)}"')
+        if laboratory_id:
+            clauses.append(f'laboratory_id = "{_escape_filter_value(laboratory_id)}"')
+
+        filter_expression = " && ".join(clauses)
+        return self._list_sessions_with(filter_expression=filter_expression, include_past=False)
+
+    def list_pending(self) -> list[TutorialSessionResponse]:
+        return self._list_sessions_with(
+            filter_expression='approval_status="pending"',
+            include_past=False,
+        )
+
+    def set_approval_status(
+        self,
+        session_id: str,
+        *,
+        status_value: str,
+        reason: str = "",
+    ) -> TutorialSessionResponse:
+        normalized_status = str(status_value or "").strip().lower()
+        if normalized_status not in {"approved", "rejected", "pending"}:
+            raise ValueError("Estado de aprobacion invalido")
+
+        session = self._get_session_or_raise(session_id)
+
+        payload: dict = {"approval_status": normalized_status}
+        if normalized_status == "rejected":
+            payload["approval_reason"] = str(reason or "").strip()[:400]
+        else:
+            payload["approval_reason"] = ""
+
+        data = self._client.request(
+            "PATCH",
+            f"{self._sessions_base}/{session_id}",
+            payload=payload,
+        )
+        if not isinstance(data, dict):
+            raise ValueError("PocketBase devolvio una respuesta invalida al actualizar la aprobacion")
+
+        return self._map_session(data, list(session.enrolled_students))
+
+    def list_for_tutor(self, tutor_id: str) -> list[TutorialSessionResponse]:
+        normalized_tutor_id = str(tutor_id or "").strip()
+        if not normalized_tutor_id:
+            return []
+        return self._list_sessions_with(
+            filter_expression=f'tutor_id="{_escape_filter_value(normalized_tutor_id)}"',
+            include_past=True,
+        )
+
+    def list_for_student(self, student_id: str) -> list[TutorialSessionResponse]:
+        if self._legacy_mode:
+            normalized_student_id = str(student_id or "").strip()
+            if not normalized_student_id:
+                return []
+            return [
+                self._legacy_session_response(session)
+                for session in self._legacy_sessions.values()
+                if any(
+                    str(item.get("student_id") or "") == normalized_student_id
+                    for item in session.get("enrolled_students", [])
+                    if isinstance(item, dict)
+                )
+            ]
+
+        normalized_student_id = str(student_id or "").strip()
+        if not normalized_student_id:
+            return []
+
+        enrolled_session_ids = [
+            str(record.get("session_id") or "").strip()
+            for record in self._list_enrollment_records(student_id=normalized_student_id)
+            if str(record.get("session_id") or "").strip()
+        ]
+        if not enrolled_session_ids:
+            return []
+
+        filter_expression = " || ".join(
+            f'id="{_escape_filter_value(session_id)}"' for session_id in set(enrolled_session_ids)
+        )
+        return self._list_sessions_with(filter_expression=filter_expression, include_past=True)
+
+    def get_by_id(self, session_id: str) -> TutorialSessionResponse | None:
+        if self._legacy_mode:
+            session = self._legacy_sessions.get(str(session_id or "").strip())
+            if session is None:
+                return None
+            return self._legacy_session_response(session)
+
+        record = self._get_session_record(session_id)
+        if record is None:
+            return None
+        attendance_map = self._build_attendance_map([str(session_id or "").strip()])
+        enrollments = [
+            self._map_enrollment(
+                item,
+                attendance_map.get((str(session_id or "").strip(), str(item.get("student_id") or "").strip())),
+            )
+            for item in self._list_enrollment_records(session_id=session_id)
+        ]
+        observation_map = self._build_observation_map([str(session_id or "").strip()])
+        return self._map_session(record, enrollments, observation_map.get(str(session_id or "").strip(), ""))
+
+    def save_observation(self, session_id: str, *, tutor_id: str, observation: str) -> TutorialSessionResponse:
+        session = self._get_session_or_raise(session_id)
+        normalized_tutor_id = str(tutor_id or "").strip()
+        if not normalized_tutor_id:
+            raise ValueError("No se pudo identificar al tutor")
+
+        normalized_observation = str(observation or "").strip()
+        if len(normalized_observation) > 1000:
+            raise ValueError("La observacion no puede superar los 1000 caracteres")
+
+        self._ensure_observation_collection()
+        # Filtrar por session_id directamente en PocketBase, antes scaneaba toda
+        # la coleccion para encontrar el unico registro relevante.
+        try:
+            existing_records = self._observation_admin.list_records(
+                self._observation_collection,
+                sort=None,
+                filter=f'session_id="{_escape_filter_value(session_id)}"',
+                per_page=1,
+            )[:1]
+        except Exception:
+            existing_records = []
+
+        payload = {
+            "session_id": session.id,
+            "tutor_id": normalized_tutor_id,
+            "observation": normalized_observation,
+        }
+        if existing_records:
+            record_id = str(existing_records[0].get("id") or "").strip()
+            if record_id:
+                self._observation_admin.update_record(self._observation_collection, record_id, payload)
+        else:
+            self._observation_admin.create_record(self._observation_collection, payload)
+
+        refreshed = self.get_by_id(session_id)
+        if refreshed is None:
+            raise KeyError("Tutoria no encontrada")
+        return refreshed
+
+    def save_enrollment_attendance(
+        self,
+        session_id: str,
+        *,
+        student_id: str,
+        attended: bool,
+        performance_observation: str,
+    ) -> TutorialSessionResponse:
+        normalized_student_id = str(student_id or "").strip()
+        if not normalized_student_id:
+            raise ValueError("No se pudo identificar al estudiante")
+
+        normalized_observation = str(performance_observation or "").strip()
+        if len(normalized_observation) > 200:
+            raise ValueError("La observacion del estudiante no puede superar los 200 caracteres")
+
+        self._get_session_or_raise(session_id)
+        self._ensure_attendance_collection()
+        enrollment_records = self._list_enrollment_records(session_id=session_id, student_id=normalized_student_id)
+        if not enrollment_records:
+            raise ValueError("No se encontro una inscripcion activa para esta tutoria")
+
+        payload = {
+            "session_id": str(session_id or "").strip(),
+            "student_id": normalized_student_id,
+            "attended": bool(attended),
+            "performance_observation": normalized_observation,
+        }
+
+        existing_records = self._list_attendance_records(session_id=session_id, student_id=normalized_student_id)[:1]
+        if existing_records:
+            record_id = str(existing_records[0].get("id") or "").strip()
+            if record_id:
+                self._observation_admin.update_record(self._attendance_collection, record_id, payload)
+        else:
+            self._observation_admin.create_record(self._attendance_collection, payload)
+
+        refreshed = self.get_by_id(session_id)
+        if refreshed is None:
+            raise KeyError("Tutoria no encontrada")
+        return refreshed
+
+    def create(self, body: TutorialSessionCreate) -> TutorialSessionResponse:
+        if self._legacy_mode:
+            normalized_topic = str(body.topic or "").strip()
+            if len(normalized_topic) < 5:
+                raise ValueError("Debes ingresar un tema claro de al menos 5 caracteres")
+            candidate = self._legacy_create_session_record(body)
+            self._legacy_validate_no_conflicts(candidate)
+            return candidate
+
+        candidate = self._build_session("new", body)
+        self._validate_no_conflicts(candidate)
+
+        data = self._client.request(
+            "POST",
+            self._sessions_base,
+            payload={
+                "tutor_id": candidate.tutor_id,
+                "tutor_name": candidate.tutor_name,
+                "tutor_email": candidate.tutor_email,
+                "topic": candidate.topic,
+                "description": candidate.description,
+                "laboratory_id": candidate.laboratory_id,
+                "location": candidate.location,
+                "session_date": candidate.session_date,
+                "start_time": candidate.start_time,
+                "end_time": candidate.end_time,
+                "start_at": candidate.start_at,
+                "end_at": candidate.end_at,
+                "max_students": candidate.max_students,
+                "is_published": candidate.is_published,
+                "requires_full_lab": candidate.requires_full_lab,
+                "approval_status": "pending",
+                "approval_reason": "",
+            },
+        )
+        if not isinstance(data, dict):
+            raise ValueError("PocketBase devolvio una respuesta invalida al crear la tutoria")
+        return self._map_session(data, [])
+
+    def update(self, session_id: str, body: TutorialSessionCreate) -> TutorialSessionResponse:
+        existing = self._get_session_or_raise(session_id)
+        enrollments = list(existing.enrolled_students)
+
+        merged_body = TutorialSessionCreate(
+            topic=body.topic,
+            description=body.description,
+            laboratory_id=body.laboratory_id,
+            location=body.location,
+            session_date=body.session_date,
+            start_time=body.start_time,
+            end_time=body.end_time,
+            max_students=body.max_students,
+            tutor_id=body.tutor_id or existing.tutor_id,
+            tutor_name=body.tutor_name or existing.tutor_name,
+            tutor_email=body.tutor_email or existing.tutor_email,
+            is_published=existing.is_published if body.is_published is None else body.is_published,
+            requires_full_lab=existing.requires_full_lab if body.requires_full_lab is None else body.requires_full_lab,
+        )
+
+        candidate = self._build_session(session_id, merged_body)
+        if len(enrollments) > candidate.max_students:
+            raise ValueError("No puedes reducir el cupo por debajo de los estudiantes ya inscritos")
+
+        self._validate_no_conflicts(candidate, skip_id=session_id)
+        data = self._client.request(
+            "PATCH",
+            f"{self._sessions_base}/{session_id}",
+            payload={
+                "tutor_id": candidate.tutor_id,
+                "tutor_name": candidate.tutor_name,
+                "tutor_email": candidate.tutor_email,
+                "topic": candidate.topic,
+                "description": candidate.description,
+                "laboratory_id": candidate.laboratory_id,
+                "location": candidate.location,
+                "session_date": candidate.session_date,
+                "start_time": candidate.start_time,
+                "end_time": candidate.end_time,
+                "start_at": candidate.start_at,
+                "end_at": candidate.end_at,
+                "max_students": candidate.max_students,
+                "is_published": candidate.is_published,
+                "requires_full_lab": candidate.requires_full_lab,
+            },
+        )
+        if not isinstance(data, dict):
+            raise ValueError("PocketBase devolvio una respuesta invalida al actualizar la tutoria")
+        return self._map_session(data, enrollments)
+
+    def enroll(
+        self,
+        session_id: str,
+        *,
+        student_id: str,
+        student_name: str,
+        student_email: str = "",
+    ) -> TutorialSessionResponse:
+        if self._legacy_mode:
+            normalized_student_id = str(student_id or "").strip()
+            if not normalized_student_id:
+                raise ValueError("No se pudo identificar al estudiante")
+
+            session = self._legacy_sessions.get(str(session_id or "").strip())
+            if session is None:
+                raise KeyError("Tutoria no encontrada")
+            if not session.get("is_published", True):
+                raise ValueError("La tutoria ya no esta disponible")
+            if session.get("approval_status") not in {"approved", "pending"}:
+                raise ValueError("La tutoria aun no fue aprobada por el laboratorio")
+            if normalized_student_id == str(session.get("tutor_id") or ""):
+                raise ValueError("El tutor no puede inscribirse en su propia tutoria")
+            if any(str(item.get("student_id") or "") == normalized_student_id for item in session.get("enrolled_students", []) if isinstance(item, dict)):
+                raise ValueError("Ya estas inscrito")
+            if len(session.get("enrolled_students", [])) >= int(session.get("max_students") or 0):
+                raise ValueError("La tutoria ya no tiene cupos disponibles")
+            if parse_datetime(str(session.get("start_at") or "")) <= now_local_naive():
+                raise ValueError("La tutoria ya comenzo o finalizo")
+
+            item = {
+                "student_id": normalized_student_id,
+                "student_name": str(student_name or "").strip() or "Estudiante",
+                "student_email": str(student_email or "").strip(),
+                "created_at": _iso_now(),
+            }
+            session.setdefault("enrolled_students", []).append(item)
+            session["updated"] = _iso_now()
+            self._legacy_save_sessions()
+            return self._legacy_session_response(session)
+
+        normalized_student_id = str(student_id or "").strip()
+        if not normalized_student_id:
+            raise ValueError("No se pudo identificar al estudiante")
+
+        session = self._get_session_or_raise(session_id)
+        if not session.is_published:
+            raise ValueError("La tutoria ya no esta disponible")
+        if session.approval_status not in {"approved", "pending"}:
+            raise ValueError("La tutoria aun no fue aprobada por el laboratorio")
+        if normalized_student_id == session.tutor_id:
+            raise ValueError("El tutor no puede inscribirse en su propia tutoria")
+        if any(enrollment.student_id == normalized_student_id for enrollment in session.enrolled_students):
+            raise ValueError("Ya estas inscrito en esta tutoria")
+        if session.seats_left <= 0:
+            raise ValueError("La tutoria ya no tiene cupos disponibles")
+        if parse_datetime(session.start_at) <= now_local_naive():
+            raise ValueError("La tutoria ya comenzo o finalizo")
+
+        data = self._client.request(
+            "POST",
+            self._enrollments_base,
+            payload={
+                "session_id": session_id,
+                "student_id": normalized_student_id,
+                "student_name": str(student_name or "").strip() or "Estudiante",
+                "student_email": str(student_email or "").strip(),
+                "created_at": _iso_now(),
+            },
+        )
+        if not isinstance(data, dict):
+            raise ValueError("PocketBase devolvio una respuesta invalida al registrar la inscripcion")
+        return self._get_session_or_raise(session_id)
+
+    def unenroll(self, session_id: str, *, student_id: str) -> TutorialSessionResponse:
+        if self._legacy_mode:
+            session = self._legacy_sessions.get(str(session_id or "").strip())
+            if session is None:
+                raise KeyError("Tutoria no encontrada")
+            normalized_student_id = str(student_id or "").strip()
+            if not normalized_student_id:
+                raise ValueError("No se pudo identificar al estudiante")
+            existing = session.get("enrolled_students", [])
+            filtered = [item for item in existing if str(item.get("student_id") or "") != normalized_student_id]
+            if len(filtered) == len(existing):
+                raise ValueError("No se encontro una inscripcion activa para esta tutoria")
+            session["enrolled_students"] = filtered
+            session["updated"] = _iso_now()
+            self._legacy_save_sessions()
+            return self._legacy_session_response(session)
+
+        raise AttributeError("No disponible en modo PocketBase")
+
+    def cancel_enrollment(self, session_id: str, *, student_id: str) -> TutorialSessionResponse:
+        normalized_student_id = str(student_id or "").strip()
+        if not normalized_student_id:
+            raise ValueError("No se pudo identificar al estudiante")
+
+        session = self._get_session_or_raise(session_id)
+        if parse_datetime(session.start_at) <= now_local_naive():
+            raise ValueError("La tutoria ya comenzo o finalizo")
+
+        enrollment_records = self._list_enrollment_records(session_id=session_id, student_id=normalized_student_id)
+        if not enrollment_records:
+            raise ValueError("No se encontro una inscripcion activa para esta tutoria")
+
+        enrollment_id = str(enrollment_records[0].get("id") or "").strip()
+        if not enrollment_id:
+            raise ValueError("PocketBase devolvio una respuesta invalida al cancelar la inscripcion")
+
+        self._client.request("DELETE", f"{self._enrollments_base}/{enrollment_id}")
+        return self._get_session_or_raise(session_id)
+
+    def delete(self, session_id: str) -> tuple[TutorialSessionResponse, list[TutorialEnrollmentResponse]] | None:
+        session = self.get_by_id(session_id)
+        if session is None:
+            return None
+
+        for enrollment in self._list_enrollment_records(session_id=session_id):
+            enrollment_id = str(enrollment.get("id") or "").strip()
+            if enrollment_id:
+                self._client.request("DELETE", f"{self._enrollments_base}/{enrollment_id}")
+
+        self._client.request("DELETE", f"{self._sessions_base}/{session_id}")
+        return session, list(session.enrolled_students)

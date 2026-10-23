@@ -1,0 +1,697 @@
+import json
+import logging
+import time
+from urllib.parse import urlencode
+
+import httpx
+from jose import jwt as jose_jwt
+
+from app.domain.entities.user import User
+from app.infrastructure.cache import TTLCache
+
+logger = logging.getLogger(__name__)
+
+_ROLE_CACHE_TTL_SECONDS = 300.0
+# Renovamos el token de superusuario de PocketBase un poco antes de su `exp`
+# para que nunca se use ya caducado (PocketBase devolveria listados vacios y
+# los lookups de usuario fallarian con 401 silenciosos).
+_AUTH_TOKEN_REFRESH_MARGIN_SECONDS = 60.0
+# Si el token no trae `exp` legible, re-autenticamos al menos cada 30 minutos.
+_AUTH_TOKEN_FALLBACK_TTL_SECONDS = 1800.0
+
+
+class PocketBaseUserRepository:
+    def __init__(
+        self,
+        base_url: str,
+        users_collection: str = "users",
+        auth_token: str | None = None,
+        auth_identity: str | None = None,
+        auth_password: str | None = None,
+        auth_collection: str = "_superusers",
+        roles_collection: str = "role",
+        timeout_seconds: float = 10,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._users_collection = users_collection
+        self._roles_collection = roles_collection
+        self._timeout = timeout_seconds
+        self._auth_identity = auth_identity
+        self._auth_password = auth_password
+        self._auth_collection = auth_collection
+        self._auth_token = auth_token
+        self._auth_token_refresh_at: float | None = None
+        self._supported_fields: set[str] | None = None
+        self._role_id_cache: TTLCache[str] = TTLCache(_ROLE_CACHE_TTL_SECONDS)
+        self._client = httpx.Client(
+            timeout=httpx.Timeout(self._timeout, connect=min(self._timeout, 5.0)),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        )
+
+    def _has_credentials(self) -> bool:
+        return bool(self._auth_identity and self._auth_password)
+
+    def _store_auth_token(self, token: str) -> None:
+        self._auth_token = token
+        now = time.time()
+        try:
+            claims = jose_jwt.get_unverified_claims(token)
+            exp = claims.get("exp")
+        except Exception:
+            exp = None
+        if isinstance(exp, (int, float)) and exp > now:
+            self._auth_token_refresh_at = float(exp) - _AUTH_TOKEN_REFRESH_MARGIN_SECONDS
+        else:
+            self._auth_token_refresh_at = now + _AUTH_TOKEN_FALLBACK_TTL_SECONDS
+        logger.info(
+            "Token de superusuario PocketBase (re)obtenido; proxima renovacion en ~%ds",
+            int(self._auth_token_refresh_at - now),
+        )
+
+    def _token_needs_refresh(self) -> bool:
+        if not self._auth_token:
+            return True
+        if self._auth_token_refresh_at is None:
+            return False
+        return time.time() >= self._auth_token_refresh_at
+
+    def _headers(self, extra_headers: dict[str, str] | None = None) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self._auth_token:
+            headers["Authorization"] = f"Bearer {self._auth_token}"
+        if extra_headers:
+            headers.update(extra_headers)
+        return headers
+
+    def _auth_endpoint(self) -> str:
+        return f"{self._base_url}/api/collections/{self._auth_collection}/auth-with-password"
+
+    def _users_endpoint(self) -> str:
+        return f"{self._base_url}/api/collections/{self._users_collection}"
+
+    def _records_endpoint(self) -> str:
+        return f"{self._users_endpoint()}/records"
+
+    def _request(
+        self,
+        method: str,
+        url: str,
+        payload: dict | None = None,
+        params: dict | None = None,
+        headers: dict[str, str] | None = None,
+        retry_on_auth_error: bool = True,
+    ) -> dict | list | None:
+        try:
+            response = self._client.request(
+                method,
+                url,
+                json=payload,
+                params=params,
+                headers=self._headers(headers),
+            )
+            response.raise_for_status()
+            raw_body = response.content
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401 and retry_on_auth_error and self._has_credentials():
+                self._authenticate()
+                return self._request(
+                    method,
+                    url,
+                    payload=payload,
+                    params=params,
+                    headers=headers,
+                    retry_on_auth_error=False,
+                )
+            raise
+        except httpx.HTTPError as exc:
+            raise ValueError("No se pudo conectar con PocketBase") from exc
+
+        if not raw_body:
+            return None
+        return json.loads(raw_body.decode("utf-8"))
+
+    @staticmethod
+    def _extract_http_status_message(exc: httpx.HTTPStatusError, fallback_message: str) -> str:
+        response = exc.response
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        if isinstance(payload, dict):
+            detail = payload.get("message") or payload.get("detail")
+            if isinstance(detail, str) and detail.strip():
+                return detail.strip()
+
+            data = payload.get("data")
+            if isinstance(data, dict):
+                first_error = next(iter(data.values()), None)
+                if isinstance(first_error, dict):
+                    message = first_error.get("message")
+                    if isinstance(message, str) and message.strip():
+                        return message.strip()
+
+        return fallback_message
+
+    def _authenticate(self) -> None:
+        if not self._has_credentials():
+            return
+
+        payload = {"identity": self._auth_identity, "password": self._auth_password}
+        endpoints = [self._auth_endpoint()]
+        if self._auth_collection in {"_superusers", "admins"}:
+            endpoints.append(f"{self._base_url}/api/admins/auth-with-password")
+
+        last_error: Exception | None = None
+        for endpoint in endpoints:
+            try:
+                data = self._request("POST", endpoint, payload=payload, retry_on_auth_error=False)
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                if exc.response.status_code == 404:
+                    continue
+                continue
+            except ValueError as exc:
+                last_error = exc
+                raise
+
+            token = data.get("token") if isinstance(data, dict) else None
+            if token:
+                self._store_auth_token(token)
+                return
+
+        logger.warning(
+            "No se pudo autenticar el superusuario contra PocketBase (identity=%s, collection=%s): %s",
+            self._auth_identity,
+            self._auth_collection,
+            last_error,
+        )
+        if last_error:
+            raise ValueError("No se pudo autenticar contra PocketBase") from last_error
+        raise ValueError("No se pudo autenticar contra PocketBase")
+
+    @staticmethod
+    def _escape_filter_value(value: str) -> str:
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
+    def _map_role_name(record: dict) -> str | None:
+        expand = record.get("expand")
+        if not isinstance(expand, dict):
+            return None
+
+        expanded_role = expand.get("role")
+        if not isinstance(expanded_role, dict):
+            return None
+
+        role_name = expanded_role.get("nombre") or expanded_role.get("name")
+        if not isinstance(role_name, str):
+            return None
+        normalized_role = role_name.strip()
+        return normalized_role or None
+
+    def _to_user(self, record: dict) -> User:
+        email = str(record.get("email", "")).strip().lower()
+        expanded_role = record.get("expand", {}).get("role") if isinstance(record.get("expand"), dict) else None
+        permissions = []
+        if isinstance(expanded_role, dict):
+            role_permissions = expanded_role.get("permisos")
+            if isinstance(role_permissions, list):
+                permissions = [str(item).strip() for item in role_permissions if str(item).strip()]
+        return User(
+            id=record.get("id"),
+            username=email,
+            name=(str(record.get("name", "")).strip() or None),
+            role=self._map_role_name(record),
+            profile_type=(str(record.get("profile_type", "")).strip() or None),
+            phone=(str(record.get("phone", "")).strip() or None),
+            academic_page=(str(record.get("academic_page", "")).strip() or None),
+            faculty=(str(record.get("faculty", "")).strip() or None),
+            career=(str(record.get("career", "")).strip() or None),
+            student_code=(str(record.get("student_code", "")).strip() or None),
+            campus=(str(record.get("campus", "")).strip() or None),
+            bio=(str(record.get("bio", "")).strip() or None),
+            is_active=bool(record.get("is_active", True)),
+            created_at=record.get("created"),
+            updated_at=record.get("updated"),
+            permissions=permissions,
+            auth_provider=(str(record.get("auth_provider", "local")).strip().lower() or "local"),
+            password_changed_at=record.get("password_changed_at"),
+            session_version=max(1, int(record.get("session_version") or 1)),
+            security_locked=bool(record.get("security_locked", False)),
+            user_code=(str(record.get("user_code", "")).strip() or None),
+            failed_login_attempts=max(0, int(record.get("failed_login_attempts") or 0)),
+            locked_at=record.get("locked_at"),
+            password_expires_at=record.get("password_expires_at"),
+            must_change_password=bool(record.get("must_change_password", False)),
+        )
+
+    def _fetch_record_by_id(self, user_id: str) -> User | None:
+        query = urlencode({"expand": "role"})
+        try:
+            payload = self._request("GET", f"{self._records_endpoint()}/{user_id}?{query}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        if not isinstance(payload, dict):
+            return None
+        return self._to_user(payload)
+
+    def _ensure_authenticated(self) -> None:
+        if self._has_credentials() and self._token_needs_refresh():
+            self._authenticate()
+
+    def _load_supported_fields(self) -> set[str]:
+        if self._supported_fields is not None:
+            return self._supported_fields
+
+        self._ensure_authenticated()
+
+        try:
+            payload = self._request("GET", self._users_endpoint())
+        except httpx.HTTPStatusError:
+            self._supported_fields = set()
+            return self._supported_fields
+
+        fields: set[str] = set()
+        if isinstance(payload, dict):
+            for field in payload.get("fields", []):
+                if isinstance(field, dict):
+                    name = field.get("name")
+                    if isinstance(name, str):
+                        fields.add(name)
+
+        self._supported_fields = fields
+        return fields
+
+    def _resolve_role_id(self, role_name: str) -> str | None:
+        normalized = (role_name or "").strip()
+        if not normalized:
+            return None
+
+        cache_key = normalized.lower()
+        cached = self._role_id_cache.get(cache_key)
+        if cached is not None:
+            return cached or None
+
+        self._ensure_authenticated()
+        roles_url = f"{self._base_url}/api/collections/{self._roles_collection}/records"
+        params = urlencode(
+            {
+                "page": 1,
+                "perPage": 1,
+                "filter": f'name="{self._escape_filter_value(normalized)}"',
+            }
+        )
+
+        try:
+            payload = self._request("GET", f"{roles_url}?{params}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {400, 404}:
+                self._role_id_cache.set(cache_key, "")
+                return None
+            raise
+        except httpx.RequestError:
+            return None
+
+        role_id = ""
+        if isinstance(payload, dict):
+            items = payload.get("items", [])
+            if isinstance(items, list) and items:
+                first = items[0]
+                if isinstance(first, dict):
+                    raw_id = first.get("id")
+                    if isinstance(raw_id, str):
+                        role_id = raw_id.strip()
+
+        self._role_id_cache.set(cache_key, role_id)
+        return role_id or None
+
+    def _build_payload(self, user: User, password: str | None = None) -> dict:
+        name = user.name or user.username.split("@")[0]
+        payload = {
+            "email": user.username.strip().lower(),
+            "name": name,
+            "verified": True,
+            "emailVisibility": True,
+        }
+        if password:
+            payload["password"] = password
+            payload["passwordConfirm"] = password
+
+        supported_fields = self._load_supported_fields()
+        optional_fields = {
+            "profile_type": user.profile_type,
+            "phone": user.phone,
+            "academic_page": user.academic_page,
+            "faculty": user.faculty,
+            "career": user.career,
+            "student_code": user.student_code,
+            "campus": user.campus,
+            "bio": user.bio,
+            "is_active": user.is_active,
+            "auth_provider": user.auth_provider,
+            "password_changed_at": user.password_changed_at,
+            "session_version": user.session_version,
+            "security_locked": user.security_locked,
+            "user_code": user.user_code,
+            "failed_login_attempts": user.failed_login_attempts,
+            "locked_at": user.locked_at,
+            "password_expires_at": user.password_expires_at,
+            "must_change_password": user.must_change_password,
+        }
+        for key, value in optional_fields.items():
+            if key not in supported_fields:
+                continue
+            payload[key] = value
+
+        if "role" in supported_fields and user.role:
+            role_id = self._resolve_role_id(user.role)
+            if role_id:
+                payload["role"] = role_id
+
+        return payload
+
+    def get_by_id(self, user_id: str) -> User | None:
+        normalized_id = user_id.strip()
+        if not normalized_id:
+            return None
+        self._ensure_authenticated()
+        return self._fetch_record_by_id(normalized_id)
+
+    def list_all(self) -> list[User]:
+        self._ensure_authenticated()
+
+        page = 1
+        users: list[User] = []
+
+        while True:
+            params = urlencode(
+                {
+                    "page": page,
+                    "perPage": 500,
+                    "expand": "role",
+                    "sort": "-created",
+                }
+            )
+            payload = self._request("GET", f"{self._records_endpoint()}?{params}")
+            if not isinstance(payload, dict):
+                break
+
+            items = payload.get("items", [])
+            if not isinstance(items, list) or not items:
+                break
+
+            users.extend(self._to_user(item) for item in items if isinstance(item, dict))
+
+            total_pages = int(payload.get("totalPages", page))
+            if page >= total_pages:
+                break
+            page += 1
+
+        return users
+
+    def list_paginated(self, page: int, per_page: int) -> tuple[list[User], int]:
+        self._ensure_authenticated()
+
+        safe_page = max(1, page)
+        safe_per_page = max(1, min(per_page, 500))
+
+        params = urlencode(
+            {
+                "page": safe_page,
+                "perPage": safe_per_page,
+                "expand": "role",
+                "sort": "-created",
+            }
+        )
+        payload = self._request("GET", f"{self._records_endpoint()}?{params}")
+        if not isinstance(payload, dict):
+            return [], 0
+
+        items = payload.get("items", []) or []
+        users = [self._to_user(item) for item in items if isinstance(item, dict)]
+        total = int(payload.get("totalItems", len(users)))
+        return users, total
+
+    def get_by_username(self, username: str) -> User | None:
+        normalized_username = username.strip().lower()
+        if not normalized_username:
+            return None
+
+        self._ensure_authenticated()
+
+        params = urlencode(
+            {
+                "page": 1,
+                "perPage": 1,
+                "expand": "role",
+                "filter": f'email="{self._escape_filter_value(normalized_username)}"',
+            }
+        )
+
+        try:
+            payload = self._request("GET", f"{self._records_endpoint()}?{params}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {400, 404}:
+                return None
+            raise
+
+        if not isinstance(payload, dict):
+            return None
+
+        items = payload.get("items", [])
+        if not items:
+            return None
+
+        return self._to_user(items[0])
+
+    def save(self, user: User) -> User:
+        existing_user = self.get_by_id(user.id) if user.id else self.get_by_username(user.username)
+        if not existing_user or not existing_user.id:
+            raise ValueError("Se requiere una contrasena para crear el usuario en PocketBase")
+        payload = self._build_payload(
+            User(
+                id=existing_user.id,
+                username=user.username,
+                name=user.name or existing_user.name,
+                role=user.role or existing_user.role,
+                profile_type=user.profile_type,
+                phone=user.phone,
+                academic_page=user.academic_page,
+                faculty=user.faculty,
+                career=user.career,
+                student_code=user.student_code,
+                campus=user.campus,
+                bio=user.bio,
+                is_active=user.is_active,
+                auth_provider=user.auth_provider or existing_user.auth_provider,
+                password_changed_at=user.password_changed_at,
+                session_version=user.session_version,
+                security_locked=user.security_locked,
+                user_code=existing_user.user_code or user.user_code,
+                failed_login_attempts=user.failed_login_attempts,
+                locked_at=user.locked_at,
+                password_expires_at=user.password_expires_at,
+                must_change_password=user.must_change_password,
+            )
+        )
+
+        try:
+            data = self._request("PATCH", f"{self._records_endpoint()}/{existing_user.id}", payload=payload)
+        except httpx.HTTPStatusError as exc:
+            detail = self._extract_http_status_message(exc, "No se pudo guardar el usuario en PocketBase")
+            raise ValueError(detail) from exc
+        except httpx.RequestError as exc:
+            raise ValueError("No se pudo conectar con PocketBase") from exc
+
+        if not isinstance(data, dict):
+            raise ValueError("PocketBase devolvio una respuesta invalida al guardar el usuario")
+
+        record_id = data.get("id") if isinstance(data.get("id"), str) else None
+        if record_id:
+            expanded = self._fetch_record_by_id(record_id)
+            if expanded is not None:
+                return expanded
+        return self._to_user(data)
+
+    def save_with_password(self, user: User, password: str) -> User:
+        normalized_username = user.username.strip().lower()
+        existing_user = self.get_by_username(normalized_username)
+        payload = self._build_payload(
+            User(
+                id=existing_user.id if existing_user else user.id,
+                username=normalized_username,
+                name=user.name,
+                role=user.role,
+                profile_type=user.profile_type,
+                phone=user.phone,
+                academic_page=user.academic_page,
+                faculty=user.faculty,
+                career=user.career,
+                student_code=user.student_code,
+                campus=user.campus,
+                bio=user.bio,
+                is_active=user.is_active,
+                auth_provider=user.auth_provider,
+                password_changed_at=user.password_changed_at,
+                session_version=user.session_version,
+                security_locked=user.security_locked,
+                user_code=(existing_user.user_code or user.user_code) if existing_user else user.user_code,
+                failed_login_attempts=user.failed_login_attempts,
+                locked_at=user.locked_at,
+                password_expires_at=user.password_expires_at,
+                must_change_password=user.must_change_password,
+            ),
+            password=password,
+        )
+
+        try:
+            if existing_user and existing_user.id:
+                data = self._request(
+                    "PATCH",
+                    f"{self._records_endpoint()}/{existing_user.id}",
+                    payload=payload,
+                )
+            else:
+                data = self._request("POST", self._records_endpoint(), payload=payload)
+        except httpx.HTTPStatusError as exc:
+            detail = self._extract_http_status_message(exc, "No se pudo guardar el usuario en PocketBase")
+            raise ValueError(detail) from exc
+        except httpx.RequestError as exc:
+            raise ValueError("No se pudo conectar con PocketBase") from exc
+
+        if not isinstance(data, dict):
+            raise ValueError("PocketBase devolvio una respuesta invalida al guardar el usuario")
+
+        record_id = data.get("id") if isinstance(data.get("id"), str) else None
+        if record_id:
+            expanded = self._fetch_record_by_id(record_id)
+            if expanded is not None:
+                return expanded
+        return self._to_user(data)
+
+    def authenticate(self, username: str, password: str) -> User | None:
+        normalized_username = username.strip().lower()
+        payload = {"identity": normalized_username, "password": password}
+
+        try:
+            data = self._request(
+                "POST",
+                f"{self._users_endpoint()}/auth-with-password",
+                payload=payload,
+                headers={"Authorization": ""},
+                retry_on_auth_error=False,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {400, 401, 403, 404}:
+                return None
+            raise
+
+        if not isinstance(data, dict):
+            return None
+
+        record = data.get("record")
+        if not isinstance(record, dict):
+            return None
+
+        user_id = record.get("id")
+        if isinstance(user_id, str) and user_id:
+            expanded_user = self._fetch_record_by_id(user_id)
+            if expanded_user:
+                return expanded_user
+
+        return self._to_user(record)
+
+    def change_password(self, user: User, password: str) -> User:
+        if not user.id:
+            raise ValueError("Usuario no encontrado")
+        payload = self._build_payload(user, password=password)
+        try:
+            data = self._request("PATCH", f"{self._records_endpoint()}/{user.id}", payload=payload)
+        except httpx.HTTPStatusError as exc:
+            detail = self._extract_http_status_message(exc, "No se pudo cambiar la contrasena")
+            raise ValueError(detail) from exc
+        if not isinstance(data, dict):
+            raise ValueError("PocketBase devolvio una respuesta invalida")
+        return self._fetch_record_by_id(user.id) or self._to_user(data)
+
+    def list_security_records(self, collection: str, page: int = 1, per_page: int = 100) -> list[dict]:
+        self._ensure_authenticated()
+        endpoint = f"{self._base_url}/api/collections/{collection}/records"
+        payload = self._request(
+            "GET",
+            endpoint,
+            params={"page": max(1, page), "perPage": max(1, min(per_page, 200)), "sort": "-created"},
+        )
+        return payload.get("items", []) if isinstance(payload, dict) else []
+
+    def create_security_record(self, collection: str, payload: dict) -> None:
+        self._ensure_authenticated()
+        endpoint = f"{self._base_url}/api/collections/{collection}/records"
+        self._request("POST", endpoint, payload=payload)
+
+    def revoke_security_sessions(self, user_id: str, reason: str) -> None:
+        endpoint = f"{self._base_url}/api/collections/auth_session/records"
+        escaped = self._escape_filter_value(user_id)
+        payload = self._request("GET", endpoint, params={"page": 1, "perPage": 200, "filter": f'user_id="{escaped}" && status="active"'})
+        records = payload.get("items", []) if isinstance(payload, dict) else []
+        revoked_at = time.strftime("%Y-%m-%d %H:%M:%S.000Z", time.gmtime())
+        for record in records:
+            self._request("PATCH", f"{endpoint}/{record['id']}", payload={"status": "revoked", "revoked_at": revoked_at, "reason": reason})
+
+    def list_password_hashes(self, user_id: str, limit: int = 5) -> list[str]:
+        endpoint = f"{self._base_url}/api/collections/password_history/records"
+        escaped = self._escape_filter_value(user_id)
+        payload = self._request("GET", endpoint, params={"page": 1, "perPage": max(1, min(limit, 20)), "sort": "-created", "filter": f'user_id="{escaped}"'})
+        return [str(item.get("password_hash") or "") for item in payload.get("items", []) if item.get("password_hash")]
+
+    def record_password_hash(self, user_id: str, password_hash: str, reason: str) -> None:
+        endpoint = f"{self._base_url}/api/collections/password_history/records"
+        self._request("POST", endpoint, payload={"user_id": user_id, "password_hash": password_hash, "reason": reason})
+
+    def get_password_reset_token(self, token_hash: str) -> dict | None:
+        endpoint = f"{self._base_url}/api/collections/password_reset_token/records"
+        escaped = self._escape_filter_value(token_hash)
+        payload = self._request(
+            "GET",
+            endpoint,
+            params={"page": 1, "perPage": 1, "filter": f'token_hash="{escaped}"'},
+        )
+        records = payload.get("items", []) if isinstance(payload, dict) else []
+        return records[0] if records else None
+
+    def consume_password_reset_token(self, token_id: str) -> None:
+        endpoint = f"{self._base_url}/api/collections/password_reset_token/records/{token_id}"
+        self._request("PATCH", endpoint, payload={"used": True})
+
+    def consume_password_reset_tokens(self, user_id: str) -> None:
+        endpoint = f"{self._base_url}/api/collections/password_reset_token/records"
+        escaped = self._escape_filter_value(user_id)
+        while True:
+            payload = self._request(
+                "GET",
+                endpoint,
+                params={"page": 1, "perPage": 200, "filter": f'user_id="{escaped}" && used=false'},
+            )
+            records = payload.get("items", []) if isinstance(payload, dict) else []
+            if not records:
+                return
+            for record in records:
+                self._request("PATCH", f"{endpoint}/{record['id']}", payload={"used": True})
+
+    def check_ready(self) -> None:
+        """Readiness probe: confirma conectividad y auth de admin contra PocketBase.
+
+        Lanza (ValueError / httpx.HTTPError) si no se puede autenticar o alcanzar
+        PocketBase. Si no hay credenciales de admin configuradas, no hay nada que
+        comprobar y retorna sin error.
+        """
+        if not self._has_credentials():
+            return
+        self._ensure_authenticated()
+        self._request("GET", self._users_endpoint())
+
+    def close(self) -> None:
+        self._client.close()

@@ -1,0 +1,192 @@
+import secrets
+
+from app.domain.entities.user import User
+from app.infrastructure.security.password import hash_password, verify_password
+
+
+class InMemoryUserRepository:
+    def __init__(self) -> None:
+        self._data: dict[str, User] = {}
+        self._security_data: dict[str, list[dict]] = {}
+
+    @staticmethod
+    def _clone_user(user: User | None) -> User | None:
+        if user is None:
+            return None
+        return User(
+            username=user.username,
+            hashed_password=user.hashed_password,
+            id=user.id,
+            name=user.name,
+            role=user.role,
+            profile_type=user.profile_type,
+            phone=user.phone,
+            academic_page=user.academic_page,
+            faculty=user.faculty,
+            career=user.career,
+            student_code=user.student_code,
+            campus=user.campus,
+            bio=user.bio,
+            is_active=user.is_active,
+            created_at=user.created_at,
+            updated_at=user.updated_at,
+            permissions=list(user.permissions),
+            auth_provider=user.auth_provider,
+            password_changed_at=user.password_changed_at,
+            session_version=user.session_version,
+            security_locked=user.security_locked,
+            user_code=user.user_code,
+            failed_login_attempts=user.failed_login_attempts,
+            locked_at=user.locked_at,
+            password_expires_at=user.password_expires_at,
+            must_change_password=user.must_change_password,
+        )
+
+    def get_by_id(self, user_id: str) -> User | None:
+        for user in self._data.values():
+            if user.id == user_id:
+                return self._clone_user(user)
+        return None
+
+    def list_all(self) -> list[User]:
+        return [self._clone_user(user) for user in self._data.values()]
+
+    def list_paginated(self, page: int, per_page: int) -> tuple[list[User], int]:
+        all_users = list(self._data.values())
+        safe_page = max(1, page)
+        safe_per_page = max(1, per_page)
+        start = (safe_page - 1) * safe_per_page
+        end = start + safe_per_page
+        return [self._clone_user(user) for user in all_users[start:end]], len(all_users)
+
+    def get_by_username(self, username: str) -> User | None:
+        return self._clone_user(self._data.get(username))
+
+    def save(self, user: User) -> User:
+        existing = next(
+            (stored for stored in self._data.values() if stored.id == (user.id or "")),
+            None,
+        )
+        if existing is None:
+            existing = self._data.get(user.username)
+
+        preserved_user_code = (existing.user_code if existing and existing.user_code else user.user_code)
+        stored_user = User(
+            username=user.username,
+            hashed_password=user.hashed_password,
+            id=(user.id if user.id else (existing.id if existing else secrets.token_hex(8))),
+            name=user.name,
+            role=user.role,
+            profile_type=user.profile_type,
+            phone=user.phone,
+            academic_page=user.academic_page,
+            faculty=user.faculty,
+            career=user.career,
+            student_code=user.student_code,
+            campus=user.campus,
+            bio=user.bio,
+            is_active=user.is_active,
+            created_at=user.created_at or (existing.created_at if existing else None),
+            updated_at=user.updated_at,
+            permissions=list(user.permissions),
+            auth_provider=user.auth_provider,
+            password_changed_at=user.password_changed_at,
+            session_version=user.session_version,
+            security_locked=user.security_locked,
+            user_code=preserved_user_code,
+            failed_login_attempts=user.failed_login_attempts,
+            locked_at=user.locked_at,
+            password_expires_at=user.password_expires_at,
+            must_change_password=user.must_change_password,
+        )
+        self._data[stored_user.username] = stored_user
+        return self._clone_user(stored_user)
+
+    def save_with_password(self, user: User, password: str) -> User:
+        existing = next(
+            (stored for stored in self._data.values() if stored.id == (user.id or "")),
+            None,
+        )
+        if existing is None:
+            existing = self._data.get(user.username)
+
+        stored_user = User(
+            id=(user.id if user.id else (existing.id if existing else secrets.token_hex(8))),
+            username=user.username,
+            hashed_password=hash_password(password),
+            name=user.name,
+            role=user.role,
+            profile_type=user.profile_type,
+            phone=user.phone,
+            academic_page=user.academic_page,
+            faculty=user.faculty,
+            career=user.career,
+            student_code=user.student_code,
+            campus=user.campus,
+            bio=user.bio,
+            is_active=user.is_active,
+            permissions=list(user.permissions),
+            auth_provider=user.auth_provider,
+            password_changed_at=user.password_changed_at,
+            session_version=user.session_version,
+            security_locked=user.security_locked,
+            user_code=(existing.user_code if existing and existing.user_code else user.user_code),
+            failed_login_attempts=user.failed_login_attempts,
+            locked_at=user.locked_at,
+            password_expires_at=user.password_expires_at,
+            must_change_password=user.must_change_password,
+        )
+        self._data[stored_user.username] = stored_user
+        return self._clone_user(stored_user)
+
+    def authenticate(self, username: str, password: str) -> User | None:
+        user = self.get_by_username(username)
+        if not user or not user.hashed_password or not verify_password(password, user.hashed_password):
+            return None
+        return user
+
+    def change_password(self, user: User, password: str) -> User:
+        return self.save_with_password(user, password)
+
+    def list_security_records(self, collection: str, page: int = 1, per_page: int = 100) -> list[dict]:
+        records = self._security_data.get(collection, [])
+        start = (max(1, page) - 1) * max(1, per_page)
+        return records[start:start + max(1, per_page)]
+
+    def create_security_record(self, collection: str, payload: dict) -> None:
+        record = dict(payload)
+        record.setdefault("id", secrets.token_hex(8))
+        self._security_data.setdefault(collection, []).insert(0, record)
+
+    def revoke_security_sessions(self, user_id: str, reason: str) -> None:
+        for record in self._security_data.get("auth_session", []):
+            if record.get("user_id") == user_id and record.get("status") == "active":
+                record.update({"status": "revoked", "reason": reason})
+
+    def list_password_hashes(self, user_id: str, limit: int = 5) -> list[str]:
+        return [str(item.get("password_hash") or "") for item in self._security_data.get("password_history", []) if item.get("user_id") == user_id][:limit]
+
+    def record_password_hash(self, user_id: str, password_hash: str, reason: str) -> None:
+        self.create_security_record("password_history", {"user_id": user_id, "password_hash": password_hash, "reason": reason})
+
+    def get_password_reset_token(self, token_hash: str) -> dict | None:
+        return next(
+            (
+                record
+                for record in self._security_data.get("password_reset_token", [])
+                if record.get("token_hash") == token_hash
+            ),
+            None,
+        )
+
+    def consume_password_reset_token(self, token_id: str) -> None:
+        for record in self._security_data.get("password_reset_token", []):
+            if record.get("id") == token_id:
+                record["used"] = True
+                return
+        raise ValueError("Token de restablecimiento no encontrado")
+
+    def consume_password_reset_tokens(self, user_id: str) -> None:
+        for record in self._security_data.get("password_reset_token", []):
+            if record.get("user_id") == user_id:
+                record["used"] = True
