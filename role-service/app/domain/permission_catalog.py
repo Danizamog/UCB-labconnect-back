@@ -1,6 +1,5 @@
 PERMISSIONS = {
     "consultar_usuarios": ("Consultar usuarios", "Consulta administrativa de cuentas."),
-    "crear_usuarios": ("Crear usuarios", "Dar de alta cuentas locales."),
     "modificar_usuarios": ("Modificar usuarios", "Actualizar datos administrativos."),
     "dar_baja_usuarios": ("Dar de baja usuarios", "Desactivar cuentas sin borrar su trazabilidad."),
     "desbloquear_usuarios": ("Desbloquear usuarios", "Restablecer bloqueos por intentos fallidos."),
@@ -42,7 +41,7 @@ PERMISSIONS = {
 
 PERMISSION_ICONS = {
     "consultar_usuarios": "👥", "gestionar_usuarios": "🧑‍💼", "gestionar_estado_cuentas": "🔐",
-    "crear_usuarios": "➕", "modificar_usuarios": "✏️", "dar_baja_usuarios": "⛔",
+    "modificar_usuarios": "✏️", "dar_baja_usuarios": "⛔",
     "desbloquear_usuarios": "🔓", "reiniciar_credenciales": "🗝️",
     "consultar_directorio_operativo": "📇", "consultar_roles": "🪪", "gestionar_roles": "🛡️",
     "asignar_roles": "🔑",
@@ -68,7 +67,7 @@ PERMISSION_CATALOG = [
 ]
 
 ADMIN_OPERATIONAL_PERMISSIONS = [value for value in PERMISSIONS if value not in {
-    "gestionar_usuarios", "gestionar_estado_cuentas", "crear_usuarios", "modificar_usuarios",
+    "gestionar_usuarios", "gestionar_estado_cuentas", "modificar_usuarios",
     "dar_baja_usuarios", "desbloquear_usuarios", "reiniciar_credenciales", "gestionar_roles", "asignar_roles",
     "iniciar_restablecimiento_credencial", "consultar_auditoria_seguridad",
     "consultar_eventos_autenticacion", "consultar_sesiones_usuarios",
@@ -84,7 +83,7 @@ for _shared_permission in ("consultar_usuarios", "consultar_roles", "consultar_d
 
 ACCESS_ADMIN_PERMISSIONS = [
     "consultar_usuarios", "consultar_directorio_operativo", "consultar_roles",
-    "crear_usuarios", "modificar_usuarios", "dar_baja_usuarios", "desbloquear_usuarios", "reiniciar_credenciales",
+    "modificar_usuarios", "dar_baja_usuarios", "desbloquear_usuarios", "reiniciar_credenciales",
     "gestionar_roles", "asignar_roles",
 ]
 

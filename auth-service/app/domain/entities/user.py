@@ -22,6 +22,7 @@ class User:
     updated_at: str | None = None
     permissions: list[str] = field(default_factory=list)
     auth_provider: str = "local"
+    google_sub: str | None = None
     password_changed_at: str | None = None
     session_version: int = 1
     security_locked: bool = False

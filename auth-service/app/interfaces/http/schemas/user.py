@@ -14,13 +14,6 @@ class UserProfileBase(BaseModel):
     is_active: bool | None = None
 
 
-class UserProfileCreateRequest(UserProfileBase):
-    username: str = Field(min_length=5)
-    name: str = Field(min_length=2)
-    profile_type: str = "student"
-    is_active: bool = True
-
-
 class UserProfileUpdateRequest(UserProfileBase):
     username: str | None = Field(default=None, min_length=5)
 
@@ -49,12 +42,13 @@ class UserProfileResponse(BaseModel):
     locked_at: str | None = None
     password_expires_at: str | None = None
     must_change_password: bool = False
+    google_linked: bool = False
+    local_password_enabled: bool = False
+    can_reset_password_with_google: bool = False
+    auth_method: str | None = None
+    google_verification_expires_at: int | None = None
 
 
 class PasswordResetResponse(BaseModel):
     temporary_password: str
     must_change_password: bool = True
-
-
-class UserProfileCreatedResponse(UserProfileResponse):
-    temporary_password: str

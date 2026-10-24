@@ -16,6 +16,9 @@ class UserRepository(Protocol):
     def get_by_username(self, username: str) -> User | None:
         ...
 
+    def get_by_google_sub(self, google_sub: str) -> User | None:
+        ...
+
     def save(self, user: User) -> User:
         ...
 

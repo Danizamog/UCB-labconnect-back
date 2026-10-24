@@ -54,13 +54,13 @@ def test_account_locks_after_three_failed_attempts() -> None:
     email = "lock.after.three@ucb.edu.bo"
     user_repository.save_with_password(User(id="lock-three", username=email, name="Lock Three"), "ValidPass2026!")
     client = TestClient(app)
-    for _ in range(3):
-        assert client.post("/v1/auth/login", json={"username": email, "password": "WrongPass2026!"}).status_code == 401
+    for expected in (401, 401, 423):
+        assert client.post("/v1/auth/login", json={"username": email, "password": "WrongPass2026!"}).status_code == expected
     locked = user_repository.get_by_username(email)
     assert locked is not None
     assert locked.security_locked is True
     assert locked.failed_login_attempts == 3
-    assert client.post("/v1/auth/login", json={"username": email, "password": "ValidPass2026!"}).status_code == 401
+    assert client.post("/v1/auth/login", json={"username": email, "password": "ValidPass2026!"}).status_code == 423
 
 
 def test_password_history_rejects_recent_password() -> None:

@@ -17,7 +17,7 @@ CONFIG_PATH = ROOT / ".mcp.json"
 
 ALL_PERMISSIONS = [
     "consultar_usuarios", "consultar_directorio_operativo",
-    "crear_usuarios", "modificar_usuarios", "dar_baja_usuarios", "desbloquear_usuarios", "reiniciar_credenciales",
+    "modificar_usuarios", "dar_baja_usuarios", "desbloquear_usuarios", "reiniciar_credenciales",
     "consultar_roles", "gestionar_roles", "asignar_roles",
     "gestionar_reservas", "gestionar_reservas_materiales", "gestionar_reglas_reserva",
     "gestionar_estructura_laboratorios", "gestionar_horarios_laboratorio", "gestionar_accesos_laboratorio",
@@ -33,7 +33,7 @@ ALL_PERMISSIONS = [
 ]
 
 ADMIN_OPERATIONAL_PERMISSIONS = [permission for permission in ALL_PERMISSIONS if permission not in {
-    "gestionar_usuarios", "gestionar_estado_cuentas", "crear_usuarios", "modificar_usuarios",
+    "gestionar_usuarios", "gestionar_estado_cuentas", "modificar_usuarios",
     "dar_baja_usuarios", "desbloquear_usuarios", "reiniciar_credenciales", "gestionar_roles", "asignar_roles",
     "iniciar_restablecimiento_credencial", "consultar_auditoria_seguridad",
     "consultar_eventos_autenticacion", "consultar_sesiones_usuarios",
@@ -45,7 +45,7 @@ for _shared_permission in ("consultar_usuarios", "consultar_roles", "consultar_d
 
 ACCESS_ADMIN_PERMISSIONS = [
     "consultar_usuarios", "consultar_directorio_operativo", "consultar_roles",
-    "crear_usuarios", "modificar_usuarios", "dar_baja_usuarios", "desbloquear_usuarios", "reiniciar_credenciales", "gestionar_roles",
+    "modificar_usuarios", "dar_baja_usuarios", "desbloquear_usuarios", "reiniciar_credenciales", "gestionar_roles",
     "asignar_roles",
 ]
 
@@ -199,7 +199,7 @@ def main() -> None:
         field("academic_page", "url"), field("faculty", "text", max=160),
         field("career", "text", max=160), field("student_code", "text", max=80),
         field("campus", "text", max=100), field("bio", "text", max=2000),
-        field("auth_provider", "text", max=20), field("password_changed_at", "date"),
+        field("auth_provider", "text", max=20), field("google_sub", "text", max=255), field("password_changed_at", "date"),
         field("session_version", "number", onlyInt=True, min=1), field("security_locked", "bool"),
         field("user_code", "text", max=40), field("failed_login_attempts", "number", onlyInt=True, min=0),
         field("locked_at", "date"), field("password_expires_at", "date"), field("must_change_password", "bool"),
@@ -212,7 +212,7 @@ def main() -> None:
     pb.request("PATCH", f"/api/collections/{users_collection['id']}", {
         "fields": fields,
         "indexes": list(users_collection.get("indexes") or []) + ([] if any("idx_users_user_code_unique" in index for index in (users_collection.get("indexes") or [])) else ["CREATE UNIQUE INDEX `idx_users_user_code_unique` ON `users` (`user_code`) WHERE `user_code` != ''"]),
-        "authRule": 'auth_provider = "local"',
+        "authRule": '(auth_provider = "local" || auth_provider = "hybrid") && is_active = true && security_locked = false',
         "oauth2": {**(users_collection.get("oauth2") or {}), "enabled": False},
         "listRule": "id = @request.auth.id",
         "viewRule": "id = @request.auth.id",

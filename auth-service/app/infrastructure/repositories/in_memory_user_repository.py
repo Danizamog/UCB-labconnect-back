@@ -29,6 +29,9 @@ class InMemoryUserRepository:
     def get_by_username(self, username: str) -> User | None:
         return self._data.get(username)
 
+    def get_by_google_sub(self, google_sub: str) -> User | None:
+        return next((user for user in self._data.values() if user.google_sub == google_sub), None)
+
     def save(self, user: User) -> User:
         self._data[user.username] = user
         return user
@@ -51,6 +54,7 @@ class InMemoryUserRepository:
             is_active=user.is_active,
             permissions=list(user.permissions),
             auth_provider=user.auth_provider,
+            google_sub=user.google_sub,
             password_changed_at=user.password_changed_at,
             session_version=user.session_version,
             security_locked=user.security_locked,

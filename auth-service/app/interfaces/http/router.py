@@ -1,6 +1,7 @@
 import logging
 import secrets
 import string
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import httpx
@@ -16,6 +17,7 @@ from app.application.container import (
 )
 from app.core.config import settings
 from app.domain.entities.user import User
+from app.domain.account_security import ACCOUNT_LOCKED_MESSAGE, AccountLockedError, LOCAL_PASSWORD_PROVIDERS, password_change_required
 from app.interfaces.http.schemas.auth import (
     GoogleLoginRequest,
     InstitutionalLoginRequest,
@@ -26,8 +28,6 @@ from app.interfaces.http.schemas.auth import (
     TokenResponse,
 )
 from app.interfaces.http.schemas.user import (
-    UserProfileCreateRequest,
-    UserProfileCreatedResponse,
     UserProfileResponse,
     UserProfileUpdateRequest,
     PasswordResetResponse,
@@ -41,7 +41,8 @@ from app.domain.password_policy import (
 )
 from app.infrastructure.security.password import hash_password, verify_password
 from app.infrastructure.security.recaptcha import RecaptchaRejected, RecaptchaUnavailable, is_recaptcha_configured, verify_recaptcha
-from app.infrastructure.security.token_provider import decode_token
+from app.infrastructure.security.token_provider import create_access_token, decode_token
+from app.infrastructure.security.account_locks import account_login_lock
 
 logger = logging.getLogger(__name__)
 
@@ -115,18 +116,16 @@ def _to_user_response(user: User, *, include_security: bool = True) -> UserProfi
         created_at=user.created_at,
         updated_at=user.updated_at,
         auth_provider=user.auth_provider,
+        google_linked=bool(user.google_sub),
+        local_password_enabled=user.auth_provider in LOCAL_PASSWORD_PROVIDERS,
         password_changed_at=user.password_changed_at,
         user_code=user.user_code,
         security_locked=user.security_locked if include_security else False,
         failed_login_attempts=user.failed_login_attempts if include_security else 0,
         locked_at=user.locked_at if include_security else None,
         password_expires_at=user.password_expires_at if include_security else None,
-        must_change_password=user.must_change_password if include_security else False,
+        must_change_password=password_change_required(user) if include_security else False,
     )
-
-
-def _new_user_code() -> str:
-    return f"UCB-{datetime.now(timezone.utc).year}-{secrets.token_hex(4).upper()}"
 
 
 def _ensure_password_not_reused(user: User, password: str) -> None:
@@ -202,16 +201,6 @@ def _build_live_session_payload(payload: dict) -> dict:
             detail="Token invalido o expirado",
         )
 
-    cached = session_cache.get(subject)
-    if cached is not None:
-        return {
-            **cached,
-            "picture": payload.get("picture"),
-            "auth_provider": cached.get("auth_provider") or payload.get("auth_provider"),
-            "google_sub": payload.get("google_sub"),
-            "exp": payload.get("exp"),
-        }
-
     try:
         user = user_repository.get_by_username(subject)
     except (ValueError, httpx.HTTPError) as exc:
@@ -228,17 +217,11 @@ def _build_live_session_payload(payload: dict) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=INVALID_CREDENTIALS_MESSAGE,
         )
+    if user.security_locked:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=ACCOUNT_LOCKED_MESSAGE)
 
     role = user.role or "user"
     permissions = sorted(set(user.permissions))
-    expires_at = None
-    if user.password_expires_at:
-        try:
-            expires_at = datetime.fromisoformat(user.password_expires_at.replace("Z", "+00:00"))
-        except ValueError:
-            expires_at = None
-    password_change_required = user.must_change_password or bool(expires_at and expires_at <= datetime.now(timezone.utc))
-
     base_session = {
         "sub": user.username,
         "subject": user.username,
@@ -249,19 +232,47 @@ def _build_live_session_payload(payload: dict) -> dict:
         "permissions": permissions,
         "auth_provider": user.auth_provider,
         "session_version": user.session_version,
-        "must_change_password": password_change_required,
+        "must_change_password": password_change_required(user),
         "password_expires_at": user.password_expires_at,
         "valid": True,
+        "local_password_enabled": user.auth_provider in LOCAL_PASSWORD_PROVIDERS,
+        "google_linked": bool(user.google_sub),
+        "auth_method": payload.get("auth_method", "password"),
+        "auth_time": payload.get("auth_time", 0),
+        "can_reset_password_with_google": _can_reset_with_google(user, payload),
     }
-    session_cache.set(subject, base_session)
-
     return {
         **base_session,
         "picture": payload.get("picture"),
-        "auth_provider": user.auth_provider,
         "google_sub": payload.get("google_sub"),
         "exp": payload.get("exp"),
     }
+
+
+def _can_reset_with_google(user: User, payload: dict) -> bool:
+    try:
+        authenticated_at = int(payload.get("auth_time") or 0)
+    except (TypeError, ValueError):
+        return False
+    now = int(datetime.now(timezone.utc).timestamp())
+    return bool(
+        payload.get("auth_method") == "google"
+        and user.google_sub
+        and secrets.compare_digest(user.google_sub, str(payload.get("google_sub") or ""))
+        and now - 300 <= authenticated_at <= now + 5
+    )
+
+
+@contextmanager
+def _account_write(user_id: str):
+    user = user_repository.get_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    with account_login_lock(user.username):
+        fresh = user_repository.get_by_id(user_id)
+        if not fresh:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        yield fresh
 
 
 def _has_any_permission(payload: dict, required_permissions: set[str]) -> bool:
@@ -299,15 +310,6 @@ def _require_user_directory_reader(payload: dict = Depends(_get_current_payload)
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="No autorizado para consultar el directorio de usuarios",
-    )
-
-
-def _require_profile_editor(payload: dict = Depends(_get_current_payload)) -> dict:
-    if _has_any_permission(payload, {"gestionar_usuarios", "crear_usuarios"}):
-        return payload
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="No autorizado para crear o editar perfiles",
     )
 
 
@@ -359,7 +361,12 @@ def login(payload: LoginRequest) -> TokenResponse:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="La verificacion de seguridad no esta disponible. Intenta mas tarde.") from None
     try:
         token = login_user_use_case.execute(payload.username, payload.password)
+    except AccountLockedError:
+        session_cache.invalidate(payload.username.strip().lower())
+        _audit("auth.account.locked", actor_email=payload.username.strip().lower(), result="failed", reason="three_failed_logins")
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=ACCOUNT_LOCKED_MESSAGE) from None
     except ValueError as exc:
+        session_cache.invalidate(payload.username.strip().lower())
         _audit("auth.login.failed", actor_email=payload.username.strip().lower(), result="failed", reason="invalid_credentials")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
@@ -393,32 +400,31 @@ def get_institutional_sso_config() -> InstitutionalSSOConfigResponse:
     )
 
 
-@auth_router.post("/institutional", response_model=TokenResponse)
-def login_with_institutional_sso(payload: InstitutionalLoginRequest) -> TokenResponse:
+def _google_login(credential: str) -> TokenResponse:
     try:
-        token = login_with_google_use_case.execute(payload.credential)
+        token = login_with_google_use_case.execute(credential)
+    except AccountLockedError:
+        _audit("auth.sso_login.blocked", result="failed", reason="account_locked")
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=ACCOUNT_LOCKED_MESSAGE) from None
     except ValueError as exc:
         detail = str(exc)
-        status_code = status.HTTP_503_SERVICE_UNAVAILABLE if "configurado" in detail else status.HTTP_401_UNAUTHORIZED
-        raise HTTPException(status_code=status_code, detail=detail) from exc
-
-    _audit("auth.sso_login.succeeded")
+        code = status.HTTP_503_SERVICE_UNAVAILABLE if "configurado" in detail else status.HTTP_401_UNAUTHORIZED
+        raise HTTPException(status_code=code, detail=detail) from exc
+    claims = decode_token(token)
+    session_cache.invalidate(str(claims.get("sub") or ""))
+    _audit("auth.sso_login.succeeded", actor_email=str(claims.get("sub") or ""))
     _record_session(token)
     return TokenResponse(access_token=token, expires_in=settings.token_expire_minutes * 60)
+
+
+@auth_router.post("/institutional", response_model=TokenResponse)
+def login_with_institutional_sso(payload: InstitutionalLoginRequest) -> TokenResponse:
+    return _google_login(payload.credential)
 
 
 @auth_router.post("/google", response_model=TokenResponse)
 def login_with_google(payload: GoogleLoginRequest) -> TokenResponse:
-    try:
-        token = login_with_google_use_case.execute(payload.credential)
-    except ValueError as exc:
-        detail = str(exc)
-        status_code = status.HTTP_503_SERVICE_UNAVAILABLE if "configurado" in detail else status.HTTP_401_UNAUTHORIZED
-        raise HTTPException(status_code=status_code, detail=detail) from exc
-
-    _audit("auth.sso_login.succeeded")
-    _record_session(token)
-    return TokenResponse(access_token=token, expires_in=settings.token_expire_minutes * 60)
+    return _google_login(payload.credential)
 
 
 @auth_router.get("/validate")
@@ -445,11 +451,11 @@ def validate_token(
     }
 
 
-@auth_router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+@auth_router.post("/change-password", response_model=TokenResponse | None)
 def change_own_password(
     body: ChangePasswordRequest,
     current_user: dict = Depends(_get_current_payload),
-) -> None:
+) -> TokenResponse | Response:
     if body.new_password != body.new_password_confirm:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="La confirmacion no coincide")
     try:
@@ -459,28 +465,50 @@ def change_own_password(
     if body.current_password == body.new_password:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="La nueva contrasena debe ser diferente")
 
-    user = user_repository.get_by_id(str(current_user.get("user_id") or ""))
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
-    if user.auth_provider != "local":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="La credencial se administra con Google")
-    if not user_repository.authenticate(user.username, body.current_password):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="La contrasena actual no es correcta")
+    with _account_write(str(current_user.get("user_id") or "")) as user:
+        if user.security_locked or not user.is_active or user.session_version != current_user.get("session_version"):
+            raise HTTPException(status_code=401, detail="La sesion ya no esta disponible. Inicia sesion nuevamente.")
+        google_verified = _can_reset_with_google(user, current_user)
+        initial_google_setup = google_verified and user.auth_provider == "google"
+        if not google_verified:
+            if user.auth_provider not in LOCAL_PASSWORD_PROVIDERS or not body.current_password:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Verifica nuevamente tu identidad con Google o introduce tu contrasena actual.")
+            if not user_repository.authenticate(user.username, body.current_password):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="La contrasena actual no es correcta")
 
-    _ensure_password_not_reused(user, body.new_password)
+        if user.auth_provider in LOCAL_PASSWORD_PROVIDERS and user_repository.authenticate(user.username, body.new_password):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No puedes reutilizar tu contrasena actual.")
+        _ensure_password_not_reused(user, body.new_password)
 
-    user.password_changed_at = datetime.now(timezone.utc).isoformat()
-    user.password_expires_at = password_expires_at()
-    user.must_change_password = False
-    user.failed_login_attempts = 0
-    user.security_locked = False
-    user.locked_at = None
-    user.session_version += 1
-    user_repository.change_password(user, body.new_password)
-    _record_password(user, body.new_password, "self_change")
-    user_repository.revoke_security_sessions(user.id or "", "password_changed")
-    session_cache.invalidate(user.username)
-    _audit("auth.password.changed", actor_email=user.username, actor_id=user.id or "", target_type="user", target_id=user.id or "")
+        changed_at = datetime.now(timezone.utc)
+        user.password_changed_at = changed_at.isoformat()
+        user.password_expires_at = password_expires_at(changed_at)
+        user.must_change_password = False
+        if user.google_sub:
+            user.auth_provider = "hybrid"
+        user.failed_login_attempts = 0
+        user.security_locked = False
+        user.locked_at = None
+        user.session_version += 1
+        user_repository.change_password(user, body.new_password)
+        _record_password(user, body.new_password, "self_change")
+        user_repository.revoke_security_sessions(user.id or "", "password_changed")
+        session_cache.invalidate(user.username)
+        _audit("auth.password.changed", actor_email=user.username, actor_id=user.id or "", target_type="user", target_id=user.id or "")
+        if initial_google_setup:
+            # Revocar el token restringido y emitir una sesion nueva tras el alta de clave.
+            token = create_access_token(subject=user.username, extra_claims={
+                "user_id": user.id, "role": user.role or "user", "name": user.name,
+                "email": user.username, "permissions": sorted(set(user.permissions)),
+                "auth_provider": user.auth_provider, "auth_method": "google",
+                "auth_time": current_user.get("auth_time"), "google_sub": user.google_sub,
+                "google_linked": True, "local_password_enabled": True,
+                "session_version": user.session_version, "must_change_password": False,
+                "password_expires_at": user.password_expires_at,
+            })
+            _record_session(token)
+            return TokenResponse(access_token=token, expires_in=settings.token_expire_minutes * 60)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @auth_router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -557,7 +585,12 @@ def get_my_profile(current_user: dict = Depends(_get_current_payload)) -> UserPr
     user = user_repository.get_by_id(str(current_user.get("user_id") or ""))
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
-    return _to_user_response(user)
+    response = _to_user_response(user)
+    response.can_reset_password_with_google = _can_reset_with_google(user, current_user)
+    if response.can_reset_password_with_google:
+        response.google_verification_expires_at = int(current_user["auth_time"]) + 300
+    response.auth_method = current_user.get("auth_method")
+    return response
 
 
 @users_router.get("/{user_id}", response_model=UserProfileResponse)
@@ -569,120 +602,81 @@ def get_user(user_id: str, current_user: dict = Depends(_require_user_directory_
     return _to_user_response(user, include_security=include_security)
 
 
-@users_router.post("/", response_model=UserProfileCreatedResponse, status_code=status.HTTP_201_CREATED)
-def create_user_profile(
-    payload: UserProfileCreateRequest,
-    response: Response,
-    current_user: dict = Depends(_require_profile_editor),
-) -> UserProfileCreatedResponse:
-    normalized_username = payload.username.strip().lower()
-    if normalized_username.count("@") != 1 or not normalized_username.split("@", 1)[0] or any(char.isspace() for char in normalized_username) or not normalized_username.endswith(settings.institutional_email_domain):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Solo se permiten correos institucionales UCB",
-        )
-    if user_repository.get_by_username(normalized_username):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El usuario ya existe")
-
-    temporary_password = _generate_temporary_password()
-    user = user_repository.save_with_password(
-        User(
-            username=normalized_username,
-            name=payload.name.strip(),
-            profile_type=_normalize_profile_type(payload.profile_type),
-            phone=_normalize_optional_text(payload.phone),
-            academic_page=_normalize_optional_text(payload.academic_page),
-            faculty=_normalize_optional_text(payload.faculty),
-            career=_normalize_optional_text(payload.career),
-            student_code=_normalize_optional_text(payload.student_code),
-            campus=_normalize_optional_text(payload.campus),
-            bio=_normalize_optional_text(payload.bio),
-            is_active=payload.is_active,
-            auth_provider="local",
-            user_code=_new_user_code(),
-            password_changed_at=datetime.now(timezone.utc).isoformat(),
-            password_expires_at=password_expires_at(),
-            must_change_password=True,
-        ),
-        temporary_password,
-    )
-    _record_password(user, temporary_password, "account_created")
-    session_cache.invalidate(user.username)
-    _audit("user.created", actor_email=current_user.get("username", ""), actor_id=current_user.get("user_id", ""), target_type="user", target_id=user.id or "")
-    response.headers["Cache-Control"] = "no-store"
-    return UserProfileCreatedResponse(**_to_user_response(user, include_security=True).model_dump(), temporary_password=temporary_password)
-
-
 @users_router.put("/{user_id}", response_model=UserProfileResponse)
 def update_user_profile(
     user_id: str,
     payload: UserProfileUpdateRequest,
     current_user: dict = Depends(_require_profile_manager),
 ) -> UserProfileResponse:
-    existing_user = user_repository.get_by_id(user_id)
-    if not existing_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
-    _ensure_profile_update_permissions(current_user, existing_user, payload)
+    with _account_write(user_id) as existing_user:
+        _ensure_profile_update_permissions(current_user, existing_user, payload)
 
-    new_username = existing_user.username
-    if payload.username is not None:
-        normalized_username = payload.username.strip().lower()
-        if not normalized_username.endswith(settings.institutional_email_domain):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Solo se permiten correos institucionales UCB",
-            )
-        user_with_same_username = user_repository.get_by_username(normalized_username)
-        if user_with_same_username and user_with_same_username.id != existing_user.id:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El usuario ya existe")
-        new_username = normalized_username
+        new_username = existing_user.username
+        if payload.username is not None:
+            normalized_username = payload.username.strip().lower()
+            if existing_user.google_sub and normalized_username != existing_user.username:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El correo vinculado a Google no se modifica desde la administracion.")
+            if not normalized_username.endswith(settings.institutional_email_domain):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Solo se permiten correos institucionales UCB",
+                )
+            user_with_same_username = user_repository.get_by_username(normalized_username)
+            if user_with_same_username and user_with_same_username.id != existing_user.id:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El usuario ya existe")
+            new_username = normalized_username
 
-    user_to_save = User(
-        id=existing_user.id,
-        username=new_username,
-        name=payload.name.strip() if payload.name is not None else existing_user.name,
-        role=existing_user.role,
-        profile_type=(
-            _normalize_profile_type(payload.profile_type)
-            if payload.profile_type is not None
-            else existing_user.profile_type
-        ),
-        phone=_normalize_optional_text(payload.phone) if payload.phone is not None else existing_user.phone,
-        academic_page=(
-            _normalize_optional_text(payload.academic_page)
-            if payload.academic_page is not None
-            else existing_user.academic_page
-        ),
-        faculty=_normalize_optional_text(payload.faculty) if payload.faculty is not None else existing_user.faculty,
-        career=_normalize_optional_text(payload.career) if payload.career is not None else existing_user.career,
-        student_code=(
-            _normalize_optional_text(payload.student_code)
-            if payload.student_code is not None
-            else existing_user.student_code
-        ),
-        campus=_normalize_optional_text(payload.campus) if payload.campus is not None else existing_user.campus,
-        bio=_normalize_optional_text(payload.bio) if payload.bio is not None else existing_user.bio,
-        is_active=payload.is_active if payload.is_active is not None else existing_user.is_active,
-        auth_provider=existing_user.auth_provider,
-        password_changed_at=existing_user.password_changed_at,
-        session_version=existing_user.session_version,
-        security_locked=existing_user.security_locked,
-        user_code=existing_user.user_code,
-        failed_login_attempts=existing_user.failed_login_attempts,
-        locked_at=existing_user.locked_at,
-        password_expires_at=existing_user.password_expires_at,
-        must_change_password=existing_user.must_change_password,
-    )
+        user_to_save = User(
+            id=existing_user.id,
+            username=new_username,
+            hashed_password=existing_user.hashed_password,
+            permissions=list(existing_user.permissions),
+            created_at=existing_user.created_at,
+            updated_at=existing_user.updated_at,
+            name=payload.name.strip() if payload.name is not None else existing_user.name,
+            role=existing_user.role,
+            profile_type=(
+                _normalize_profile_type(payload.profile_type)
+                if payload.profile_type is not None
+                else existing_user.profile_type
+            ),
+            phone=_normalize_optional_text(payload.phone) if payload.phone is not None else existing_user.phone,
+            academic_page=(
+                _normalize_optional_text(payload.academic_page)
+                if payload.academic_page is not None
+                else existing_user.academic_page
+            ),
+            faculty=_normalize_optional_text(payload.faculty) if payload.faculty is not None else existing_user.faculty,
+            career=_normalize_optional_text(payload.career) if payload.career is not None else existing_user.career,
+            student_code=(
+                _normalize_optional_text(payload.student_code)
+                if payload.student_code is not None
+                else existing_user.student_code
+            ),
+            campus=_normalize_optional_text(payload.campus) if payload.campus is not None else existing_user.campus,
+            bio=_normalize_optional_text(payload.bio) if payload.bio is not None else existing_user.bio,
+            is_active=payload.is_active if payload.is_active is not None else existing_user.is_active,
+            auth_provider=existing_user.auth_provider,
+            google_sub=existing_user.google_sub,
+            password_changed_at=existing_user.password_changed_at,
+            session_version=existing_user.session_version,
+            security_locked=existing_user.security_locked,
+            user_code=existing_user.user_code,
+            failed_login_attempts=existing_user.failed_login_attempts,
+            locked_at=existing_user.locked_at,
+            password_expires_at=existing_user.password_expires_at,
+            must_change_password=existing_user.must_change_password,
+        )
 
-    try:
-        saved_user = user_repository.save(user_to_save)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        try:
+            saved_user = user_repository.save(user_to_save)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    session_cache.invalidate(existing_user.username)
-    if saved_user.username != existing_user.username:
-        session_cache.invalidate(saved_user.username)
-    return _to_user_response(saved_user)
+        session_cache.invalidate(existing_user.username)
+        if saved_user.username != existing_user.username:
+            session_cache.invalidate(saved_user.username)
+        return _to_user_response(saved_user)
 
 
 @users_router.get("/policy/password")
@@ -703,64 +697,60 @@ def get_password_policy(_: dict = Depends(_get_current_payload)) -> dict:
 
 
 @users_router.post("/{user_id}/reset-password", response_model=PasswordResetResponse)
-def reset_user_password(user_id: str, current_user: dict = Depends(_get_current_payload)) -> PasswordResetResponse:
+def reset_user_password(user_id: str, response: Response, current_user: dict = Depends(_get_current_payload)) -> PasswordResetResponse:
     if not _has_any_permission(current_user, {"reiniciar_credenciales"}):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autorizado para reiniciar credenciales")
-    user = user_repository.get_by_id(user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
-    if user.auth_provider != "local":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="La credencial de esta cuenta se administra con Google")
-    if user.id == current_user.get("user_id"):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Usa Mi cuenta para cambiar tu propia contrasena")
-    temporary_password = _generate_temporary_password()
-    _ensure_password_not_reused(user, temporary_password)
-    user.password_changed_at = datetime.now(timezone.utc).isoformat()
-    user.password_expires_at = password_expires_at()
-    user.must_change_password = True
-    user.failed_login_attempts = 0
-    user.security_locked = False
-    user.locked_at = None
-    user.session_version += 1
-    user_repository.change_password(user, temporary_password)
-    _record_password(user, temporary_password, "administrative_reset")
-    user_repository.revoke_security_sessions(user.id or "", "administrative_password_reset")
-    session_cache.invalidate(user.username)
-    _audit("auth.password.reset", actor_email=current_user.get("username", ""), actor_id=current_user.get("user_id", ""), target_type="user", target_id=user.id or "")
-    return PasswordResetResponse(temporary_password=temporary_password)
+    with _account_write(user_id) as user:
+        if user.id == current_user.get("user_id"):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Usa Mi cuenta para cambiar tu propia contrasena")
+        temporary_password = _generate_temporary_password()
+        _ensure_password_not_reused(user, temporary_password)
+        changed_at = datetime.now(timezone.utc)
+        user.password_changed_at = changed_at.isoformat()
+        user.password_expires_at = password_expires_at(changed_at)
+        user.must_change_password = True
+        if user.google_sub or user.auth_provider == "google":
+            user.auth_provider = "hybrid"
+        user.failed_login_attempts = 0
+        user.security_locked = False
+        user.locked_at = None
+        user.session_version += 1
+        user_repository.change_password(user, temporary_password)
+        _record_password(user, temporary_password, "administrative_reset")
+        user_repository.revoke_security_sessions(user.id or "", "administrative_password_reset")
+        session_cache.invalidate(user.username)
+        _audit("auth.password.reset", actor_email=current_user.get("username", ""), actor_id=current_user.get("user_id", ""), target_type="user", target_id=user.id or "")
+        response.headers["Cache-Control"] = "no-store"
+        return PasswordResetResponse(temporary_password=temporary_password)
 
 
 @users_router.post("/{user_id}/unlock", response_model=UserProfileResponse)
 def unlock_user(user_id: str, current_user: dict = Depends(_get_current_payload)) -> UserProfileResponse:
     if not _has_any_permission(current_user, {"desbloquear_usuarios"}):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autorizado para desbloquear usuarios")
-    user = user_repository.get_by_id(user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
-    user.security_locked = False
-    user.failed_login_attempts = 0
-    user.locked_at = None
-    saved = user_repository.save(user)
-    session_cache.invalidate(user.username)
-    _audit("auth.account.unlocked", actor_email=current_user.get("username", ""), actor_id=current_user.get("user_id", ""), target_type="user", target_id=user.id or "")
-    return _to_user_response(saved)
+    with _account_write(user_id) as user:
+        user.security_locked = False
+        user.failed_login_attempts = 0
+        user.locked_at = None
+        saved = user_repository.save(user)
+        session_cache.invalidate(user.username)
+        _audit("auth.account.unlocked", actor_email=current_user.get("username", ""), actor_id=current_user.get("user_id", ""), target_type="user", target_id=user.id or "")
+        return _to_user_response(saved)
 
 
 @users_router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def deactivate_user(user_id: str, current_user: dict = Depends(_get_current_payload)) -> None:
     if not _has_any_permission(current_user, {"dar_baja_usuarios"}):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autorizado para dar de baja usuarios")
-    user = user_repository.get_by_id(user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
-    if user.id == current_user.get("user_id"):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No puedes dar de baja tu propia cuenta")
-    user.is_active = False
-    user.session_version += 1
-    user_repository.save(user)
-    user_repository.revoke_security_sessions(user.id or "", "account_deactivated")
-    session_cache.invalidate(user.username)
-    _audit("user.deactivated", actor_email=current_user.get("username", ""), actor_id=current_user.get("user_id", ""), target_type="user", target_id=user.id or "")
+    with _account_write(user_id) as user:
+        if user.id == current_user.get("user_id"):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No puedes dar de baja tu propia cuenta")
+        user.is_active = False
+        user.session_version += 1
+        user_repository.save(user)
+        user_repository.revoke_security_sessions(user.id or "", "account_deactivated")
+        session_cache.invalidate(user.username)
+        _audit("user.deactivated", actor_email=current_user.get("username", ""), actor_id=current_user.get("user_id", ""), target_type="user", target_id=user.id or "")
 
 
 router.include_router(auth_router)

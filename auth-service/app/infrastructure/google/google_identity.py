@@ -63,7 +63,7 @@ class GoogleIdentityTokenVerifier:
             raise ValueError("La cuenta institucional no tiene el correo verificado")
 
         email = str(payload.get("email", "")).strip().lower()
-        if not email:
+        if not email or not payload.get("sub"):
             raise ValueError("El proveedor institucional no devolvio un correo valido")
 
         return {

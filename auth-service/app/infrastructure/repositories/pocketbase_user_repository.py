@@ -236,6 +236,7 @@ class PocketBaseUserRepository:
             updated_at=record.get("updated"),
             permissions=permissions,
             auth_provider=(str(record.get("auth_provider", "local")).strip().lower() or "local"),
+            google_sub=str(record.get("google_sub") or "") or None,
             password_changed_at=record.get("password_changed_at"),
             session_version=max(1, int(record.get("session_version") or 1)),
             security_locked=bool(record.get("security_locked", False)),
@@ -352,6 +353,7 @@ class PocketBaseUserRepository:
             "bio": user.bio,
             "is_active": user.is_active,
             "auth_provider": user.auth_provider,
+            "google_sub": user.google_sub,
             "password_changed_at": user.password_changed_at,
             "session_version": user.session_version,
             "security_locked": user.security_locked,
@@ -467,6 +469,13 @@ class PocketBaseUserRepository:
 
         return self._to_user(items[0])
 
+    def get_by_google_sub(self, google_sub: str) -> User | None:
+        self._ensure_authenticated()
+        params = urlencode({"page": 1, "perPage": 1, "expand": "role", "filter": f'google_sub="{self._escape_filter_value(google_sub)}"'})
+        data = self._request("GET", f"{self._records_endpoint()}?{params}")
+        items = data.get("items", []) if isinstance(data, dict) else []
+        return self._to_user(items[0]) if items else None
+
     def save(self, user: User) -> User:
         existing_user = user if user.id else self.get_by_username(user.username)
         if not existing_user or not existing_user.id:
@@ -487,6 +496,7 @@ class PocketBaseUserRepository:
                 bio=user.bio,
                 is_active=user.is_active,
                 auth_provider=user.auth_provider or existing_user.auth_provider,
+                google_sub=user.google_sub,
                 password_changed_at=user.password_changed_at,
                 session_version=user.session_version,
                 security_locked=user.security_locked,
@@ -535,6 +545,7 @@ class PocketBaseUserRepository:
                 bio=user.bio,
                 is_active=user.is_active,
                 auth_provider=user.auth_provider,
+                google_sub=user.google_sub,
                 password_changed_at=user.password_changed_at,
                 session_version=user.session_version,
                 security_locked=user.security_locked,
