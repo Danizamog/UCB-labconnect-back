@@ -53,6 +53,12 @@ class Settings:
     institutional_sso_button_label: str = os.getenv("INSTITUTIONAL_SSO_BUTTON_LABEL", "Continuar con cuenta institucional")
     google_client_id: str = os.getenv("GOOGLE_CLIENT_ID", "")
     google_client_secret: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
+    recaptcha_enabled: bool = os.getenv("RECAPTCHA_ENABLED", "false").strip().lower() == "true"
+    recaptcha_site_key: str = os.getenv("RECAPTCHA_SITE_KEY", "").strip()
+    recaptcha_secret_key: str = os.getenv("RECAPTCHA_SECRET_KEY", "").strip()
+    recaptcha_allowed_hostnames: tuple[str, ...] = tuple(
+        hostname.strip().lower() for hostname in os.getenv("RECAPTCHA_ALLOWED_HOSTNAMES", "").split(",") if hostname.strip()
+    )
     pocketbase_url: str = os.getenv("POCKETBASE_URL", "").strip()
     pocketbase_users_collection: str = os.getenv("POCKETBASE_USERS_COLLECTION", "users").strip() or "users"
     pocketbase_auth_identity: str = os.getenv("POCKETBASE_AUTH_IDENTITY", "").strip()

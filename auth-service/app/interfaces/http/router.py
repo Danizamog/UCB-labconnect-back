@@ -22,6 +22,7 @@ from app.interfaces.http.schemas.auth import (
     InstitutionalSSOConfigResponse,
     ChangePasswordRequest,
     LoginRequest,
+    LoginCaptchaConfigResponse,
     TokenResponse,
 )
 from app.interfaces.http.schemas.user import (
@@ -39,6 +40,7 @@ from app.domain.password_policy import (
     validate_password,
 )
 from app.infrastructure.security.password import hash_password, verify_password
+from app.infrastructure.security.recaptcha import RecaptchaRejected, RecaptchaUnavailable, is_recaptcha_configured, verify_recaptcha
 from app.infrastructure.security.token_provider import decode_token
 
 logger = logging.getLogger(__name__)
@@ -348,6 +350,14 @@ def _ensure_profile_update_permissions(
 @auth_router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest) -> TokenResponse:
     try:
+        verify_recaptcha(payload.captcha_token)
+    except RecaptchaRejected:
+        _audit("auth.captcha.failed", result="failed", reason="challenge_rejected")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Completa nuevamente la verificacion de seguridad.") from None
+    except RecaptchaUnavailable:
+        _audit("auth.captcha.unavailable", result="failed", reason="verification_unavailable")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="La verificacion de seguridad no esta disponible. Intenta mas tarde.") from None
+    try:
         token = login_user_use_case.execute(payload.username, payload.password)
     except ValueError as exc:
         _audit("auth.login.failed", actor_email=payload.username.strip().lower(), result="failed", reason="invalid_credentials")
@@ -356,6 +366,17 @@ def login(payload: LoginRequest) -> TokenResponse:
     _audit("auth.login.succeeded", actor_email=payload.username.strip().lower())
     _record_session(token)
     return TokenResponse(access_token=token, expires_in=settings.token_expire_minutes * 60)
+
+
+@auth_router.get("/captcha/config", response_model=LoginCaptchaConfigResponse)
+def get_login_captcha_config(response: Response) -> LoginCaptchaConfigResponse:
+    configured = is_recaptcha_configured()
+    response.headers["Cache-Control"] = "no-store"
+    return LoginCaptchaConfigResponse(
+        enabled=settings.recaptcha_enabled,
+        configured=configured,
+        site_key=settings.recaptcha_site_key if settings.recaptcha_enabled and configured else None,
+    )
 
 
 @auth_router.get("/institutional/config", response_model=InstitutionalSSOConfigResponse)

@@ -4,6 +4,13 @@ from pydantic import BaseModel, Field
 class LoginRequest(BaseModel):
     username: str
     password: str
+    captcha_token: str | None = Field(default=None, max_length=8192)
+
+
+class LoginCaptchaConfigResponse(BaseModel):
+    enabled: bool
+    configured: bool
+    site_key: str | None = None
 
 
 class GoogleLoginRequest(BaseModel):
