@@ -152,6 +152,8 @@ Hay que exportar las mismas variables de entorno que usa Docker Compose. Para us
 docker run -d -p 1025:1025 -p 8025:8025 axllent/mailpit
 ```
 
+Para habilitar cuentas de prueba en Docker, configura `LOCAL_TEST_ACCOUNT_EMAILS` y `LOCAL_TEST_ACCOUNT_PASSWORD` en un archivo local `.env.localtest` en la raíz del backend. Solo se crean en memoria cuando PocketBase no está configurado; no son cuentas persistentes ni deben usarse en producción.
+
 ## Pruebas
 
 ```bash
