@@ -1,7 +1,12 @@
+import logging
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.security import HTTPAuthorizationCredentials
 
 from app.application.container import _pb_client, stock_item_repo, stock_movement_repo, supply_reservation_repo
-from app.core.dependencies import ensure_any_permission, get_current_user
+from app.core.config import settings
+from app.core.dependencies import ensure_any_permission, get_current_user, security
 from app.core.locks import stock_item_lock_registry
 from app.schemas.supply_reservation import (
     SupplyReservationCreate,
@@ -10,6 +15,11 @@ from app.schemas.supply_reservation import (
 )
 
 router = APIRouter(prefix="/supply-reservations", tags=["supply-reservations"])
+logger = logging.getLogger(__name__)
+reservation_validation_client = httpx.Client(
+    timeout=httpx.Timeout(5.0, connect=3.0),
+    limits=httpx.Limits(max_connections=50, max_keepalive_connections=10),
+)
 
 _ALLOWED_STATUSES = {"pending", "approved", "delivered", "cancelled"}
 _VIEW_SUPPLY_RESERVATIONS = {"gestionar_reservas_materiales", "gestionar_stock", "gestionar_reactivos_quimicos"}
@@ -85,15 +95,60 @@ def get_supply_reservation(reservation_id: str, current_user: dict = Depends(get
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva de insumo no encontrada")
     if _can_manage(current_user):
         _ensure_stock_item_scope(reservation.stock_item_id, current_user)
-    if not _can_manage(current_user) and reservation.requested_by != (current_user.get("username") or current_user.get("user_id") or ""):
+    if not _can_manage(current_user) and reservation.requested_by != str(current_user.get("user_id") or ""):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta reserva")
     return reservation
+
+
+def _get_owned_reference(path: str, *, token: str, current_user: dict, owner_field: str, resource_name: str) -> dict:
+    base_url = settings.reservations_service_url.strip().rstrip("/")
+    try:
+        response = reservation_validation_client.get(
+            f"{base_url}{path}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("No se pudo validar la referencia %s: %s", resource_name, type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo validar el recurso asociado",
+        ) from exc
+
+    if response.status_code == status.HTTP_404_NOT_FOUND:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{resource_name} no encontrada")
+    if response.status_code == status.HTTP_401_UNAUTHORIZED:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="La sesion ya no es valida")
+    if response.status_code == status.HTTP_403_FORBIDDEN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"No tienes acceso a la {resource_name.lower()}")
+    if response.status_code >= 400:
+        logger.warning("La validacion de %s respondio con estado %s", resource_name, response.status_code)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo validar el recurso asociado",
+        )
+
+    try:
+        record = response.json()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo validar el recurso asociado",
+        ) from exc
+    if not isinstance(record, dict):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No se pudo validar el recurso asociado")
+
+    owner_id = str(record.get(owner_field) or "").strip()
+    current_user_id = str(current_user.get("user_id") or "").strip()
+    if not current_user_id or owner_id != current_user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"No tienes acceso a la {resource_name.lower()}")
+    return record
 
 
 @router.post("", response_model=SupplyReservationResponse, status_code=status.HTTP_201_CREATED)
 def create_supply_reservation(
     body: SupplyReservationCreate,
     current_user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> SupplyReservationResponse:
     stock_item = stock_item_repo.get_raw_by_id(body.stock_item_id)
     if stock_item is None:
@@ -153,10 +208,24 @@ def create_supply_reservation(
 
     tutorial_session_id = str(body.tutorial_session_id or "").strip()
     if tutorial_session_id:
+        _get_owned_reference(
+            f"/v1/tutorial-sessions/{tutorial_session_id}",
+            token=credentials.credentials,
+            current_user=current_user,
+            owner_field="tutor_id",
+            resource_name="Tutoria",
+        )
         payload["tutorial_session_id"] = tutorial_session_id
 
     lab_reservation_id = str(body.lab_reservation_id or "").strip()
     if lab_reservation_id:
+        _get_owned_reference(
+            f"/v1/reservations/{lab_reservation_id}",
+            token=credentials.credentials,
+            current_user=current_user,
+            owner_field="requested_by",
+            resource_name="Reserva",
+        )
         payload["lab_reservation_id"] = lab_reservation_id
 
     recurrence = str(body.recurrence or "").strip().lower()

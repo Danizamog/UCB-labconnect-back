@@ -132,25 +132,10 @@ class PocketBaseUserRepository:
 
     @staticmethod
     def _extract_http_status_message(exc: httpx.HTTPStatusError, fallback_message: str) -> str:
-        response = exc.response
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = None
-
-        if isinstance(payload, dict):
-            detail = payload.get("message") or payload.get("detail")
-            if isinstance(detail, str) and detail.strip():
-                return detail.strip()
-
-            data = payload.get("data")
-            if isinstance(data, dict):
-                first_error = next(iter(data.values()), None)
-                if isinstance(first_error, dict):
-                    message = first_error.get("message")
-                    if isinstance(message, str) and message.strip():
-                        return message.strip()
-
+        logger.warning(
+            "PocketBase rechazo una operacion de usuario con estado %s",
+            exc.response.status_code,
+        )
         return fallback_message
 
     def _authenticate(self) -> None:

@@ -23,7 +23,7 @@ services:
     environment:
       - SECRET_KEY=${SECRET_KEY}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
-      - RECAPTCHA_ENABLED=${RECAPTCHA_ENABLED:-false}
+      - RECAPTCHA_ENABLED=${RECAPTCHA_ENABLED:-true}
       - RECAPTCHA_SITE_KEY=${RECAPTCHA_SITE_KEY:-}
       - RECAPTCHA_SECRET_KEY=${RECAPTCHA_SECRET_KEY:-}
       - RECAPTCHA_ALLOWED_HOSTNAMES=${RECAPTCHA_ALLOWED_HOSTNAMES:-ucb-labconnect-front.pages.dev,localhost,127.0.0.1}
@@ -130,6 +130,7 @@ services:
       - "8006:8006"
     environment:
       - AUTH_SERVICE_URL=http://auth-service:8001
+      - RESERVATIONS_SERVICE_URL=http://reservation-service:8005
       - SECRET_KEY=${SECRET_KEY}
       - POCKETBASE_URL=${POCKETBASE_URL}
       - POCKETBASE_AUTH_IDENTITY=${POCKETBASE_AUTH_IDENTITY}
@@ -218,4 +219,3 @@ services:
 networks:
   default:
     name: labconnect-backend-network
-

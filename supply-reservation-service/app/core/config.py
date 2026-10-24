@@ -41,11 +41,12 @@ class Settings:
         self.app_host = os.getenv("SUPPLY_RESERVATION_APP_HOST", "0.0.0.0")
         self.app_port = int(os.getenv("SUPPLY_RESERVATION_APP_PORT", "8006"))
         self.auth_service_url = os.getenv("AUTH_SERVICE_URL", "http://127.0.0.1:8101")
+        self.reservations_service_url = os.getenv("RESERVATIONS_SERVICE_URL", "http://127.0.0.1:8005")
         self.secret_key = _require_env("SECRET_KEY")
         self.algorithm = os.getenv("JWT_ALGORITHM", os.getenv("ALGORITHM", "HS256"))
         self.jwt_issuer = os.getenv("JWT_ISSUER", "labconnect-auth").strip() or "labconnect-auth"
         self.jwt_audience = os.getenv("JWT_AUDIENCE", "labconnect").strip() or "labconnect"
-        self.token_cache_ttl_seconds = float(os.getenv("TOKEN_CACHE_TTL_SECONDS", "30"))
+        self.token_cache_ttl_seconds = float(os.getenv("TOKEN_CACHE_TTL_SECONDS", "0"))
         self.token_cache_max_entries = int(os.getenv("TOKEN_CACHE_MAX_ENTRIES", "5000"))
         self.pocketbase_url = os.getenv("POCKETBASE_URL", "").rstrip("/")
         self.pocketbase_auth_identity = os.getenv("POCKETBASE_AUTH_IDENTITY")

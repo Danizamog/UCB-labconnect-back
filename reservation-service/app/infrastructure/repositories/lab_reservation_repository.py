@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import date, timedelta
 
 import httpx
@@ -9,6 +10,7 @@ from app.infrastructure.pocketbase_base import PocketBaseClient
 from app.schemas.lab_reservation import RESERVATION_STATUSES, LabReservationCreate, LabReservationResponse, LabReservationUpdate
 
 _COLLECTION = settings.pb_lab_reservation_collection
+logger = logging.getLogger(__name__)
 
 
 def _day_range_clause(field: str, day: str) -> str:
@@ -444,10 +446,12 @@ class LabReservationRepository:
         try:
             data = self._client.request("POST", self._base, payload=payload)
         except Exception as exc:
-            raise ValueError(f"Error guardando en PocketBase: {str(exc)}") from exc
+            logger.warning("No se pudo guardar la reserva en PocketBase: %s", type(exc).__name__)
+            raise RuntimeError("No se pudo guardar la reserva") from exc
         
         if not isinstance(data, dict):
-            raise ValueError(f"PocketBase devolvio respuesta invalida al crear reserva: {type(data)} - {data}")
+            logger.warning("PocketBase devolvio una respuesta invalida al crear una reserva")
+            raise RuntimeError("No se pudo guardar la reserva")
         return _to_response(data)
 
     def update(self, reservation_id: str, body: LabReservationUpdate) -> LabReservationResponse | None:

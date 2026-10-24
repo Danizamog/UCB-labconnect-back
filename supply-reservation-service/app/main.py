@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.api.v1.router import api_router
 from app.application.container import close_resources
 from app.core.dependencies import auth_validation_client
+from app.api.v1.endpoints.supply_reservations import reservation_validation_client
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ async def health() -> dict:
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     auth_validation_client.close()
+    reservation_validation_client.close()
     close_resources()
 
 

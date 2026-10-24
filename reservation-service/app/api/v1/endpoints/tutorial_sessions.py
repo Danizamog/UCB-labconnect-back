@@ -180,11 +180,10 @@ def get_tutorial_session(
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tutoria no encontrada")
 
-    is_admin = is_admin_role(current_user)
-    can_manage = "gestionar_tutorias_propias" in set(current_user.get("permissions") or [])
+    can_approve = "aprobar_tutorias" in set(current_user.get("permissions") or [])
     is_owner = session.tutor_id == (current_user.get("user_id") or "")
 
-    if not session.is_published and not (is_admin or can_manage or is_owner):
+    if not session.is_published and not (can_approve or is_owner):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta tutoria")
 
     return session
@@ -203,9 +202,9 @@ async def create_tutorial_session(
 
     payload = body.model_copy(
         update={
-            "tutor_id": body.tutor_id or current_user.get("user_id") or "",
-            "tutor_name": body.tutor_name or current_user.get("name") or current_user.get("username") or "Tutor",
-            "tutor_email": body.tutor_email or "",
+            "tutor_id": current_user.get("user_id") or "",
+            "tutor_name": current_user.get("name") or current_user.get("username") or "Tutor",
+            "tutor_email": current_user.get("email") or current_user.get("username") or "",
         }
     )
 

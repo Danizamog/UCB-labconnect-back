@@ -1049,6 +1049,11 @@ async def create_reservation(body: LabReservationCreate, current_user: dict = De
             created = await lab_reservation_repo.acreate(sanitized, current_user=current_user)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No se pudo guardar la reserva",
+            ) from exc
 
     await _broadcast_reservation_event("create", _serialize_reservation(created))
     return _serialize_reservation(created)
