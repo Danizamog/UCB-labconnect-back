@@ -5,8 +5,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status
 
 from app.application.container import user_repository
-from app.core.config import settings
-from app.core.local_test_accounts import seed_local_test_accounts
 from app.interfaces.http.router import router as auth_router
 
 logger = logging.getLogger(__name__)
@@ -14,14 +12,6 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    seeded_count = seed_local_test_accounts(
-        user_repository,
-        settings.local_test_account_emails,
-        settings.local_test_account_password,
-        settings.local_test_teacher_emails,
-    )
-    if seeded_count:
-        logger.warning("Se inicializaron %s cuentas de prueba locales en memoria", seeded_count)
     yield
     close_repository = getattr(user_repository, "close", None)
     if callable(close_repository):

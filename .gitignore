@@ -130,7 +130,6 @@ celerybeat.pid
 # Environments
 .env
 .env.jenkins.prod
-.env.localtest
 .venv
 env/
 venv/
