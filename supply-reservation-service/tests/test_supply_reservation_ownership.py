@@ -192,3 +192,38 @@ def test_detail_uses_stable_user_id_for_ownership(monkeypatch) -> None:
     )
 
     assert result is record
+
+
+def test_personal_list_is_scoped_by_stable_user_id(monkeypatch) -> None:
+    list_all = Mock(return_value=[])
+    monkeypatch.setattr(supply_reservations, "supply_reservation_repo", SimpleNamespace(list_all=list_all))
+
+    result = supply_reservations.list_supply_reservations(
+        status_filter=None,
+        tutorial_session_id=None,
+        stock_item_id=None,
+        lab_reservation_id=None,
+        current_user={"user_id": "user-1", "username": "alias@ucb.edu.bo", "permissions": []},
+    )
+
+    assert result == []
+    assert list_all.call_args.kwargs["requested_by"] == "user-1"
+
+
+def test_create_uses_authenticated_user_id_as_requester(monkeypatch) -> None:
+    create = Mock(return_value="created")
+    monkeypatch.setattr(
+        supply_reservations,
+        "stock_item_repo",
+        SimpleNamespace(get_raw_by_id=lambda _item_id: {"quantity_available": 5}),
+    )
+    monkeypatch.setattr(supply_reservations, "supply_reservation_repo", SimpleNamespace(create=create))
+
+    result = supply_reservations.create_supply_reservation(
+        SupplyReservationCreate(stock_item_id="stock-1", quantity=1),
+        {"user_id": "user-1", "username": "alias@ucb.edu.bo"},
+        HTTPAuthorizationCredentials(scheme="Bearer", credentials="token"),
+    )
+
+    assert result == "created"
+    assert create.call_args.args[0]["requested_by"] == "user-1"
