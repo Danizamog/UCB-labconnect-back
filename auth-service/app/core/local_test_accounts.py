@@ -1,7 +1,15 @@
-from app.core.identity import is_institutional_email
+from app.core.config import settings
 from app.domain.entities.user import User
 from app.domain.password_policy import validate_password
 from app.infrastructure.repositories.in_memory_user_repository import InMemoryUserRepository
+
+
+def _is_institutional_email(email: str, configured_domain: str) -> bool:
+    if email.count("@") != 1 or any(character.isspace() for character in email):
+        return False
+    local_part, domain = email.rsplit("@", 1)
+    normalized_domain = configured_domain.strip().lower().lstrip("@")
+    return bool(local_part and domain == normalized_domain)
 
 
 def seed_local_test_accounts(
@@ -26,10 +34,10 @@ def seed_local_test_accounts(
         raise ValueError("LOCAL_TEST_ACCOUNT_PASSWORD es obligatorio si se configuran cuentas de prueba")
 
     emails = [email for email, _, _ in accounts]
-    if not emails or len(set(emails)) != len(emails):
-        raise ValueError("La lista de cuentas de prueba está vacía o contiene correos duplicados")
+    if len(set(emails)) != len(emails):
+        raise ValueError("La lista de cuentas de prueba contiene correos duplicados")
     for email in emails:
-        if not is_institutional_email(email, "@ucb.edu.bo"):
+        if not _is_institutional_email(email, settings.institutional_email_domain):
             raise ValueError(f"Correo institucional no válido para prueba: {email}")
         if repository.get_by_username(email):
             raise RuntimeError(f"La cuenta local de prueba ya existe: {email}")
