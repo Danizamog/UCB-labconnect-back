@@ -12,6 +12,9 @@ services:
       retries: 5
 
   auth-service:
+    env_file:
+      - path: .env.localtest
+        required: false
     build:
       context: ./auth-service
     container_name: auth-service
