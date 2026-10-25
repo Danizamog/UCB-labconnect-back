@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.application.use_cases.manage_roles import ManageRolesUseCase
+from app.domain.entities.role import Role
 from app.core.dependencies import get_current_user_payload
 from app.infrastructure.repositories.in_memory_role_repository import InMemoryRoleRepository
 from app.infrastructure.repositories.pocketbase_role_repository import PocketBaseRoleRepository
@@ -67,7 +68,9 @@ def test_last_access_manager_cannot_be_removed(context):
 
 def test_last_access_role_cannot_lose_management_permissions(context):
     use_case, repo, roles, _ = context
-    role = roles["Administrador de Accesos"]
+    role = repo.create(Role(id='', nombre='Gestor delegado', descripcion='', permisos=['gestionar_roles', 'asignar_roles']))
+    repo._users['manager']['roleId'] = role.id
+    repo._users['backup']['roleId'] = role.id
     before = deepcopy(role.permisos)
     with pytest.raises(ValueError, match="al menos una cuenta activa"):
         use_case.update_role(role.id, role.nombre, "Cambio", ["consultar_roles"], actor=ACTOR, reason=REASON)
@@ -75,8 +78,8 @@ def test_last_access_role_cannot_lose_management_permissions(context):
     assert repo._history == []
 
 
-@pytest.mark.parametrize("name", ["Administrador", "Administrador de Accesos", "OSI - Auditor de Seguridad"])
-def test_all_base_roles_can_be_edited_with_granular_privileged_permissions(context, name):
+@pytest.mark.parametrize("name", ["Docente", "OSI - Auditor de Seguridad"])
+def test_other_roles_remain_editable_with_granular_permissions(context, name):
     use_case, repo, roles, _ = context
     role = roles[name]
     permissions = sorted(set(role.permisos) | {"reiniciar_credenciales"})
@@ -95,7 +98,7 @@ def test_custom_role_can_receive_management_permissions(context):
 
 def test_legacy_permissions_can_be_preserved_or_removed_but_not_invented(context):
     use_case, repo, roles, _ = context
-    role = roles["Administrador"]
+    role = roles["Docente"]
     role.permisos.append("permiso_heredado")
     result = use_case.update_role(role.id, role.nombre, "Legacy", role.permisos, actor=ACTOR, reason=REASON)
     assert "permiso_heredado" in result.permisos
@@ -107,6 +110,21 @@ def test_rename_base_role_is_rejected_to_preserve_academic_flows(context):
     use_case, _, roles, _ = context
     with pytest.raises(ValueError, match="nombre de los perfiles base"):
         use_case.update_role(roles["Docente"].id, "Otro nombre", "", [], actor=ACTOR, reason=REASON)
+
+
+@pytest.mark.parametrize('name', ['Administrador', 'Administrador de Accesos'])
+@pytest.mark.parametrize('method', ['put', 'patch'])
+def test_admin_role_configuration_is_locked_in_the_api_without_mutating_or_auditing(context, name, method):
+    _, repo, roles, client = context
+    role = roles[name]
+    previous = deepcopy(role)
+    result = getattr(client, method)(f'/v1/roles/{role.id}', json={
+        'nombre': name, 'descripcion': 'Cambio que debe bloquearse', 'permisos': [], 'reason': REASON,
+    })
+    assert result.status_code == 403
+    assert 'protegida' in result.json()['detail']
+    assert repo.get_by_id(role.id) == previous
+    assert repo._history == []
 
 
 def test_custom_role_cannot_be_deleted_while_assigned_and_history_survives_deletion(context):

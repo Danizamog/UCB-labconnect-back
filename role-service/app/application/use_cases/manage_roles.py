@@ -7,6 +7,7 @@ from app.domain.repositories.role_repository import RoleRepository
 
 _role_write_lock = RLock()
 ACCESS_PERMISSIONS = {"gestionar_roles", "asignar_roles"}
+LOCKED_ADMIN_ROLES = {"Administrador", "Administrador de Accesos"}
 
 
 class ManageRolesUseCase:
@@ -75,6 +76,8 @@ class ManageRolesUseCase:
     def update_role(self, role_id, nombre, descripcion, permisos, *, actor, reason):
         with _role_write_lock:
             previous = self.get_role(role_id)
+            if previous.nombre in LOCKED_ADMIN_ROLES:
+                raise PermissionError("La configuracion de Administrador y Administrador de Accesos esta protegida y no se modifica desde la aplicacion")
             catalog = {item["value"] for item in PERMISSION_CATALOG}
             inherited = set(previous.permisos) - catalog
             requested = {item.strip() for item in permisos if item.strip()}
