@@ -33,16 +33,13 @@ ALL_PERMISSIONS = [
 ]
 
 ADMIN_OPERATIONAL_PERMISSIONS = [permission for permission in ALL_PERMISSIONS if permission not in {
+    "consultar_usuarios", "consultar_roles", "consultar_directorio_operativo",
     "gestionar_usuarios", "gestionar_estado_cuentas", "modificar_usuarios",
     "dar_baja_usuarios", "desbloquear_usuarios", "reiniciar_credenciales", "gestionar_roles", "asignar_roles",
     "iniciar_restablecimiento_credencial", "consultar_auditoria_seguridad",
     "consultar_eventos_autenticacion", "consultar_sesiones_usuarios",
     "consultar_incidentes_seguridad", "revisar_accesos_rbac", "exportar_reportes_seguridad",
 }]
-for _shared_permission in ("consultar_usuarios", "consultar_roles", "consultar_directorio_operativo"):
-    if _shared_permission not in ADMIN_OPERATIONAL_PERMISSIONS:
-        ADMIN_OPERATIONAL_PERMISSIONS.append(_shared_permission)
-
 ACCESS_ADMIN_PERMISSIONS = [
     "consultar_usuarios", "consultar_directorio_operativo", "consultar_roles",
     "modificar_usuarios", "dar_baja_usuarios", "desbloquear_usuarios", "reiniciar_credenciales", "gestionar_roles",

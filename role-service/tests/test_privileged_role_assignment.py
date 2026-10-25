@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.application.use_cases.manage_roles import ManageRolesUseCase
 from app.domain.entities.role import Role
+from app.domain.permission_catalog import ACCESS_ADMIN_PERMISSIONS, ADMIN_OPERATIONAL_PERMISSIONS, DEFAULT_ROLE_TEMPLATES
 from app.core.dependencies import get_current_user_payload
 from app.infrastructure.repositories.in_memory_role_repository import InMemoryRoleRepository
 from app.infrastructure.repositories.pocketbase_role_repository import PocketBaseRoleRepository
@@ -235,3 +236,23 @@ def test_role_history_snapshot_keeps_pages_stable_when_new_changes_arrive(contex
     second = client.get('/v1/roles/history',params={'per_page':20,'page':2,'snapshot_at':first['snapshotAt']}).json()
     assert second['totalItems']==65 and second['items'][0]['id']=='event-020'
     assert not set(item['id'] for item in first['items']) & set(item['id'] for item in second['items'])
+
+
+def test_operational_administrator_has_no_identity_or_access_administration_permissions():
+    assert not set(ADMIN_OPERATIONAL_PERMISSIONS) & set(ACCESS_ADMIN_PERMISSIONS)
+    assert not set(ADMIN_OPERATIONAL_PERMISSIONS) & {'gestionar_usuarios', 'gestionar_estado_cuentas', 'iniciar_restablecimiento_credencial', 'crear_usuarios'}
+    assert {'gestionar_reservas', 'aprobar_clases', 'aprobar_tutorias', 'gestionar_inventario', 'gestionar_prestamos', 'gestionar_stock', 'gestionar_reactivos_quimicos', 'consultar_estadisticas'} <= set(ADMIN_OPERATIONAL_PERMISSIONS)
+
+
+def test_operational_administrator_cannot_use_access_admin_api(context):
+    _, _, roles, client = context
+    app.dependency_overrides[get_current_user_payload] = lambda: {**ACTOR, 'role':'Administrador', 'permissions':list(ADMIN_OPERATIONAL_PERMISSIONS)}
+    for url in ['/v1/roles/', '/v1/roles/users', '/v1/roles/history']:
+        assert client.get(url).status_code == 403
+    assert client.patch('/v1/roles/users/target',json={'roleId':roles['Docente'].id,'reason':REASON}).status_code == 403
+    assert client.put(f"/v1/roles/{roles['Docente'].id}",json={'nombre':'Docente','permisos':[],'reason':REASON}).status_code == 403
+
+
+def test_access_administrator_keeps_identity_and_rbac_functions():
+    access = next(role for role in DEFAULT_ROLE_TEMPLATES if role['nombre']=='Administrador de Accesos')
+    assert {'consultar_usuarios','modificar_usuarios','reiniciar_credenciales','desbloquear_usuarios','dar_baja_usuarios','consultar_roles','gestionar_roles','asignar_roles'} <= set(access['permisos'])

@@ -61,6 +61,20 @@ def admin_token(repo):
     return LoginUser(repo).execute(manager.username, "ManagerSecure2026!")
 
 
+def test_operational_admin_keeps_loan_directory_but_cannot_manage_accounts(dual):
+    client, repo, _ = dual
+    ready_account(client)
+    target = repo.get_by_username(IDENTITY['email'])
+    repo.save_with_password(User(username='operations@ucb.edu.bo', role='Administrador',
+                                 permissions=['gestionar_inventario','gestionar_prestamos','gestionar_stock']), PASSWORD)
+    token = LoginUser(repo).execute('operations@ucb.edu.bo', PASSWORD)
+    assert client.get('/v1/users/', headers=headers(token)).status_code == 200
+    assert client.put(f'/v1/users/{target.id}', headers=headers(token), json={'name':'No autorizado'}).status_code == 403
+    assert client.post(f'/v1/users/{target.id}/reset-password', headers=headers(token)).status_code == 403
+    assert client.post(f'/v1/users/{target.id}/unlock', headers=headers(token)).status_code == 403
+    assert client.delete(f'/v1/users/{target.id}', headers=headers(token)).status_code == 403
+
+
 def test_first_google_login_requires_password_and_both_methods_share_identity(dual):
     client, repo, _ = dual
     token = google(client)
