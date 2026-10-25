@@ -1,4 +1,7 @@
 import time
+import secrets
+import string
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -309,6 +312,7 @@ class PocketBaseRoleRepository:
             "id": record.get("id"),
             "name": record.get("name", ""),
             "email": record.get("email", ""),
+            "is_active": bool(record.get("is_active", True)),
             "roleId": role_id,
             "role": mapped_role,
             "created": record.get("created"),
@@ -375,3 +379,57 @@ class PocketBaseRoleRepository:
 
     def close(self) -> None:
         self._client.close()
+
+    def apply_change(self, action, event, *, role=None, user_id="", role_id=None):
+        event = dict(event)
+        if action == "assign":
+            url = f"/api/collections/{self._users_collection}/records/{user_id}?expand=role"
+            mutation = {"method": "PATCH", "url": url, "body": {"role": role_id or ""}}
+        else:
+            if action == "create":
+                role.id = ''.join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(15))
+                event["role_id"] = role.id
+                event["after"] = {**event["after"], "id": role.id}
+            path = f"/api/collections/{self._collection}/records"
+            mutation = {"method": {"create": "POST", "update": "PATCH", "delete": "DELETE"}[action],
+                        "url": path if action == "create" else f"{path}/{role.id}"}
+            if action != "delete":
+                schema = self._request("GET", f"{self._base_url}/api/collections/{self._collection}")
+                field_names = {field["name"] for field in schema["fields"]}
+                mutation["body"] = {"id": role.id, "name" if "name" in field_names else "nombre": role.nombre,
+                                    "descripcion": role.descripcion or "", "permisos": role.permisos}
+        try:
+            results = self._request("POST", f"{self._base_url}/api/batch", json={"requests": [
+                mutation,
+                {"method": "POST", "url": "/api/collections/role_change_history/records", "body": event},
+            ]})
+        except (httpx.HTTPError, ValueError) as exc:
+            raise RuntimeError("No se pudo guardar el cambio y su historial. Recarga para verificar el estado antes de reintentar.") from exc
+        if not isinstance(results, list) or len(results) != 2 or any(item.get("status", 500) >= 400 for item in results):
+            raise RuntimeError("PocketBase no confirmo el cambio y su historial")
+        if action == "delete":
+            return None
+        record = results[0]["body"]
+        return self._map_user_record(record) if action == "assign" else self._to_role(record)
+
+    def list_history(self, *, page=1, per_page=25, query="", action="", date_from=None, date_to=None, snapshot_at=None):
+        def escaped(value):
+            return str(value).replace('\\', '\\\\').replace('"', '\\"')
+        snapshot_at = snapshot_at or datetime.now(timezone.utc)
+        if snapshot_at.tzinfo is None:
+            snapshot_at = snapshot_at.replace(tzinfo=timezone.utc)
+        cutoff = snapshot_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3] + 'Z'
+        filters = [f'created<="{cutoff}"']
+        if query:
+            filters.append('(' + ' || '.join(f'{key}~"{escaped(query)}"' for key in ("actor_email", "role_name", "target_email", "reason")) + ')')
+        if action:
+            filters.append(f'action="{escaped(action)}"')
+        if date_from:
+            filters.append(f'created>="{date_from.isoformat()} 04:00:00Z"')
+        if date_to:
+            filters.append(f'created<"{(date_to + timedelta(days=1)).isoformat()} 04:00:00Z"')
+        params = {"page": page, "perPage": per_page, "sort": "-created,-id"}
+        if filters:
+            params["filter"] = ' && '.join(filters)
+        result = self._request("GET", f"{self._base_url}/api/collections/role_change_history/records", params=params)
+        return {**result, "snapshotAt": snapshot_at.isoformat()}

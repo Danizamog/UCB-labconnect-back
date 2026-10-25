@@ -628,6 +628,15 @@ class PocketBaseUserRepository:
         endpoint = f"{self._base_url}/api/collections/{collection}/records"
         self._request("POST", endpoint, payload=payload)
 
+    def page_security_records(self, collection, query):
+        self._ensure_authenticated()
+        expression = query.pocketbase_filter(collection)
+        payload = self._request("GET", f"{self._base_url}/api/collections/{collection}/records",
+                                params={"page": query.page, "perPage": query.per_page, "sort": "-created,-id", "filter": expression})
+        if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+            raise RuntimeError("Respuesta de evidencia no valida")
+        return query.envelope(payload['items'], int(payload.get('totalItems') or 0))
+
     def revoke_security_sessions(self, user_id: str, reason: str) -> None:
         endpoint = f"{self._base_url}/api/collections/auth_session/records"
         escaped = self._escape_filter_value(user_id)

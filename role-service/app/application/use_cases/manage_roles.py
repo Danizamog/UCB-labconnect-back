@@ -1,144 +1,126 @@
-from typing import Any
+from dataclasses import asdict
+from threading import RLock
 
-from app.domain.permission_catalog import DEFAULT_ROLE_TEMPLATES
-from app.domain.permission_catalog import PERMISSION_CATALOG
-from app.domain.permission_catalog import SYSTEM_ROLE_NAMES
-from app.domain.permission_catalog import normalize_permissions
+from app.domain.permission_catalog import DEFAULT_ROLE_TEMPLATES, PERMISSION_CATALOG, SYSTEM_ROLE_NAMES, normalize_permissions
 from app.domain.entities.role import Role
 from app.domain.repositories.role_repository import RoleRepository
 
-
-PRIVILEGED_ROLE_NAMES = {"Administrador", "Administrador de Accesos", "OSI - Auditor de Seguridad"}
-PRIVILEGED_PERMISSIONS = {
-    "aprobar_clases",
-    "modificar_usuarios", "dar_baja_usuarios", "desbloquear_usuarios",
-    "reiniciar_credenciales", "gestionar_roles", "asignar_roles",
-    "consultar_auditoria_seguridad", "consultar_eventos_autenticacion", "consultar_sesiones_usuarios",
-    "consultar_incidentes_seguridad", "revisar_accesos_rbac", "exportar_reportes_seguridad",
-}
+_role_write_lock = RLock()
+ACCESS_PERMISSIONS = {"gestionar_roles", "asignar_roles"}
 
 
 class ManageRolesUseCase:
     def __init__(self, repository: RoleRepository):
         self.repository = repository
 
-    def list_roles(self) -> list[Role]:
+    def list_roles(self):
         return self.repository.list_all()
 
-    def list_permissions_catalog(self) -> list[dict[str, str]]:
+    def list_permissions_catalog(self):
         return PERMISSION_CATALOG
 
-    def ensure_default_roles(self) -> None:
+    def ensure_default_roles(self):
         for template in DEFAULT_ROLE_TEMPLATES:
-            if self.repository.get_by_nombre(template["nombre"]):
-                continue
-            self.repository.create(
-                Role(
-                    id="",
-                    nombre=template["nombre"],
-                    descripcion=template["descripcion"],
-                    permisos=template["permisos"],
-                )
-            )
+            if not self.repository.get_by_nombre(template["nombre"]):
+                self.repository.create(Role(id="", **template))
 
-    def get_role(self, role_id: str) -> Role:
+    def get_role(self, role_id):
         role = self.repository.get_by_id(role_id)
         if not role:
             raise LookupError("Rol no encontrado")
         return role
 
     @staticmethod
-    def _ensure_role_permissions_safe(permisos: list[str]) -> None:
-        privileged = sorted(set(permisos).intersection(PRIVILEGED_PERMISSIONS))
-        if privileged:
-            raise ValueError(f"Los permisos privilegiados solo pertenecen a roles controlados: {', '.join(privileged)}")
+    def _event(actor, permission, reason, action, *, role=None, target=None, before=None, after=None):
+        if permission not in (actor.get("permissions") or []):
+            raise PermissionError("No tienes permisos para realizar esta operacion")
+        if not actor.get("user_id") or not actor.get("username"):
+            raise PermissionError("No se pudo identificar al responsable del cambio")
+        reason = str(reason or "").strip()
+        if len(reason) < 5 or len(reason) > 500:
+            raise ValueError("Indica un motivo de entre 5 y 500 caracteres")
+        return {
+            "actor_id": actor["user_id"], "actor_email": actor["username"],
+            "actor_role": actor.get("role") or "", "action": action,
+            "role_id": role.id if role else "", "role_name": role.nombre if role else "",
+            "target_user_id": (target or {}).get("id") or "",
+            "target_email": (target or {}).get("email") or "",
+            "before": before or {}, "after": after or {}, "reason": reason, "result": "success",
+        }
 
-    def create_role(self, nombre: str, descripcion: str | None, permisos: list[str], actor_permissions: list[str]) -> Role:
-        normalized_nombre = nombre.strip()
-        if not normalized_nombre:
-            raise ValueError("El nombre del rol es obligatorio")
+    def _keep_access_manager(self, *, changed_role=None, assignment=None):
+        roles = {role.id: set(role.permisos) for role in self.repository.list_all()}
+        users = self.repository.list_users_with_roles()
+        def available(role_permissions, user_assignment=None):
+            return any(user.get("is_active", True)
+                       and ACCESS_PERMISSIONS <= role_permissions.get(
+                           user_assignment[1] if user_assignment and user["id"] == user_assignment[0]
+                           else user.get("roleId"), set()) for user in users)
+        had_manager = available(roles)
+        if changed_role:
+            roles[changed_role.id] = set(changed_role.permisos)
+        if had_manager and not available(roles, assignment):
+            raise ValueError("Debe permanecer al menos una cuenta activa con gestionar_roles y asignar_roles")
 
-        if self.repository.get_by_nombre(normalized_nombre):
-            raise ValueError("Ya existe un rol con ese nombre")
+    def create_role(self, nombre, descripcion, permisos, *, actor, reason):
+        with _role_write_lock:
+            role = Role(id="", nombre=nombre.strip(), descripcion=descripcion, permisos=normalize_permissions(permisos))
+            event = self._event(actor, "gestionar_roles", reason, "role.created", role=role, after=asdict(role))
+            if not role.nombre:
+                raise ValueError("El nombre del rol es obligatorio")
+            if self.repository.get_by_nombre(role.nombre):
+                raise ValueError("Ya existe un rol con ese nombre")
+            return self.repository.apply_change("create", event, role=role)
 
-        normalized_permissions = normalize_permissions(permisos)
-        self._ensure_role_permissions_safe(normalized_permissions)
-        role = Role(
-            id="",
-            nombre=normalized_nombre,
-            descripcion=descripcion,
-            permisos=normalized_permissions,
-        )
-        return self.repository.create(role)
+    def update_role(self, role_id, nombre, descripcion, permisos, *, actor, reason):
+        with _role_write_lock:
+            previous = self.get_role(role_id)
+            catalog = {item["value"] for item in PERMISSION_CATALOG}
+            inherited = set(previous.permisos) - catalog
+            requested = {item.strip() for item in permisos if item.strip()}
+            # Conservar permisos legados existentes sin permitir inventar otros nuevos.
+            normalized = normalize_permissions(list(requested - inherited)) + sorted(requested & inherited)
+            role = Role(id=role_id, nombre=nombre.strip(), descripcion=descripcion, permisos=normalized)
+            event = self._event(actor, "gestionar_roles", reason, "role.updated", role=role, before=asdict(previous), after=asdict(role))
+            if not role.nombre:
+                raise ValueError("El nombre del rol es obligatorio")
+            if previous.nombre in SYSTEM_ROLE_NAMES and role.nombre != previous.nombre:
+                raise ValueError("El nombre de los perfiles base es estable; puedes editar su descripcion y todos sus permisos")
+            duplicate = self.repository.get_by_nombre(role.nombre)
+            if duplicate and duplicate.id != role_id:
+                raise ValueError("Ya existe un rol con ese nombre")
+            self._keep_access_manager(changed_role=role)
+            return self.repository.apply_change("update", event, role=role)
 
-    def update_role(self, role_id: str, nombre: str, descripcion: str | None, permisos: list[str], actor_permissions: list[str]) -> Role:
-        role = self.repository.get_by_id(role_id)
-        if not role:
-            raise LookupError("Rol no encontrado")
-        if role.nombre in PRIVILEGED_ROLE_NAMES:
-            raise ValueError("Los roles privilegiados se actualizan mediante una migracion controlada")
+    def delete_role(self, role_id, *, actor, reason):
+        with _role_write_lock:
+            role = self.get_role(role_id)
+            event = self._event(actor, "gestionar_roles", reason, "role.deleted", role=role, before=asdict(role))
+            if role.nombre in SYSTEM_ROLE_NAMES:
+                raise ValueError("No se elimina un perfil base; puedes editar sus permisos o reasignar sus usuarios")
+            if any(user.get("roleId") == role_id for user in self.repository.list_users_with_roles()):
+                raise ValueError("Reasigna los usuarios de este rol antes de eliminarlo")
+            self.repository.apply_change("delete", event, role=role)
 
-        normalized_nombre = nombre.strip()
-        if not normalized_nombre:
-            raise ValueError("El nombre del rol es obligatorio")
-
-        role_with_same_name = self.repository.get_by_nombre(normalized_nombre)
-        if role_with_same_name and role_with_same_name.id != role_id:
-            raise ValueError("Ya existe un rol con ese nombre")
-
-        role.nombre = normalized_nombre
-        role.descripcion = descripcion
-        role.permisos = normalize_permissions(permisos)
-        self._ensure_role_permissions_safe(role.permisos)
-        return self.repository.update(role)
-
-    def delete_role(self, role_id: str) -> None:
-        role = self.repository.get_by_id(role_id)
-        if not role:
-            raise LookupError("Rol no encontrado")
-        if role.nombre in SYSTEM_ROLE_NAMES:
-            raise ValueError("No se puede eliminar un rol base del sistema")
-        self.repository.delete(role_id)
-
-    def list_users_with_roles(self) -> list[dict[str, Any]]:
+    def list_users_with_roles(self):
         return self.repository.list_users_with_roles()
 
-    def assign_user_role(self, user_id: str, role_id: str | None, actor_email: str = "", actor_role: str = "") -> dict[str, Any]:
-        users = self.repository.list_users_with_roles()
-        access_bootstrap = False
-        target = next((user for user in users if user.get("id") == user_id), None)
-        if target and actor_email and str(target.get("email") or "").strip().lower() == actor_email.strip().lower():
-            raise ValueError("No puedes cambiar tu propio rol")
-        target_role_name = (target.get("role") or {}).get("nombre") if target else ""
-        if role_id:
-            selected_role = self.repository.get_by_id(role_id)
-            if not selected_role:
-                raise LookupError("Rol no encontrado")
-            if selected_role.nombre in PRIVILEGED_ROLE_NAMES:
-                access_bootstrap = (
-                    selected_role.nombre == "Administrador de Accesos"
-                    and actor_role == "Administrador"
-                    and target_role_name == "Administrador"
-                    and not any((item.get("role") or {}).get("nombre") == "Administrador de Accesos" for item in users)
-                )
-                osi_assignment = selected_role.nombre == "OSI - Auditor de Seguridad" and actor_role == "Administrador de Accesos" and target_role_name not in PRIVILEGED_ROLE_NAMES
-                if not access_bootstrap and not osi_assignment:
-                    raise ValueError("La asignacion privilegiada no cumple la separacion de funciones")
-        if target_role_name in PRIVILEGED_ROLE_NAMES and not (
-            role_id and selected_role.nombre == "Administrador de Accesos" and actor_role == "Administrador" and target_role_name == "Administrador"
-        ):
-            raise ValueError("Los roles privilegiados no pueden retirarse desde esta operacion")
-            if selected_role.nombre in PRIVILEGED_ROLE_NAMES:
-                raise ValueError("Los roles privilegiados solo se asignan mediante una migracion controlada")
+    def assign_user_role(self, user_id, role_id, *, actor, reason):
+        with _role_write_lock:
+            target = next((user for user in self.repository.list_users_with_roles() if user["id"] == user_id), None)
+            if not target:
+                raise LookupError("Usuario no encontrado")
+            role = self.get_role(role_id) if role_id else None
+            previous = target.get("role") or {}
+            event = self._event(actor, "asignar_roles", reason, "user.role_assigned" if role else "user.role_removed", role=role, target=target,
+                                before={"role_id": target.get("roleId"), "role_name": previous.get("nombre"), "permissions": previous.get("permisos") or []},
+                                after={"role_id": role_id, "role_name": role.nombre if role else None, "permissions": role.permisos if role else []})
+            if not role:
+                event.update(role_id=target.get("roleId") or "", role_name=previous.get("nombre") or "")
+            if target.get("roleId") == role_id:
+                raise ValueError("El usuario ya tiene esta asignacion")
+            self._keep_access_manager(assignment=(user_id, role_id))
+            return self.repository.apply_change("assign", event, user_id=user_id, role_id=role_id)
 
-        user = self.repository.assign_user_role(user_id=user_id, role_id=role_id)
-        if not user:
-            raise LookupError("Usuario no encontrado")
-        if access_bootstrap:
-            admin_role = self.repository.get_by_nombre("Administrador")
-            admin_template = next(template for template in DEFAULT_ROLE_TEMPLATES if template["nombre"] == "Administrador")
-            if admin_role:
-                admin_role.descripcion = admin_template["descripcion"]
-                admin_role.permisos = list(admin_template["permisos"])
-                self.repository.update(admin_role)
-        return user
+    def list_history(self, **filters):
+        return self.repository.list_history(**filters)

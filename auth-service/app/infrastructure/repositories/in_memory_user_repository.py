@@ -1,6 +1,8 @@
 import secrets
+from datetime import datetime, timezone
 
 from app.domain.entities.user import User
+from app.domain.security_query import utc_date
 from app.infrastructure.security.password import hash_password, verify_password
 
 
@@ -82,7 +84,17 @@ class InMemoryUserRepository:
         return records[start:start + max(1, per_page)]
 
     def create_security_record(self, collection: str, payload: dict) -> None:
-        self._security_data.setdefault(collection, []).insert(0, dict(payload))
+        self._security_data.setdefault(collection, []).insert(0, {
+            **payload, "id": payload.get("id") or secrets.token_hex(8),
+            "created": payload.get("created") or datetime.now(timezone.utc).isoformat(),
+        })
+
+    def page_security_records(self, collection, query):
+        query.pocketbase_filter(collection)  # Misma validacion de estados que el adaptador persistente.
+        records = [dict(item) for item in self._security_data.get(collection, []) if query.matches(item, collection)]
+        records.sort(key=lambda item: (utc_date(item.get('created')), str(item.get('id') or '')), reverse=True)
+        start = (query.page - 1) * query.per_page
+        return query.envelope(records[start:start + query.per_page], len(records))
 
     def revoke_security_sessions(self, user_id: str, reason: str) -> None:
         for record in self._security_data.get("auth_session", []):

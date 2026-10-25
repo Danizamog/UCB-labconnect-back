@@ -4,6 +4,11 @@ from app.domain.entities.role import Role
 
 
 class RoleRepository(Protocol):
+    def apply_change(self, action: str, event: dict, *, role: Role | None = None, user_id: str = "", role_id: str | None = None):
+        ...
+
+    def list_history(self, **filters) -> dict:
+        ...
     def list_all(self) -> list[Role]:
         ...
 

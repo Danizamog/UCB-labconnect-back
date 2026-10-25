@@ -141,6 +141,7 @@ def _resolve_live_payload(token: str, fallback_payload: dict | None) -> dict:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Debes cambiar tu contrasena antes de continuar")
 
     resolved_payload = {
+        "user_id": str(body.get("user_id") or ""),
         "username": str(body.get("subject") or body.get("sub") or fallback_payload.get("username", "")),
         "role": str(body.get("role") or fallback_payload.get("role") or "user"),
         "permissions": [str(permission).strip() for permission in live_permissions if str(permission).strip()],

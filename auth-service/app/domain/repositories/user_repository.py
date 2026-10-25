@@ -34,6 +34,9 @@ class UserRepository(Protocol):
     def list_security_records(self, collection: str, page: int = 1, per_page: int = 100) -> list[dict]:
         ...
 
+    def page_security_records(self, collection: str, query) -> dict:
+        ...
+
     def create_security_record(self, collection: str, payload: dict) -> None:
         ...
 

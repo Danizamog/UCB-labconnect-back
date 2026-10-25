@@ -2,10 +2,10 @@ import logging
 import secrets
 import string
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.application.container import (
@@ -17,6 +17,7 @@ from app.application.container import (
 )
 from app.core.config import settings
 from app.domain.entities.user import User
+from app.domain.security_query import SecurityQuery
 from app.domain.account_security import ACCOUNT_LOCKED_MESSAGE, AccountLockedError, LOCAL_PASSWORD_PROVIDERS, password_change_required
 from app.interfaces.http.schemas.auth import (
     GoogleLoginRequest,
@@ -531,30 +532,74 @@ def _require_security_permission(permission: str):
     return dependency
 
 
+def _security_options(page: int = Query(1, ge=1), per_page: int = Query(100, ge=1, le=200),
+                      query: str = Query("", max_length=150), status_filter: str = Query("", alias="status", max_length=30),
+                      date_from: date | None = None, date_to: date | None = None,
+                      snapshot_at: datetime | None = None, paginated: bool = False):
+    try:
+        return SecurityQuery(page=page, per_page=per_page, query=query.strip(), status=status_filter,
+                             date_from=date_from, date_to=date_to, snapshot_at=snapshot_at), paginated
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _security_page(collection, options, *, auth_only=False):
+    query, paginated = options
+    query.auth_only = auth_only
+    try:
+        result = user_repository.page_security_records(collection, query)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="No se pudo consultar la evidencia. Conserva la ultima consulta y vuelve a intentar.") from exc
+    return result if paginated else result["items"]
+
+
+@security_router.get("/summary")
+def security_summary(current_user: dict = Depends(_get_current_payload)):
+    definitions = [
+        ("auth", "consultar_eventos_autenticacion", "security_audit_event", "unsuccessful"),
+        ("sessions", "consultar_sesiones_usuarios", "auth_session", "active"),
+        ("incidents", "consultar_incidentes_seguridad", "security_incident", "unresolved"),
+    ]
+    allowed = [item for item in definitions if item[1] in (current_user.get("permissions") or [])]
+    if not allowed:
+        raise HTTPException(status_code=403, detail="No autorizado para consultar estos indicadores")
+    now = datetime.now(timezone.utc)
+    result = {"counts": {}, "errors": [], "asOf": now.isoformat()}
+    for key, _, collection, state in allowed:
+        try:
+            query = SecurityQuery(per_page=1, status=state, snapshot_at=now,
+                                  since=now - timedelta(hours=24) if key == "auth" else None, auth_only=key == "auth")
+            result["counts"][key] = user_repository.page_security_records(collection, query)["totalItems"]
+        except (ValueError, RuntimeError, httpx.HTTPError):
+            result["errors"].append({"key": key, "message": "No se pudo consultar este indicador"})
+    return result
+
+
 @security_router.get("/audit-events")
-def list_audit_events(page: int = 1, per_page: int = 100, _: dict = Depends(_require_security_permission("consultar_auditoria_seguridad"))) -> list[dict]:
-    return user_repository.list_security_records("security_audit_event", page, per_page)
+def list_audit_events(options=Depends(_security_options), _: dict = Depends(_require_security_permission("consultar_auditoria_seguridad"))):
+    return _security_page("security_audit_event", options)
 
 
 @security_router.get("/auth-events")
-def list_auth_events(page: int = 1, per_page: int = 100, _: dict = Depends(_require_security_permission("consultar_eventos_autenticacion"))) -> list[dict]:
-    records = user_repository.list_security_records("security_audit_event", page, min(per_page * 3, 200))
-    return [record for record in records if str(record.get("action") or "").startswith("auth.")][:per_page]
+def list_auth_events(options=Depends(_security_options), _: dict = Depends(_require_security_permission("consultar_eventos_autenticacion"))):
+    return _security_page("security_audit_event", options, auth_only=True)
 
 
 @security_router.get("/sessions")
-def list_sessions(page: int = 1, per_page: int = 100, _: dict = Depends(_require_security_permission("consultar_sesiones_usuarios"))) -> list[dict]:
-    return user_repository.list_security_records("auth_session", page, per_page)
+def list_sessions(options=Depends(_security_options), _: dict = Depends(_require_security_permission("consultar_sesiones_usuarios"))):
+    return _security_page("auth_session", options)
 
 
 @security_router.get("/incidents")
-def list_incidents(page: int = 1, per_page: int = 100, _: dict = Depends(_require_security_permission("consultar_incidentes_seguridad"))) -> list[dict]:
-    return user_repository.list_security_records("security_incident", page, per_page)
+def list_incidents(options=Depends(_security_options), _: dict = Depends(_require_security_permission("consultar_incidentes_seguridad"))):
+    return _security_page("security_incident", options)
 
 
 @security_router.get("/access-reviews")
-def list_access_reviews(page: int = 1, per_page: int = 100, _: dict = Depends(_require_security_permission("revisar_accesos_rbac"))) -> list[dict]:
-    return user_repository.list_security_records("access_review", page, per_page)
+def list_access_reviews(options=Depends(_security_options), _: dict = Depends(_require_security_permission("revisar_accesos_rbac"))):
+    return _security_page("access_review", options)
 
 
 @security_router.get("/reports/export")
