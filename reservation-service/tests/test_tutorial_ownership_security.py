@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import HTTPException
@@ -99,3 +99,53 @@ def test_approver_can_read_private_session(monkeypatch) -> None:
     )
 
     assert result.id == expected.id
+
+
+def test_tutor_cannot_update_another_tutors_session(monkeypatch) -> None:
+    update = Mock()
+    monkeypatch.setattr(
+        tutorial_sessions,
+        "tutorial_session_repo",
+        SimpleNamespace(get_by_id=lambda _session_id: _session(tutor_id="tutor-b"), update=update),
+    )
+    body = TutorialSessionCreate(
+        topic="Intento de cambio",
+        laboratory_id="lab-1",
+        location="Laboratorio 1",
+        session_date="2026-11-10",
+        start_time="10:00",
+        end_time="11:00",
+        max_students=10,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            tutorial_sessions.update_tutorial_session(
+                "tutorial-1",
+                body,
+                {"user_id": "tutor-a", "role": "Docente", "permissions": ["gestionar_tutorias_propias"]},
+            )
+        )
+
+    assert exc.value.status_code == 403
+    update.assert_not_called()
+
+
+def test_tutor_cannot_delete_another_tutors_session(monkeypatch) -> None:
+    delete = Mock()
+    monkeypatch.setattr(
+        tutorial_sessions,
+        "tutorial_session_repo",
+        SimpleNamespace(get_by_id=lambda _session_id: _session(tutor_id="tutor-b"), delete=delete),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            tutorial_sessions.delete_tutorial_session(
+                "tutorial-1",
+                {"user_id": "tutor-a", "role": "Docente", "permissions": ["gestionar_tutorias_propias"]},
+            )
+        )
+
+    assert exc.value.status_code == 403
+    delete.assert_not_called()
