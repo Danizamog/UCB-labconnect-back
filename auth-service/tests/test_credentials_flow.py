@@ -37,6 +37,21 @@ def test_password_change_revokes_previous_token() -> None:
     assert client.post("/v1/auth/login", json={"username": email, "password": "ChangedPass2026#"}).status_code == 200
 
 
+def test_logout_all_revokes_the_token_that_requested_it() -> None:
+    email = "logout.all@ucb.edu.bo"
+    user_repository.save_with_password(
+        User(id="logout-all", username=email, name="Logout All", role="Estudiante"),
+        "LogoutPass2026!",
+    )
+    client = TestClient(app)
+    login = client.post("/v1/auth/login", json={"username": email, "password": "LogoutPass2026!"})
+    assert login.status_code == 200
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    assert client.post("/v1/auth/logout-all", headers=headers).status_code == 204
+    assert client.get("/v1/users/me", headers=headers).status_code == 401
+
+
 def test_google_account_cannot_use_local_password() -> None:
     email = "sso.only@ucb.edu.bo"
     user_repository.save_with_password(
