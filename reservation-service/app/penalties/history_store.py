@@ -8,11 +8,31 @@ from app.schemas.penalty import PenaltyReactivationHistoryRecordCreate, PenaltyR
 
 
 def _escape_filter_value(value: str) -> str:
+    """
+    Sanitiza y escapa caracteres especiales (barras invertidas y comillas dobles)
+    para prevenir inyecciones o errores de sintaxis en las consultas de filtro
+    que se envían a la API de PocketBase.
+    """
     return str(value).replace("\\", "\\\\").replace('"', '\\"')
 
 
 class PenaltyReactivationHistoryStore:
+    """
+    Capa de persistencia y acceso a datos para el historial de reactivación/levantamiento
+    de penalizaciones en PocketBase.
+    Maneja la inicialización perezosa (lazy) del esquema de la colección de forma thread-safe
+    y provee métodos para crear y listar registros de auditoría.
+    """
+
     def __init__(self) -> None:
+        """
+        Inicializa el cliente administrativo de PocketBase con las configuraciones del entorno:
+        - _collection: Nombre de la colección en PocketBase para el historial de reactivaciones.
+        - _admin_client: Instancia del cliente HTTP autenticado con permisos de administrador.
+        - _collection_ready: Bandera booleana que indica si el esquema ya fue verificado en PocketBase.
+        - _collection_lock: Cerrojo (Lock) para evitar que múltiples hilos intenten crear/verificar
+          el esquema de la colección al mismo tiempo (patrón Double-Checked Locking).
+        """
         self._collection = settings.pb_penalty_reactivation_history_collection
         self._admin_client = AdminPocketBaseClient(
             base_url=settings.pocketbase_url,
@@ -25,10 +45,19 @@ class PenaltyReactivationHistoryStore:
         self._collection_lock = Lock()
 
     def _ensure_collection(self) -> None:
+        """
+        Garantiza que la colección exista en PocketBase con el esquema y tipos de campos esperados.
+        - Usa Double-Checked Locking para evitar sobrecarga de sincronización tras la primera verificación.
+        - Si el cliente de PocketBase está deshabilitado en la configuración, omite la llamada.
+        - Define los campos requeridos y opcionales: IDs, datos del usuario, auditoría del actor,
+          motivos de levantamiento, estado de reactivación, contadores y confirmaciones de notificación.
+        """
+        # Primera comprobación sin bloqueo para acceso concurrente rápido
         if self._collection_ready or not self._admin_client.enabled:
             return
 
         with self._collection_lock:
+            # Segunda comprobación dentro del cerrojo para evitar inicializaciones duplicadas
             if self._collection_ready:
                 return
 
@@ -59,6 +88,11 @@ class PenaltyReactivationHistoryStore:
             self._collection_ready = True
 
     def _to_response(self, record: dict) -> PenaltyReactivationHistoryRecordResponse:
+        """
+        Transforma y normaliza un registro crudo devuelto por la API de PocketBase (diccionario)
+        al esquema fuertemente tipado de Pydantic (PenaltyReactivationHistoryRecordResponse).
+        Limpia espacios en cadenas y asigna valores por defecto seguros para booleanos y números.
+        """
         return PenaltyReactivationHistoryRecordResponse(
             id=str(record.get("id") or "").strip(),
             penalty_id=str(record.get("penalty_id") or "").strip(),
@@ -85,6 +119,14 @@ class PenaltyReactivationHistoryStore:
         )
 
     def list_for_user(self, user_id: str) -> list[PenaltyReactivationHistoryRecordResponse]:
+        """
+        Recupera el historial de reactivaciones asociadas a un usuario específico:
+        1. Valida que el user_id no esté vacío y que el cliente de PocketBase esté activo.
+        2. Asegura que la colección esté lista (_ensure_collection).
+        3. Realiza la consulta filtrando por user_id (escapado), ordenando de forma descendente
+           por fecha de ejecución (-executed_at) y limitando a 100 registros.
+        4. Transforma cada registro obtenido al esquema de respuesta.
+        """
         normalized_user_id = str(user_id or "").strip()
         if not normalized_user_id or not self._admin_client.enabled:
             return []
@@ -99,6 +141,15 @@ class PenaltyReactivationHistoryStore:
         return [self._to_response(record) for record in records]
 
     def create(self, body: PenaltyReactivationHistoryRecordCreate) -> PenaltyReactivationHistoryRecordResponse:
+        """
+        Registra un nuevo evento de reactivación/levantamiento de penalización:
+        1. Si PocketBase está deshabilitado en configuración, retorna un objeto de respuesta
+           en memoria con IDs y marcas de tiempo vacías como fallback.
+        2. Si está habilitado, asegura la colección e inserta el registro con todos los datos
+           de auditoría provistos en el body.
+        3. Retorna el registro persistido convertido a PenaltyReactivationHistoryRecordResponse.
+        """
+        # Fallback cuando el cliente externo está inactivo o en modo stub/test
         if not self._admin_client.enabled:
             return PenaltyReactivationHistoryRecordResponse(
                 id="",
