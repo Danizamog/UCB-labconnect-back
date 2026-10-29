@@ -60,6 +60,7 @@ class Settings:
         ).strip().lower() in {"1", "true", "yes"}
         self.pb_lab_reservation_collection = os.getenv("POCKETBASE_LAB_RESERVATION_COLLECTION", "lab_reservation")
         self.pb_lab_schedule_collection = os.getenv("POCKETBASE_LAB_SCHEDULE_COLLECTION", "lab_schedule")
+        self.pb_users_collection = os.getenv("POCKETBASE_USERS_COLLECTION", "users")
         self.pb_lab_block_collection = os.getenv("POCKETBASE_LAB_BLOCK_COLLECTION", "lab_block")
         self.pb_laboratory_collection = os.getenv("POCKETBASE_LABORATORY_COLLECTION", "laboratory")
         self.pb_tutorial_session_collection = os.getenv("POCKETBASE_TUTORIAL_SESSION_COLLECTION", "tutorial_session")

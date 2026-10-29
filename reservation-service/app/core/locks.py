@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncIterator
 
 
@@ -28,6 +28,13 @@ class AsyncRefCountedLockRegistry:
                 self._locks.pop(key, None)
             else:
                 self._refcounts[key] = remaining
+
+    @asynccontextmanager
+    async def lock_many(self, *keys: str) -> AsyncIterator[None]:
+        async with AsyncExitStack() as stack:
+            for key in sorted(set(keys)):
+                await stack.enter_async_context(self.lock(key))
+            yield
 
     @asynccontextmanager
     async def lock(self, key: str) -> AsyncIterator[None]:

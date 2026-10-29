@@ -399,7 +399,7 @@ class PocketBaseUserRepository:
 
         return users
 
-    def list_paginated(self, page: int, per_page: int) -> tuple[list[User], int]:
+    def list_paginated(self, page: int, per_page: int, *, teachers_only: bool = False) -> tuple[list[User], int]:
         self._ensure_authenticated()
 
         safe_page = max(1, page)
@@ -410,7 +410,8 @@ class PocketBaseUserRepository:
                 "page": safe_page,
                 "perPage": safe_per_page,
                 "expand": "role",
-                "sort": "-created",
+                "sort": "name,email,id" if teachers_only else "-created",
+                **({"filter": 'is_active=true && role.name="Docente"'} if teachers_only else {}),
             }
         )
         payload = self._request("GET", f"{self._records_endpoint()}?{params}")
@@ -421,6 +422,9 @@ class PocketBaseUserRepository:
         users = [self._to_user(item) for item in items if isinstance(item, dict)]
         total = int(payload.get("totalItems", len(users)))
         return users, total
+
+    def list_teachers_paginated(self, page: int, per_page: int) -> tuple[list[User], int]:
+        return self.list_paginated(page, per_page, teachers_only=True)
 
     def get_by_username(self, username: str) -> User | None:
         normalized_username = username.strip().lower()

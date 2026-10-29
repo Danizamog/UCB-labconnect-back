@@ -13,6 +13,9 @@ class UserRepository(Protocol):
     def list_paginated(self, page: int, per_page: int) -> tuple[list[User], int]:
         ...
 
+    def list_teachers_paginated(self, page: int, per_page: int) -> tuple[list[User], int]:
+        ...
+
     def get_by_username(self, username: str) -> User | None:
         ...
 

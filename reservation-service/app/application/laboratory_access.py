@@ -32,7 +32,8 @@ def can_manage_laboratory_reservations(current_user: dict) -> bool:
     return "gestionar_estructura_laboratorios" in permissions
 
 
-def ensure_user_can_reserve_laboratory(laboratory_id: str, current_user: dict, *, approval: bool = False) -> dict:
+def ensure_user_can_reserve_laboratory(laboratory_id: str, current_user: dict, *, approval: bool = False,
+                                     approval_permission: str = "aprobar_clases") -> dict:
     lab_id = str(laboratory_id or "").strip()
     if not lab_id:
         raise HTTPException(
@@ -51,8 +52,8 @@ def ensure_user_can_reserve_laboratory(laboratory_id: str, current_user: dict, *
         )
 
     if approval:
-        if "aprobar_clases" not in set(current_user.get("permissions") or []):
-            raise HTTPException(status_code=403, detail="No tienes permiso para aprobar clases")
+        if approval_permission not in {"aprobar_clases", "aprobar_tutorias"} or approval_permission not in set(current_user.get("permissions") or []):
+            raise HTTPException(status_code=403, detail="No tienes permiso para aprobar esta solicitud")
         return laboratory
 
     if can_manage_laboratory_reservations(current_user):

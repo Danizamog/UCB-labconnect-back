@@ -5,10 +5,13 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
-from app.application.container import tutorial_session_repo
+from app.application.container import tutorial_session_repo, lab_schedule_repo, lab_block_repo
+from app.application.laboratory_access import ensure_user_can_reserve_laboratory
+from app.application.schedule_conflicts import ensure_no_classes_or_blocks
 from app.api.v1.endpoints.availability import invalidate_availability_cache
 from app.core.datetime_utils import extract_iso_date, now_local_naive, parse_timestamp_to_local_naive
 from app.core.dependencies import ensure_any_permission, get_current_user, is_admin_role
+from app.core.locks import laboratory_lock_registry
 from app.notifications.store import notification_store
 from app.realtime.manager import realtime_manager
 from app.schemas.tutorial_session import (
@@ -34,6 +37,13 @@ def _tutorial_day(session: TutorialSessionResponse) -> str:
 
 def _invalidate_tutorial_availability(session: TutorialSessionResponse) -> None:
     invalidate_availability_cache(session.laboratory_id, _tutorial_day(session))
+
+
+def _validate_tutorial_class_conflicts(body):
+    from types import SimpleNamespace
+    candidate = SimpleNamespace(laboratory_id=body.laboratory_id,
+        start_at=f"{body.session_date}T{body.start_time}:00", end_at=f"{body.session_date}T{body.end_time}:00")
+    ensure_no_classes_or_blocks(candidate, lab_schedule_repo, lab_block_repo)
 
 
 router = APIRouter(prefix="/tutorial-sessions", tags=["tutorial-sessions"])
@@ -115,13 +125,24 @@ async def set_tutorial_session_approval(
         "No tienes permisos para aprobar o rechazar tutorias",
     )
 
+    if body.status not in {"approved", "rejected"}:
+        raise HTTPException(422, "Estado de aprobacion invalido")
     try:
-        updated = await asyncio.to_thread(
-            tutorial_session_repo.set_approval_status,
-            session_id,
-            status_value=body.status,
-            reason=body.reason,
-        )
+        async with laboratory_lock_registry.lock(f"tutorial:{session_id}"):
+            existing = await asyncio.to_thread(tutorial_session_repo.get_by_id, session_id)
+            if not existing:
+                raise HTTPException(404, "Tutoria no encontrada")
+            async with laboratory_lock_registry.lock(existing.laboratory_id):
+                if existing.approval_status != "pending":
+                    raise HTTPException(409, "La tutoria ya no esta pendiente")
+                if body.status == "approved":
+                    ensure_user_can_reserve_laboratory(existing.laboratory_id, current_user, approval=True, approval_permission="aprobar_tutorias")
+                    if _session_has_started(existing):
+                        raise ValueError("No puedes aprobar una tutoria que ya inicio")
+                    await asyncio.to_thread(ensure_no_classes_or_blocks, existing, lab_schedule_repo, lab_block_repo)
+                    await asyncio.to_thread(tutorial_session_repo.validate_for_approval, existing)
+                updated = await asyncio.to_thread(tutorial_session_repo.set_approval_status,
+                    session_id, status_value=body.status, reason=body.reason)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
@@ -209,7 +230,10 @@ async def create_tutorial_session(
     )
 
     try:
-        created = await asyncio.to_thread(tutorial_session_repo.create, payload)
+        ensure_user_can_reserve_laboratory(payload.laboratory_id, current_user)
+        async with laboratory_lock_registry.lock(payload.laboratory_id):
+            await asyncio.to_thread(_validate_tutorial_class_conflicts, payload)
+            created = await asyncio.to_thread(tutorial_session_repo.create, payload)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
@@ -261,7 +285,14 @@ async def update_tutorial_session(
     )
 
     try:
-        updated = await asyncio.to_thread(tutorial_session_repo.update, session_id, payload)
+        ensure_user_can_reserve_laboratory(payload.laboratory_id, current_user)
+        async with laboratory_lock_registry.lock(f"tutorial:{session_id}"):
+            async with laboratory_lock_registry.lock_many(existing.laboratory_id, payload.laboratory_id):
+                current = await asyncio.to_thread(tutorial_session_repo.get_by_id, session_id)
+                if not current or current.updated != existing.updated or current.approval_status != existing.approval_status:
+                    raise HTTPException(409, "La tutoria cambio. Actualiza antes de editarla")
+                await asyncio.to_thread(_validate_tutorial_class_conflicts, payload)
+                updated = await asyncio.to_thread(tutorial_session_repo.update, session_id, payload)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:

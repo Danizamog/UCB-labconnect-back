@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 from app.application.container import lab_access_session_repo, lab_reservation_repo, tutorial_session_repo, user_penalty_repo
 from app.application.container import lab_block_repo, lab_schedule_repo, laboratory_access_repo
 from app.application.laboratory_access import ensure_user_can_reserve_laboratory
+from app.application.schedule_conflicts import ensure_no_classes_or_blocks
 from app.api.v1.endpoints.availability import invalidate_availability_cache
 from app.core.datetime_utils import LAB_DAY_END, LAB_DAY_START, combine_date_time, extract_iso_date, iter_lab_blocks, now_local_naive, parse_datetime
 from app.core.dependencies import ensure_any_permission, get_current_user, is_admin_role
@@ -214,6 +215,10 @@ def _validate_reservation_time_rules(
 def _validate_approval_no_conflict(reservation: LabReservationResponse) -> None:
     """Revalida en el momento de aprobar: una reserva no puede aprobarse si choca (por
     exclusividad) con otra ya comprometida en el mismo horario del laboratorio."""
+    try:
+        ensure_no_classes_or_blocks(reservation, lab_schedule_repo, lab_block_repo)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     start_at = parse_datetime(reservation.start_at)
     end_at = parse_datetime(reservation.end_at)
     day = start_at.date().isoformat()

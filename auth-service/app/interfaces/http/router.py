@@ -639,7 +639,9 @@ def list_operational_users(purpose: str = Query(...), page: int = Query(1, ge=1)
     academic_reader = purpose == "teachers" and str(current_user.get("role") or "").lower() in {"estudiante", "docente", "encargado de laboratorio"}
     if not academic_reader and not _has_any_permission(current_user, required):
         raise HTTPException(status_code=403, detail="No autorizado para consultar este directorio operativo")
-    users, _total = user_repository.list_paginated(page, per_page)
+    users, _total = (user_repository.list_teachers_paginated(page, per_page)
+                     if purpose in {"teachers", "schedules"}
+                     else user_repository.list_paginated(page, per_page))
     return [OperationalUserResponse(id=user.id, username=user.username, name=user.name, role=user.role,
                                     is_active=user.is_active, student_code=user.student_code) for user in users]
 

@@ -39,6 +39,9 @@ def test_create_tutorial_ignores_forged_tutor_identity(monkeypatch) -> None:
         return _session(tutor_id=payload.tutor_id)
 
     monkeypatch.setattr(tutorial_sessions, "tutorial_session_repo", SimpleNamespace(create=create))
+    monkeypatch.setattr(tutorial_sessions, "ensure_user_can_reserve_laboratory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tutorial_sessions, "lab_schedule_repo", SimpleNamespace(list_active_for_laboratory_weekday=lambda *_args: []))
+    monkeypatch.setattr(tutorial_sessions, "lab_block_repo", SimpleNamespace(list_for_laboratory_day=lambda *_args: []))
     monkeypatch.setattr(tutorial_sessions, "_invalidate_tutorial_availability", lambda _session: None)
     monkeypatch.setattr(tutorial_sessions, "realtime_manager", SimpleNamespace(broadcast=AsyncMock()))
 

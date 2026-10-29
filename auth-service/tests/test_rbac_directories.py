@@ -57,3 +57,17 @@ def test_operational_directory_supports_complete_pagination(directory):
     second = client.get('/v1/users/operational-directory?purpose=laboratories&per_page=1&page=2')
     assert len(first.json()) == 1
     assert second.json() == []
+
+
+@pytest.mark.parametrize("purpose", ["teachers", "schedules"])
+def test_teachers_are_filtered_before_pagination_and_exclude_inactive(directory, monkeypatch, purpose):
+    client, actor = directory
+    actor["permissions"] = ["gestionar_horarios_laboratorio"]
+    repo = InMemoryUserRepository()
+    for index, role, active in [(1, "Estudiante", True), (2, "Docente", True),
+                                (3, "Administrador", True), (4, "Docente", False), (5, "Docente", True)]:
+        repo.save(User(id=str(index), username=f"person{index}@ucb.edu.bo", name=f"Persona {index}", role=role, is_active=active))
+    monkeypatch.setattr(router, "user_repository", repo)
+    base = f"/v1/users/operational-directory?purpose={purpose}&per_page=1"
+    assert [client.get(base + f"&page={page}").json()[0]["id"] for page in (1, 2)] == ["2", "5"]
+    assert client.get(base + "&page=3").json() == []

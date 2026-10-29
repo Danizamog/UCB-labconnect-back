@@ -27,6 +27,8 @@ def _to_response(record: dict) -> LabScheduleResponse:
         approval_reason=str(record.get("approval_reason") or ""),
         approved_by=str(record.get("approved_by") or ""),
         approved_at=str(record.get("approved_at") or ""),
+        original_schedule_id=str(record.get("original_schedule_id") or ""),
+        original_snapshot=record.get("original_snapshot") or {},
         created=record.get("created", ""),
         updated=record.get("updated", ""),
     )
@@ -93,6 +95,50 @@ class LabScheduleRepository:
 
     def list_pending(self) -> list[LabScheduleResponse]:
         return self._list_with_filter('approval_status="pending"')
+
+    def pending_change(self, schedule_id: str) -> LabScheduleResponse | None:
+        rows = self._list_with_filter(
+            f'original_schedule_id="{_escape_filter_value(schedule_id)}" && approval_status="pending"'
+        )
+        return rows[0] if rows else None
+
+    def save_change(self, previous: LabScheduleResponse | None, body: LabScheduleCreate) -> LabScheduleResponse:
+        if previous is None:
+            return self.create(body)
+        data = self._client.request("PATCH", f"{self._base}/{previous.id}", payload=body.model_dump(exclude_none=True))
+        if not isinstance(data, dict):
+            raise ValueError("No se pudo actualizar la solicitud de cambio")
+        return _to_response(data)
+
+    def resolve_teacher(self, teacher_id: str) -> str:
+        """La relacion y el nombre se validan contra la identidad real, nunca el formulario."""
+        if not teacher_id:
+            return ""
+        try:
+            data = self._client.request("GET", f"/api/collections/{settings.pb_users_collection}/records/{teacher_id}", params={"expand": "role"})
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise ValueError("El docente seleccionado no existe") from exc
+            raise
+        if not isinstance(data, dict):
+            raise ValueError("No se pudo validar el docente seleccionado")
+        role = (data.get("expand") or {}).get("role") or {}
+        if not isinstance(role, dict) or not data.get("is_active") or (role.get("name") or role.get("nombre")) != "Docente":
+            raise ValueError("Selecciona un usuario activo con rol Docente")
+        return str(data.get("name") or data.get("email") or "Docente")
+
+    def apply_change(self, proposal: LabScheduleResponse, original: LabScheduleResponse, decision: dict) -> LabScheduleResponse:
+        """PocketBase confirma ambas escrituras juntas o revierte ambas."""
+        fields = ("laboratory_id", "weekday", "start_time", "end_time", "subject", "description")
+        original_body = {key: getattr(proposal, key) for key in fields}
+        original_body.update(decision, is_active=True)
+        result = self._client.request("POST", "/api/batch", payload={"requests": [
+            {"method": "PATCH", "url": f"{self._base}/{original.id}", "body": original_body},
+            {"method": "PATCH", "url": f"{self._base}/{proposal.id}", "body": {**decision, "is_active": False}},
+        ]})
+        if not isinstance(result, list) or len(result) != 2 or any(row.get("status", 500) >= 400 for row in result):
+            raise ValueError("No se pudo confirmar el cambio. Actualiza para comprobar su estado")
+        return _to_response(result[1]["body"])
 
     def list_all(self, page: int = 1, per_page: int = 200) -> list[LabScheduleResponse]:
         items: list[LabScheduleResponse] = []

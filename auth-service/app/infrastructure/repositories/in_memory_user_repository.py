@@ -31,6 +31,12 @@ class InMemoryUserRepository:
     def get_by_username(self, username: str) -> User | None:
         return self._data.get(username)
 
+    def list_teachers_paginated(self, page: int, per_page: int) -> tuple[list[User], int]:
+        users = sorted((user for user in self._data.values() if user.is_active and user.role == "Docente"),
+                       key=lambda user: ((user.name or "").casefold(), user.username))
+        start = (max(1, page) - 1) * per_page
+        return users[start:start + per_page], len(users)
+
     def get_by_google_sub(self, google_sub: str) -> User | None:
         return next((user for user in self._data.values() if user.google_sub == google_sub), None)
 

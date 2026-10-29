@@ -8,6 +8,16 @@ from app.core.datetime_utils import is_valid_block_end, is_valid_block_start
 
 
 class _LabScheduleBase(BaseModel):
+    @field_validator("subject", check_fields=False)
+    @classmethod
+    def _validate_subject(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value or len(value) > 200:
+            raise ValueError("La materia debe tener entre 1 y 200 caracteres")
+        return value
+
     @field_validator("weekday", check_fields=False)
     @classmethod
     def _validate_weekday(cls, value: int | None) -> int | None:
@@ -50,6 +60,8 @@ class LabScheduleCreate(_LabScheduleBase):
     approval_reason: str = ""
     approved_by: str = ""
     approved_at: str = ""
+    original_schedule_id: str = ""
+    original_snapshot: dict = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_range(self) -> "LabScheduleCreate":
@@ -95,6 +107,10 @@ class LabScheduleResponse(BaseModel):
     approval_reason: str = ""
     approved_by: str = ""
     approved_at: str = ""
+    original_schedule_id: str = ""
+    original_snapshot: dict = Field(default_factory=dict)
+    current_schedule: dict | None = None
+    source_changed: bool = False
     created: str
     updated: str
 

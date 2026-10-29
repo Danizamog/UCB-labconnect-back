@@ -439,6 +439,16 @@ class TutorialSessionRepository:
                     "Este horario se cruza con una reserva de laboratorio propia. Ajusta la tutoria antes de publicarla",
                 )
 
+    def validate_for_approval(self, session: TutorialSessionResponse) -> None:
+        self._validate_no_conflicts(session, skip_id=session.id)
+        for reservation in self._reservation_repo.list_for_laboratory_day(session.laboratory_id, session.session_date):
+            if reservation.status not in {"approved", "in_progress"} or not reservation.is_active:
+                continue
+            if (session.requires_full_lab or reservation.requires_full_lab) and _has_overlap(
+                session.start_at, session.end_at, reservation.start_at, reservation.end_at
+            ):
+                raise ValueError("El horario se cruza con una reserva aprobada")
+
     def list_all(
         self,
         *,
