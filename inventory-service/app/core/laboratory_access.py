@@ -14,7 +14,7 @@ from __future__ import annotations
 
 def is_global_inventory_viewer(current_user: dict) -> bool:
     permissions = {str(value).strip() for value in current_user.get("permissions") or []}
-    return "*" in permissions or "gestionar_estructura_laboratorios" in permissions
+    return "gestionar_estructura_laboratorios" in permissions
 
 
 def resolve_accessible_lab_ids(current_user: dict) -> list[str] | None:

@@ -12,7 +12,7 @@ from app.schemas.loan_record import (
 )
 
 router = APIRouter(prefix="/loans", tags=["loans"])
-_MANAGE_LOANS = {"gestionar_prestamos", "gestionar_inventario", "gestionar_estado_equipos"}
+_MANAGE_LOANS = {"gestionar_prestamos"}
 
 
 @router.get("/dashboard", response_model=LoanDashboardResponse)

@@ -85,7 +85,7 @@ def list_public_tutorial_sessions(
 def list_my_tutorial_sessions(current_user: dict = Depends(get_current_user)) -> list[TutorialSessionResponse]:
     ensure_any_permission(
         current_user,
-        {"gestionar_tutorias_propias"},
+        {"gestionar_tutorias_propias", "gestionar_asistencia_tutorias", "gestionar_observaciones_tutorias"},
         "No tienes permisos para gestionar tutorias",
     )
     return tutorial_session_repo.list_for_tutor(current_user.get("user_id") or "")
@@ -314,7 +314,7 @@ async def save_tutorial_session_observation(
 ) -> TutorialSessionResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_tutorias_propias", "gestionar_observaciones_tutorias"},
+        {"gestionar_observaciones_tutorias"},
         "No tienes permisos para registrar observaciones de tutorias",
     )
 
@@ -421,7 +421,7 @@ async def update_tutorial_attendance(
 ) -> TutorialSessionResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_tutorias_propias", "gestionar_observaciones_tutorias"},
+        {"gestionar_asistencia_tutorias", "gestionar_observaciones_tutorias"},
         "No tienes permisos para registrar asistencia de tutorias",
     )
 
@@ -436,13 +436,23 @@ async def update_tutorial_attendance(
             detail="No puedes registrar asistencia en una tutoria de otro tutor",
         )
 
+    student = next((item for item in existing.enrolled_students if item.student_id == student_id), None)
+    if student is None:
+        raise HTTPException(status_code=422, detail="No se encontro una inscripcion activa para esta tutoria")
+    attended = student.attended if body.attended is None else body.attended
+    observation = student.performance_observation if body.performance_observation is None else body.performance_observation
+    if attended != student.attended:
+        ensure_any_permission(current_user, {"gestionar_asistencia_tutorias"}, "No tienes permisos para cambiar asistencia")
+    if observation != student.performance_observation:
+        ensure_any_permission(current_user, {"gestionar_observaciones_tutorias"}, "No tienes permisos para cambiar observaciones")
+
     try:
         updated = await asyncio.to_thread(
             tutorial_session_repo.save_enrollment_attendance,
             session_id,
             student_id=student_id,
-            attended=body.attended,
-            performance_observation=body.performance_observation,
+            attended=attended,
+            performance_observation=observation,
         )
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

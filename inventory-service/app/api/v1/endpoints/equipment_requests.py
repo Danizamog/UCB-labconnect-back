@@ -11,7 +11,7 @@ from app.schemas.equipment_request import (
 
 router = APIRouter(prefix="/equipment-requests", tags=["equipment-requests"])
 
-_MANAGE_LOANS = {"gestionar_prestamos", "gestionar_inventario", "gestionar_estado_equipos"}
+_MANAGE_LOANS = {"gestionar_prestamos"}
 _CREATE_EQUIPMENT_REQUESTS = {"solicitar_recursos_clase"} | _MANAGE_LOANS
 
 

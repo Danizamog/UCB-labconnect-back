@@ -11,7 +11,7 @@ from app.schemas.asset_maintenance import (
 )
 
 router = APIRouter(prefix="/asset-maintenance", tags=["asset-maintenance"])
-_MANAGE_MAINTENANCE = {"gestionar_mantenimiento", "gestionar_estado_equipos", "gestionar_inventario"}
+_MANAGE_MAINTENANCE = {"gestionar_mantenimiento"}
 _REGISTER_TICKETS = {"registrar_tickets_equipo"} | _MANAGE_MAINTENANCE
 
 _TICKET_NOT_FOUND_DETAIL = "Ticket no encontrado"
@@ -23,7 +23,7 @@ def list_tickets(
     status_filter: str | None = Query(default=None, alias="status"),
     current_user: dict = Depends(get_current_user),
 ) -> list[AssetMaintenanceTicketResponse]:
-    ensure_any_permission(current_user, _REGISTER_TICKETS, "No tienes permisos para consultar tickets")
+    ensure_any_permission(current_user, _REGISTER_TICKETS | {"gestionar_penalizaciones"}, "No tienes permisos para consultar tickets")
     accessible = resolve_accessible_lab_ids(current_user)
     return asset_maintenance_repo.list_all(status_filter=status_filter, lab_ids=accessible)
 
@@ -41,7 +41,7 @@ def list_user_flags(current_user: dict = Depends(get_current_user)) -> list[Asse
 
 @router.get("/assets/{asset_id}/history", response_model=list[AssetMaintenanceTicketResponse])
 def list_asset_history(asset_id: str, current_user: dict = Depends(get_current_user)) -> list[AssetMaintenanceTicketResponse]:
-    ensure_any_permission(current_user, _REGISTER_TICKETS, "No tienes permisos para consultar tickets")
+    ensure_any_permission(current_user, _REGISTER_TICKETS | {"gestionar_penalizaciones"}, "No tienes permisos para consultar tickets")
     accessible = resolve_accessible_lab_ids(current_user)
     asset = asset_repo.get_by_id(asset_id)
     if asset is None:

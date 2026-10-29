@@ -29,10 +29,10 @@ def _normalize_bool(value: Any, *, default: bool = True) -> bool:
 
 def can_manage_laboratory_reservations(current_user: dict) -> bool:
     permissions = set(current_user.get("permissions") or [])
-    return "*" in permissions or "gestionar_estructura_laboratorios" in permissions
+    return "gestionar_estructura_laboratorios" in permissions
 
 
-def ensure_user_can_reserve_laboratory(laboratory_id: str, current_user: dict) -> dict:
+def ensure_user_can_reserve_laboratory(laboratory_id: str, current_user: dict, *, approval: bool = False) -> dict:
     lab_id = str(laboratory_id or "").strip()
     if not lab_id:
         raise HTTPException(
@@ -49,6 +49,11 @@ def ensure_user_can_reserve_laboratory(laboratory_id: str, current_user: dict) -
             status_code=status.HTTP_403_FORBIDDEN,
             detail="El laboratorio seleccionado no esta activo para reservas",
         )
+
+    if approval:
+        if "aprobar_clases" not in set(current_user.get("permissions") or []):
+            raise HTTPException(status_code=403, detail="No tienes permiso para aprobar clases")
+        return laboratory
 
     if can_manage_laboratory_reservations(current_user):
         return laboratory

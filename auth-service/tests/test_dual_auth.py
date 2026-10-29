@@ -68,7 +68,8 @@ def test_operational_admin_keeps_loan_directory_but_cannot_manage_accounts(dual)
     repo.save_with_password(User(username='operations@ucb.edu.bo', role='Administrador',
                                  permissions=['gestionar_inventario','gestionar_prestamos','gestionar_stock']), PASSWORD)
     token = LoginUser(repo).execute('operations@ucb.edu.bo', PASSWORD)
-    assert client.get('/v1/users/', headers=headers(token)).status_code == 200
+    assert client.get('/v1/users/', headers=headers(token)).status_code == 403
+    assert client.get('/v1/users/operational-directory?purpose=loans', headers=headers(token)).status_code == 200
     assert client.put(f'/v1/users/{target.id}', headers=headers(token), json={'name':'No autorizado'}).status_code == 403
     assert client.post(f'/v1/users/{target.id}/reset-password', headers=headers(token)).status_code == 403
     assert client.post(f'/v1/users/{target.id}/unlock', headers=headers(token)).status_code == 403

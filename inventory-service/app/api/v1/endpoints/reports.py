@@ -7,10 +7,11 @@ from fastapi import APIRouter, Depends, Query
 
 from app.application.container import stock_item_repo, loan_record_repo
 from app.core.dependencies import ensure_any_permission, get_current_user
+from app.core.laboratory_access import is_lab_in_scope, resolve_accessible_lab_ids
 from app.schemas.stock_report import StockReportItem, StockReportResponse, UsageReportItem, UsageReportResponse
 router = APIRouter(prefix="/reports", tags=["reports"])
 
-_VIEW_REPORTS = {"generar_reportes", "consultar_estadisticas", "gestionar_inventario", "gestionar_stock", "gestionar_reactivos_quimicos"}
+_VIEW_REPORTS = {"generar_reportes", "consultar_estadisticas"}
 
 
 @router.get("/usage", response_model=UsageReportResponse)
@@ -26,7 +27,7 @@ def get_usage_report(
     Reporte de uso de insumos agrupado por práctica y usuario.
     Filtros opcionales: usuario, práctica, rango de fechas (prestamo).
     """
-    records = loan_record_repo.list_all()
+    records = loan_record_repo.list_all(lab_ids=resolve_accessible_lab_ids(current_user))
     items: list[UsageReportItem] = []
     for r in records:
         # Filtros
@@ -78,8 +79,11 @@ def get_stock_items_report(
     items = stock_item_repo.list_low_stock() if only_low_or_out else stock_item_repo.list_all()
     normalized_search = (search or "").strip().lower()
 
+    accessible = resolve_accessible_lab_ids(current_user)
     report_items: list[StockReportItem] = []
     for item in items:
+        if not is_lab_in_scope(item.laboratory_id, accessible):
+            continue
         item_laboratory_id = str(item.laboratory_id or "").strip()
         # Si se filtra por laboratorio, los insumos "General" (sin laboratorio)
         # tambien se consideran disponibles para ese laboratorio.

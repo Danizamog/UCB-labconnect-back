@@ -27,7 +27,7 @@ _MANAGEMENT_PERMISSIONS = {"gestionar_reservas", "gestionar_reglas_reserva", "ge
 # La vista de Analisis del frontend se muestra con consultar_estadisticas; el backend
 # debe aceptar ese mismo permiso ademas de los de gestion para no devolver 403 a quien
 # ve el menu (alineacion frontend/backend del RBAC).
-_VIEW_ANALYTICS_PERMISSIONS = _MANAGEMENT_PERMISSIONS | {"consultar_estadisticas"}
+_VIEW_ANALYTICS_PERMISSIONS = {"consultar_estadisticas"}
 _COUNTED_RESERVATION_STATUSES = {"approved", "in_progress", "completed"}
 
 

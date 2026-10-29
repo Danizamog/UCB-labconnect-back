@@ -105,7 +105,7 @@ async def approve_class(schedule_id: str, body: LabScheduleApproval, current_use
         if not existing or existing.approval_status != "pending":
             raise HTTPException(status_code=409, detail="La clase ya no esta pendiente de aprobacion")
         if body.status == "approved":
-            ensure_user_can_reserve_laboratory(existing.laboratory_id, current_user)
+            ensure_user_can_reserve_laboratory(existing.laboratory_id, current_user, approval=True)
             await _ensure_no_conflicts(existing, exclude_id=existing.id)
         updated = await asyncio.to_thread(lab_schedule_repo.update, schedule_id, LabScheduleUpdate(
             approval_status=body.status, approval_reason=body.reason,

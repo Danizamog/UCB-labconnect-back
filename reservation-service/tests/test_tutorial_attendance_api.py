@@ -83,12 +83,12 @@ class _StubTutorialRepo:
         return self.session
 
 
-def _build_client(repo: _StubTutorialRepo) -> TestClient:
+def _build_client(repo: _StubTutorialRepo, permissions=None) -> TestClient:
     app = FastAPI()
     app.include_router(tutorial_sessions_endpoints.router, prefix="/api/v1")
     app.dependency_overrides[get_current_user] = lambda: {
         "user_id": "tutor-1",
-        "permissions": ["gestionar_tutorias_propias", "gestionar_observaciones_tutorias"],
+        "permissions": permissions if permissions is not None else ["gestionar_asistencia_tutorias", "gestionar_observaciones_tutorias"],
         "role": "tutor",
     }
     tutorial_sessions_endpoints.tutorial_session_repo = repo
@@ -145,3 +145,33 @@ def test_tutor_observation_is_limited_to_200_characters() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_attendance_permission_cannot_modify_observations():
+    repo = _StubTutorialRepo()
+    client = _build_client(repo, ['gestionar_asistencia_tutorias'])
+    response = client.patch('/api/v1/tutorial-sessions/session-1/attendance/student-1', json={'attended':True})
+    assert response.status_code == 200
+    assert repo.session.enrolled_students[0].attended is True
+    denied = client.patch('/api/v1/tutorial-sessions/session-1/attendance/student-1', json={'performance_observation':'No autorizado'})
+    assert denied.status_code == 403
+    assert repo.session.enrolled_students[0].performance_observation == ''
+
+
+def test_observation_permission_cannot_modify_attendance():
+    repo = _StubTutorialRepo()
+    client = _build_client(repo, ['gestionar_observaciones_tutorias'])
+    response = client.patch('/api/v1/tutorial-sessions/session-1/attendance/student-1', json={'performance_observation':'Observacion autorizada'})
+    assert response.status_code == 200
+    assert repo.session.enrolled_students[0].attended is False
+    denied = client.patch('/api/v1/tutorial-sessions/session-1/attendance/student-1', json={'attended':True})
+    assert denied.status_code == 403
+    assert repo.session.enrolled_students[0].attended is False
+
+
+def test_publishing_permission_does_not_grant_attendance():
+    repo = _StubTutorialRepo()
+    client = _build_client(repo, ['gestionar_tutorias_propias'])
+    response = client.patch('/api/v1/tutorial-sessions/session-1/attendance/student-1', json={'attended':True})
+    assert response.status_code == 403
+    assert repo.calls == []

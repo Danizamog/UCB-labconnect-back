@@ -37,7 +37,7 @@ async def reservations_ws(websocket: WebSocket) -> None:
 
     ctx = await realtime_manager.connect(websocket, user_payload=user_payload)
 
-    heartbeat_task = asyncio.create_task(_heartbeat_loop(websocket))
+    heartbeat_task = asyncio.create_task(_heartbeat_loop(websocket, token, user_payload))
 
     try:
         await websocket.send_json({"type": "connected", "topic": "reservations"})
@@ -87,13 +87,18 @@ async def _handle_client_message(websocket: WebSocket, raw: str) -> None:
         return
 
 
-async def _heartbeat_loop(websocket: WebSocket) -> None:
+async def _heartbeat_loop(websocket: WebSocket, token: str, original: dict) -> None:
     try:
         while True:
             await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
             try:
+                current = await asyncio.to_thread(validate_token, token)
+                if set(current.get("permissions") or []) != set(original.get("permissions") or []) or current.get("user_id") != original.get("user_id"):
+                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                    return
                 await websocket.send_json({"type": "ping"})
             except Exception:  # noqa: BLE001
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
                 return
     except asyncio.CancelledError:
         raise

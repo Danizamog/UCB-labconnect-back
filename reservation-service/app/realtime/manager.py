@@ -10,17 +10,8 @@ from fastapi import WebSocket
 logger = logging.getLogger(__name__)
 
 
-_MANAGEMENT_PERMISSIONS = {
-    "gestionar_reservas",
-    "gestionar_reglas_reserva",
-    "gestionar_accesos_laboratorio",
-    "gestionar_penalizaciones",
-        "gestionar_horarios_laboratorio",
-}
-
-_PERSONAL_TOPICS = {"user_notification", "user_penalty"}
-_OPERATIONS_TOPICS = {"lab_block", "lab_schedule"}
-_LAB_SCOPED_TOPICS = {"lab_reservation", "lab_block", "lab_schedule"}
+_MANAGEMENT_PERMISSIONS = {"gestionar_reservas", "gestionar_accesos_laboratorio"}
+_LAB_SCOPED_TOPICS = {"lab_reservation", "lab_block", "lab_schedule", "lab_access"}
 
 _BROADCAST_SEND_TIMEOUT = 1.0
 
@@ -33,71 +24,66 @@ class ClientContext:
     permissions: frozenset[str] = field(default_factory=frozenset)
     topics: frozenset[str] = field(default_factory=frozenset)
     laboratory_ids: frozenset[str] = field(default_factory=frozenset)
+    managed_laboratory_ids: frozenset[str] = field(default_factory=frozenset)
 
     def is_manager(self) -> bool:
         return bool(self.permissions.intersection(_MANAGEMENT_PERMISSIONS))
 
 
+def _in_management_scope(client: ClientContext, record: dict) -> bool:
+    return "gestionar_estructura_laboratorios" in client.permissions or str(record.get("laboratory_id") or "") in client.managed_laboratory_ids
+
+
+def _private_reservation_reader(client: ClientContext, record: dict) -> bool:
+    owner = str(record.get("requested_by") or "")
+    return bool(client.user_id and owner == client.user_id) or (client.is_manager() and _in_management_scope(client, record))
+
+
 def _user_can_receive(client: ClientContext, payload: dict) -> bool:
     topic = str(payload.get("topic") or "")
-
-    if client.topics and topic and topic not in client.topics:
+    if client.topics and topic not in client.topics:
         return False
-
     record = payload.get("record") if isinstance(payload.get("record"), dict) else {}
-    record_lab_id = str(record.get("laboratory_id") or "")
-
-    if client.laboratory_ids and topic in _LAB_SCOPED_TOPICS:
-        if record_lab_id and record_lab_id not in client.laboratory_ids:
-            return False
-
-    recipients = payload.get("recipients")
-    if isinstance(recipients, list) and recipients:
-        recipient_ids = {str(r) for r in recipients if r}
-        if client.user_id and client.user_id in recipient_ids:
-            return True
-        if client.is_manager():
-            return True
+    lab_id = str(record.get("laboratory_id") or "")
+    if client.laboratory_ids and topic in _LAB_SCOPED_TOPICS and lab_id and lab_id not in client.laboratory_ids:
         return False
-
-    if topic in _PERSONAL_TOPICS:
-        owner = (
-            str(record.get("recipient_user_id") or "")
-            or str(record.get("user_id") or "")
-        )
-        if client.user_id and owner and client.user_id == owner:
+    if topic in {"user_notification", "user_penalty"}:
+        owner = str(record.get("recipient_user_id") or record.get("user_id") or "")
+        if client.user_id and owner == client.user_id:
             return True
-        return client.is_manager()
-
-    if topic in _OPERATIONS_TOPICS:
-        if client.laboratory_ids and record_lab_id and record_lab_id in client.laboratory_ids:
+        recipients = payload.get("recipients") or []
+        if client.user_id and client.user_id in recipients:
             return True
-        return client.is_manager()
-
-    if topic == "lab_reservation":
-        if client.is_manager():
-            return True
-        if client.laboratory_ids:
-            # Cliente declaro labs especificos: filtrar por ellos.
-            if record_lab_id and record_lab_id in client.laboratory_ids:
-                return True
-        else:
-            # Sin filtro de labs el cliente escucha todo y filtra localmente.
-            # Esto coincide con la semantica del front (aggregateSubscription
-            # envia [] cuando alguna pagina no declara labs especificos) y
-            # evita que estudiantes pierdan eventos de su laboratorio actual.
-            return True
-        requested_by = str(record.get("requested_by") or "")
-        if client.user_id and requested_by and client.user_id == requested_by:
-            return True
-        return False
-
-    if topic == "tutorial_session":
-        if client.laboratory_ids and record_lab_id and record_lab_id not in client.laboratory_ids:
-            return False
+        return owner == "__operations__" and client.is_manager() and "gestionar_estructura_laboratorios" in client.permissions
+    if topic == "lab_access":
+        return "gestionar_accesos_laboratorio" in client.permissions and _in_management_scope(client, record)
+    if topic in {"lab_reservation", "lab_block"}:
+        # El calendario necesita invalidaciones de disponibilidad; se sanitizan abajo.
         return True
+    if topic in {"lab_schedule", "tutorial_session"} and payload.get("action") == "delete":
+        return True
+    if topic == "lab_schedule":
+        return (record.get("teacher_id") == client.user_id or "aprobar_clases" in client.permissions
+                or "gestionar_horarios_laboratorio" in client.permissions
+                or (record.get("is_active") is True and record.get("approval_status") == "approved"))
+    if topic == "tutorial_session":
+        return (record.get("tutor_id") == client.user_id or "aprobar_tutorias" in client.permissions
+                or (record.get("is_published") is True and record.get("approval_status") == "approved"))
+    return False
 
-    return client.is_manager()
+
+def _visible_payload(client: ClientContext, payload: dict) -> dict:
+    topic = payload.get("topic")
+    record = payload.get("record") if isinstance(payload.get("record"), dict) else {}
+    if topic == "lab_reservation" and not _private_reservation_reader(client, record):
+        allowed = {"id", "laboratory_id", "start_at", "end_at", "status", "is_active", "requires_full_lab"}
+    elif topic == "lab_block" and "gestionar_reglas_reserva" not in client.permissions:
+        allowed = {"id", "laboratory_id", "start_at", "end_at", "is_active", "block_type"}
+    elif topic == "tutorial_session" and not (record.get("tutor_id") == client.user_id or "aprobar_tutorias" in client.permissions):
+        return {**payload, "record": {key: value for key, value in record.items() if key not in {"enrolled_students", "tutor_observation", "tutor_email"}}}
+    else:
+        return payload
+    return {key: value for key, value in payload.items() if key != "recipients"} | {"record": {key: value for key, value in record.items() if key in allowed}}
 
 
 class RealtimeManager:
@@ -114,6 +100,10 @@ class RealtimeManager:
             role=str(payload.get("role") or "user"),
             permissions=frozenset(p for p in (payload.get("permissions") or []) if p),
         )
+        if ctx.is_manager() and "gestionar_estructura_laboratorios" not in ctx.permissions:
+            from app.application.container import laboratory_access_repo
+            labs = await asyncio.to_thread(laboratory_access_repo.list_all)
+            ctx.managed_laboratory_ids = frozenset(str(lab.get("id") or "") for lab in labs if str(lab.get("manager") or "") == ctx.user_id)
         async with self._lock:
             self._clients[websocket] = ctx
         return ctx
@@ -145,6 +135,7 @@ class RealtimeManager:
                 permissions=ctx.permissions,
                 topics=next_topics,
                 laboratory_ids=next_labs,
+                managed_laboratory_ids=ctx.managed_laboratory_ids,
             )
 
     async def update_topics(self, websocket: WebSocket, topics: Iterable[str]) -> None:
@@ -158,7 +149,7 @@ class RealtimeManager:
             return
 
         results = await asyncio.gather(
-            *[_safe_send(ctx.websocket, payload) for ctx in targets],
+            *[_safe_send(ctx.websocket, _visible_payload(ctx, payload)) for ctx in targets],
             return_exceptions=False,
         )
 

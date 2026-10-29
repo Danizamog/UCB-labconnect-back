@@ -23,13 +23,13 @@ reservation_validation_client = httpx.Client(
 
 _ALLOWED_STATUSES = {"pending", "approved", "delivered", "cancelled"}
 _VIEW_SUPPLY_RESERVATIONS = {"gestionar_reservas_materiales", "gestionar_stock", "gestionar_reactivos_quimicos"}
-_MANAGE_SUPPLY_RESERVATIONS = {"gestionar_reservas_materiales", "gestionar_stock", "gestionar_reactivos_quimicos"}
+_MANAGE_SUPPLY_RESERVATIONS = {"gestionar_reservas_materiales"}
 _TUTORIAL_SUPPLY_RESERVATIONS = {"gestionar_tutorias_propias"}
 
 
 def _is_global_supply_manager(current_user: dict) -> bool:
     permissions = set(current_user.get("permissions") or [])
-    return "*" in permissions or "gestionar_estructura_laboratorios" in permissions
+    return "gestionar_estructura_laboratorios" in permissions
 
 
 def _managed_laboratory_ids(current_user: dict) -> set[str]:
@@ -72,7 +72,7 @@ def list_supply_reservations(
     lab_reservation_id: str | None = Query(default=None),
     current_user: dict = Depends(get_current_user),
 ) -> list[SupplyReservationResponse]:
-    can_manage = _can_manage(current_user) or _can_manage_tutorial_supplies(current_user)
+    can_manage = _can_manage(current_user)
     requester_filter = None if can_manage else str(current_user.get("user_id") or current_user.get("username") or "")
 
     records = supply_reservation_repo.list_all(
@@ -250,7 +250,7 @@ async def update_supply_reservation_status(
 ) -> SupplyReservationResponse:
     ensure_any_permission(
         current_user,
-        _MANAGE_SUPPLY_RESERVATIONS | _TUTORIAL_SUPPLY_RESERVATIONS,
+        _MANAGE_SUPPLY_RESERVATIONS,
         "No tienes permisos para gestionar reservas de insumos",
     )
     new_status = body.status.strip().lower()

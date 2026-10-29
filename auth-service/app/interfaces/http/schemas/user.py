@@ -52,3 +52,12 @@ class UserProfileResponse(BaseModel):
 class PasswordResetResponse(BaseModel):
     temporary_password: str
     must_change_password: bool = True
+
+
+class OperationalUserResponse(BaseModel):
+    id: str
+    username: str
+    name: str | None = None
+    role: str | None = None
+    is_active: bool = True
+    student_code: str | None = None

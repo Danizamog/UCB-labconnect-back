@@ -43,7 +43,7 @@ _ABSENT_GRACE_PERIOD_SECONDS = 15 * 60
 # NOTA: solo es correcto con --workers=1 por servicio (lock in-proc).
 
 
-_MANAGEMENT_PERMISSIONS = {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"}
+_MANAGEMENT_PERMISSIONS = {"gestionar_reservas", "gestionar_accesos_laboratorio"}
 _FINAL_RESERVATION_STATUSES = {"rejected", "cancelled", "completed", "absent"}
 # Una reserva "comprometida" ya tomo (o esta tomando) el laboratorio. Solo estas
 # bloquean el horario; las 'pending' conviven libremente hasta que un admin apruebe.
@@ -276,12 +276,12 @@ async def _broadcast_reservation_event(action: str, reservation: LabReservationR
 
 def _can_manage_reservations(current_user: dict) -> bool:
     permissions = set(current_user.get("permissions") or [])
-    return is_admin_role(current_user) or "*" in permissions or bool(permissions.intersection(_MANAGEMENT_PERMISSIONS))
+    return bool(permissions.intersection(_MANAGEMENT_PERMISSIONS))
 
 
 def _has_global_reservation_scope(current_user: dict) -> bool:
     permissions = {str(value).strip() for value in current_user.get("permissions") or []}
-    return "*" in permissions or "gestionar_estructura_laboratorios" in permissions
+    return "gestionar_estructura_laboratorios" in permissions
 
 
 def _managed_laboratory_ids(current_user: dict) -> set[str]:
@@ -310,7 +310,7 @@ def _ensure_laboratory_management_scope(laboratory_id: str, current_user: dict) 
 
 
 def _filter_reservations_for_user(items: list[LabReservationResponse], current_user: dict) -> list[LabReservationResponse]:
-    if _has_global_reservation_scope(current_user):
+    if _has_global_reservation_scope(current_user) and _can_manage_reservations(current_user):
         return items
     if _can_manage_reservations(current_user):
         managed = _managed_laboratory_ids(current_user)
@@ -480,7 +480,7 @@ def _ensure_user_can_change_reservation(
     current_user: dict,
     operation: str,
 ) -> None:
-    if _can_manage_reservations(current_user):
+    if "gestionar_reservas" in set(current_user.get("permissions") or []):
         return
 
     start_at = parse_datetime(reservation.start_at)
@@ -976,7 +976,7 @@ async def get_occupancy_dashboard(
 ) -> OccupancyDashboardResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
+        {"gestionar_accesos_laboratorio"},
         "No tienes permisos para consultar la ocupacion del laboratorio",
     )
     if laboratory_id:
@@ -1066,7 +1066,7 @@ async def create_walk_in_reservation(
 ) -> LabReservationResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
+        {"gestionar_accesos_laboratorio"},
         "No tienes permisos para registrar ingresos rapidos",
     )
     _ensure_laboratory_management_scope(body.laboratory_id, current_user)
@@ -1136,7 +1136,7 @@ async def update_reservation(
     if existing_reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
-    can_manage = _can_manage_reservations(current_user) and _is_laboratory_in_management_scope(existing_reservation.laboratory_id, current_user)
+    can_manage = "gestionar_reservas" in set(current_user.get("permissions") or []) and _is_laboratory_in_management_scope(existing_reservation.laboratory_id, current_user)
     if not can_manage and existing_reservation.requested_by != (current_user.get("user_id") or ""):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta reserva")
 
@@ -1222,7 +1222,7 @@ async def update_reservation_status(
 ) -> LabReservationResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
+        {"gestionar_reservas"},
         "No tienes permisos para actualizar estados de reserva",
     )
 
@@ -1287,7 +1287,7 @@ async def register_reservation_entry(
 ) -> LabReservationResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
+        {"gestionar_accesos_laboratorio"},
         "No tienes permisos para registrar ingresos",
     )
 
@@ -1334,7 +1334,7 @@ async def register_reservation_exit(
 ) -> LabReservationResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
+        {"gestionar_accesos_laboratorio"},
         "No tienes permisos para registrar salidas",
     )
 
@@ -1396,7 +1396,7 @@ async def mark_reservation_absent(
 ) -> LabReservationResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
+        {"gestionar_accesos_laboratorio"},
         "No tienes permisos para marcar ausencias",
     )
 
@@ -1431,7 +1431,7 @@ async def cancel_reservation(reservation_id: str, current_user: dict = Depends(g
     if reservation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reserva no encontrada")
 
-    can_manage = _can_manage_reservations(current_user) and _is_laboratory_in_management_scope(reservation.laboratory_id, current_user)
+    can_manage = "gestionar_reservas" in set(current_user.get("permissions") or []) and _is_laboratory_in_management_scope(reservation.laboratory_id, current_user)
     if not can_manage and reservation.requested_by != (current_user.get("user_id") or ""):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta reserva")
 

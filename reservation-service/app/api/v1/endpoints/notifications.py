@@ -71,9 +71,8 @@ def _notification_buckets_for_user(current_user: dict) -> list[str]:
     buckets = [recipient_user_id]
     permissions = set(current_user.get("permissions") or [])
     if (
-        is_admin_role(current_user)
-        or "*" in permissions
-        or permissions.intersection({"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"})
+        permissions.intersection({"gestionar_reservas", "gestionar_accesos_laboratorio"})
+        and "gestionar_estructura_laboratorios" in permissions
     ):
         buckets.append(OPERATIONS_RECIPIENT_ID)
 

@@ -30,7 +30,7 @@ async def list_blocks(_: dict = Depends(get_current_user)) -> list[LabBlockRespo
 async def create_block(body: LabBlockCreate, current_user: dict = Depends(get_current_user)) -> LabBlockResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
+        {"gestionar_reglas_reserva"},
         "No tienes permisos para crear bloqueos",
     )
     payload = body.model_copy(update={"created_by": body.created_by or current_user.get("user_id") or ""})
@@ -56,7 +56,7 @@ async def create_block(body: LabBlockCreate, current_user: dict = Depends(get_cu
 async def update_block(block_id: str, body: LabBlockUpdate, current_user: dict = Depends(get_current_user)) -> LabBlockResponse:
     ensure_any_permission(
         current_user,
-        {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
+        {"gestionar_reglas_reserva"},
         "No tienes permisos para actualizar bloqueos",
     )
     existing = await asyncio.to_thread(lab_block_repo.get_by_id, block_id)
@@ -87,7 +87,7 @@ async def update_block(block_id: str, body: LabBlockUpdate, current_user: dict =
 async def delete_block(block_id: str, current_user: dict = Depends(get_current_user)) -> None:
     ensure_any_permission(
         current_user,
-        {"gestionar_reservas", "gestionar_reglas_reserva", "gestionar_accesos_laboratorio"},
+        {"gestionar_reglas_reserva"},
         "No tienes permisos para eliminar bloqueos",
     )
     existing = await asyncio.to_thread(lab_block_repo.get_by_id, block_id)

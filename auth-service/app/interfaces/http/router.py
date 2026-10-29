@@ -32,6 +32,7 @@ from app.interfaces.http.schemas.user import (
     UserProfileResponse,
     UserProfileUpdateRequest,
     PasswordResetResponse,
+    OperationalUserResponse,
 )
 from app.domain.password_policy import (
     MAX_FAILED_LOGIN_ATTEMPTS,
@@ -293,15 +294,18 @@ def _require_profile_manager(payload: dict = Depends(_get_current_payload)) -> d
 
 
 _USER_DIRECTORY_PERMISSIONS = {
-    "consultar_usuarios",
-    "consultar_directorio_operativo",
-    "gestionar_inventario",
-    "gestionar_estado_equipos",
-    "gestionar_mantenimiento",
-    "gestionar_prestamos",
-    "gestionar_stock",
-    "gestionar_reactivos_quimicos",
-    "gestionar_reservas_materiales",
+    "consultar_usuarios", "modificar_usuarios", "dar_baja_usuarios", "desbloquear_usuarios", "reiniciar_credenciales",
+}
+
+_OPERATIONAL_DIRECTORY_PERMISSIONS = {
+    "directory": {"consultar_directorio_operativo"},
+    "teachers": {"gestionar_reservas", "gestionar_clases_propias", "gestionar_horarios_laboratorio"},
+    "laboratories": {"gestionar_estructura_laboratorios"},
+    "schedules": {"gestionar_horarios_laboratorio"},
+    "loans": {"gestionar_prestamos"},
+    "reservations": {"gestionar_reservas", "gestionar_accesos_laboratorio"},
+    "penalties": {"gestionar_penalizaciones"},
+    "materials": {"gestionar_stock", "gestionar_reactivos_quimicos", "gestionar_reservas_materiales"},
 }
 
 
@@ -623,6 +627,21 @@ def list_users(
     users, _total = user_repository.list_paginated(safe_page, safe_per_page)
     include_security = _has_any_permission(current_user, {"consultar_usuarios", "desbloquear_usuarios", "reiniciar_credenciales"})
     return [_to_user_response(user, include_security=include_security) for user in users]
+
+
+@users_router.get("/operational-directory", response_model=list[OperationalUserResponse])
+def list_operational_users(purpose: str = Query(...), page: int = Query(1, ge=1),
+                           per_page: int = Query(200, ge=1, le=500),
+                           current_user: dict = Depends(_get_current_payload)):
+    required = _OPERATIONAL_DIRECTORY_PERMISSIONS.get(purpose)
+    if required is None:
+        raise HTTPException(status_code=400, detail="Directorio operativo desconocido")
+    academic_reader = purpose == "teachers" and str(current_user.get("role") or "").lower() in {"estudiante", "docente", "encargado de laboratorio"}
+    if not academic_reader and not _has_any_permission(current_user, required):
+        raise HTTPException(status_code=403, detail="No autorizado para consultar este directorio operativo")
+    users, _total = user_repository.list_paginated(page, per_page)
+    return [OperationalUserResponse(id=user.id, username=user.username, name=user.name, role=user.role,
+                                    is_active=user.is_active, student_code=user.student_code) for user in users]
 
 
 @users_router.get("/me", response_model=UserProfileResponse)

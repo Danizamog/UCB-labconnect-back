@@ -7,9 +7,9 @@ from app.schemas.asset import AssetCreate, AssetResponse, AssetUpdate
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
-_VIEW_ASSETS = {"gestionar_inventario", "gestionar_estado_equipos", "gestionar_mantenimiento", "gestionar_prestamos"}
+_VIEW_ASSETS = {"gestionar_inventario", "gestionar_estado_equipos", "gestionar_mantenimiento", "gestionar_prestamos", "registrar_tickets_equipo"}
 _MANAGE_ASSETS = {"gestionar_inventario"}
-_UPDATE_STATUS = {"gestionar_inventario", "gestionar_estado_equipos", "gestionar_mantenimiento"}
+_UPDATE_STATUS = {"gestionar_estado_equipos"}
 
 _OUT_OF_SCOPE_DETAIL = "Asset no encontrado"
 _OUT_OF_SCOPE_LAB_DETAIL = "Solo puedes operar sobre equipos de tus laboratorios asignados"
@@ -81,6 +81,8 @@ def update_asset(asset_id: str, body: AssetUpdate, current_user: dict = Depends(
     existing = asset_repo.get_by_id(asset_id)
     if existing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
+    if body.status is not None and body.status != existing.status:
+        ensure_any_permission(current_user, _UPDATE_STATUS, "No tienes permisos para cambiar el estado de equipos")
     if not is_lab_in_scope(existing.laboratory_id, accessible):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_OUT_OF_SCOPE_DETAIL)
     if body.laboratory_id is not None and not is_lab_in_scope(body.laboratory_id, accessible):
