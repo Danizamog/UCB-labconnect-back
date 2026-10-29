@@ -107,6 +107,12 @@ def test_legacy_permissions_can_be_preserved_or_removed_but_not_invented(context
         use_case.update_role(role.id, role.nombre, "Legacy", ["inventado"], actor=ACTOR, reason=REASON)
 
 
+def test_unknown_permission_is_rejected_when_creating_role(context):
+    use_case, _, _, _ = context
+    with pytest.raises(ValueError, match="Permisos invalidos"):
+        use_case.create_role("Rol desconocido", "", ["permiso_inventado"], actor=ACTOR, reason=REASON)
+
+
 def test_rename_base_role_is_rejected_to_preserve_academic_flows(context):
     use_case, _, roles, _ = context
     with pytest.raises(ValueError, match="nombre de los perfiles base"):
