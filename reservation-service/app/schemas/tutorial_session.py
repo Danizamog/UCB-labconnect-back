@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class TutorialEnrollmentResponse(BaseModel):
@@ -63,13 +63,16 @@ class TutorialSessionResponse(BaseModel):
     approval_reason: str = ""
     tutor_observation: str = ""
     enrolled_students: list[TutorialEnrollmentResponse] = Field(default_factory=list)
+    enrollment_total: int | None = Field(default=None, exclude=True)
     created: str
     updated: str
 
+    @computed_field
     @property
     def enrolled_count(self) -> int:
-        return len(self.enrolled_students)
+        return self.enrollment_total if self.enrollment_total is not None else len(self.enrolled_students)
 
+    @computed_field
     @property
     def seats_left(self) -> int:
         remaining = self.max_students - self.enrolled_count

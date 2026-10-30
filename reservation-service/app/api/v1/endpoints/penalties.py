@@ -35,7 +35,7 @@ from app.schemas.penalty import (
 
 router = APIRouter(prefix="/penalties", tags=["penalties"])
 _MANAGE_PENALTIES = {"gestionar_penalizaciones"}
-_REACTIVATE_ACCOUNT = {"gestionar_penalizaciones", "gestionar_estado_cuentas"}
+_REACTIVATE_ACCOUNT = {"gestionar_penalizaciones", "gestionar_estado_cuentas", "desbloquear_usuarios"}
 _VIEW_PENALTIES = {"gestionar_penalizaciones", "gestionar_estado_cuentas", "consultar_usuarios"}
 
 
@@ -145,14 +145,22 @@ async def _request_json(method: str, url: str, *, authorization: str, payload: d
 
 
 async def _fetch_user_profile(user_id: str, authorization: str) -> dict:
-    payload = await _request_json(
-        "GET",
-        f"{settings.auth_service_url.rstrip('/')}/v1/users/{user_id}",
-        authorization=authorization,
-    )
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Respuesta invalida al consultar el usuario")
-    return payload
+    # Operational workflows need the minimal directory, not administrative profiles.
+    page = 1
+    while True:
+        payload = await _request_json(
+            "GET",
+            f"{settings.auth_service_url.rstrip('/')}/v1/users/operational-directory?purpose=penalties&page={page}&per_page=200",
+            authorization=authorization,
+        )
+        if not isinstance(payload, list):
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Respuesta invalida al consultar el usuario")
+        for user in payload:
+            if str(user.get("id") or "") == user_id:
+                return user
+        if len(payload) < 200:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
+        page += 1
 
 
 async def _set_user_active(user_id: str, authorization: str, *, is_active: bool) -> dict:
@@ -173,7 +181,7 @@ async def _fetch_user_flag(user_email: str, authorization: str) -> dict | None:
 
     payload = await _request_json(
         "GET",
-        f"{settings.inventory_service_url.rstrip('/')}/v1/asset-maintenance/user-flags",
+        f"{settings.inventory_service_url.rstrip('/')}/v1/asset-maintenance/user-flags?{httpx.QueryParams({'borrower_email': user_email})}",
         authorization=authorization,
     )
     if not isinstance(payload, list):

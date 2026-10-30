@@ -221,7 +221,7 @@ def test_create_uses_authenticated_user_id_as_requester(monkeypatch) -> None:
 
     result = supply_reservations.create_supply_reservation(
         SupplyReservationCreate(stock_item_id="stock-1", quantity=1),
-        {"user_id": "user-1", "username": "alias@ucb.edu.bo"},
+        {"user_id": "user-1", "username": "alias@ucb.edu.bo", "role": "Estudiante"},
         HTTPAuthorizationCredentials(scheme="Bearer", credentials="token"),
     )
 

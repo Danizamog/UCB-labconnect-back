@@ -49,6 +49,18 @@ def _validate_tutorial_class_conflicts(body):
 router = APIRouter(prefix="/tutorial-sessions", tags=["tutorial-sessions"])
 
 
+def _visible_session(session: TutorialSessionResponse, current_user: dict) -> TutorialSessionResponse:
+    user_id = str(current_user.get("user_id") or "")
+    if session.tutor_id == user_id or "aprobar_tutorias" in set(current_user.get("permissions") or []):
+        return session
+    # Availability is public to signed-in viewers; attendance and other students' data are not.
+    return session.model_copy(update={
+        "enrollment_total": session.enrolled_count,
+        "enrolled_students": [student for student in session.enrolled_students if student.student_id == user_id],
+        "tutor_observation": "",
+    })
+
+
 async def _broadcast_tutorial_notification(
     *,
     recipient_user_id: str,
@@ -84,11 +96,12 @@ def list_public_tutorial_sessions(
     laboratory_id: str | None = Query(None),
     _: dict = Depends(get_current_user),
 ) -> list[TutorialSessionResponse]:
-    return tutorial_session_repo.list_public(
+    sessions = tutorial_session_repo.list_public(
         topic_search=topic_search,
         session_date=session_date,
         laboratory_id=laboratory_id,
     )
+    return [_visible_session(session, _) for session in sessions]
 
 
 @router.get("/mine", response_model=list[TutorialSessionResponse])
@@ -189,7 +202,7 @@ async def set_tutorial_session_approval(
 
 @router.get("/my-enrollments", response_model=list[TutorialSessionResponse])
 def list_my_enrolled_tutorial_sessions(current_user: dict = Depends(get_current_user)) -> list[TutorialSessionResponse]:
-    return tutorial_session_repo.list_for_student(current_user.get("user_id") or "")
+    return [_visible_session(session, current_user) for session in tutorial_session_repo.list_for_student(current_user.get("user_id") or "")]
 
 
 @router.get("/{session_id}", response_model=TutorialSessionResponse)
@@ -204,10 +217,10 @@ def get_tutorial_session(
     can_approve = "aprobar_tutorias" in set(current_user.get("permissions") or [])
     is_owner = session.tutor_id == (current_user.get("user_id") or "")
 
-    if not session.is_published and not (can_approve or is_owner):
+    if (not session.is_published or session.approval_status != "approved") and not (can_approve or is_owner):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes acceso a esta tutoria")
 
-    return session
+    return _visible_session(session, current_user)
 
 
 @router.post("", response_model=TutorialSessionResponse, status_code=status.HTTP_201_CREATED)
@@ -230,7 +243,9 @@ async def create_tutorial_session(
     )
 
     try:
-        ensure_user_can_reserve_laboratory(payload.laboratory_id, current_user)
+        laboratory = ensure_user_can_reserve_laboratory(payload.laboratory_id, current_user)
+        if isinstance(laboratory, dict):
+            payload = payload.model_copy(update={"location": str(laboratory.get("name") or payload.location or "")})
         async with laboratory_lock_registry.lock(payload.laboratory_id):
             await asyncio.to_thread(_validate_tutorial_class_conflicts, payload)
             created = await asyncio.to_thread(tutorial_session_repo.create, payload)

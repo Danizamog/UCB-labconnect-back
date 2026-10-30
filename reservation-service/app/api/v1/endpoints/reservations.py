@@ -488,6 +488,9 @@ def _ensure_user_can_change_reservation(
     if "gestionar_reservas" in set(current_user.get("permissions") or []):
         return
 
+    if str(current_user.get("role") or "").strip().lower() != "estudiante":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo Estudiante puede gestionar sus reservas personales")
+
     start_at = parse_datetime(reservation.start_at)
     now = now_local_naive()
     remaining_seconds = (start_at - now).total_seconds()
@@ -1011,9 +1014,8 @@ async def get_reservation(reservation_id: str, current_user: dict = Depends(get_
 @router.post("", response_model=LabReservationResponse, status_code=status.HTTP_201_CREATED)
 async def create_reservation(body: LabReservationCreate, current_user: dict = Depends(get_current_user)) -> LabReservationResponse:
     role = str(current_user.get("role") or "").strip().lower()
-    permissions = set(current_user.get("permissions") or [])
-    if role not in {"estudiante", "docente", "encargado de laboratorio"} and "gestionar_reservas" not in permissions:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tu rol no permite crear reservas")
+    if role != "estudiante":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo Estudiante puede crear reservas personales")
     active_penalty = user_penalty_repo.get_active_for_user(str(current_user.get("user_id") or "").strip())
     if active_penalty is not None:
         raise HTTPException(

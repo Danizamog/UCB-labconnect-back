@@ -150,6 +150,15 @@ def create_supply_reservation(
     current_user: dict = Depends(get_current_user),
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> SupplyReservationResponse:
+    role = str(current_user.get("role") or "").strip().lower()
+    teacher_request = (
+        role == "docente"
+        and bool(str(body.tutorial_session_id or "").strip() or str(body.lab_reservation_id or "").strip())
+        and bool(set(current_user.get("permissions") or []).intersection({"gestionar_tutorias_propias", "solicitar_recursos_clase"}))
+    )
+    if role != "estudiante" and not teacher_request:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo Estudiante puede reservar materiales; Docente puede solicitar recursos para sus actividades")
+
     stock_item = stock_item_repo.get_raw_by_id(body.stock_item_id)
     if stock_item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Insumo no encontrado")
@@ -199,6 +208,7 @@ def create_supply_reservation(
 
     payload: dict = {
         "stock_item_id": body.stock_item_id,
+        "laboratory_id": str(stock_item.get("laboratory_id") or body.laboratory_id or ""),
         "quantity": body.quantity,
         "status": "pending",
         "requested_by": requested_by_id,

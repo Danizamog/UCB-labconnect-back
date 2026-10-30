@@ -83,12 +83,15 @@ class LabAccessSessionRepository:
 
     def list_by_reservation_ids(self, reservation_ids: list[str]) -> list[LabAccessSessionResponse]:
         self._ensure_collection()
-        ids = [str(rid).strip() for rid in reservation_ids if str(rid or "").strip()]
+        ids = list(dict.fromkeys(str(rid).strip() for rid in reservation_ids if str(rid or "").strip()))
         if not ids:
             return []
         escaped = [str(rid).replace("\\", "\\\\").replace('"', '\\"') for rid in ids]
-        filter_expression = " || ".join(f'reservation_id="{rid}"' for rid in escaped)
-        records = self._client.list_records(self._collection, sort="-check_in_at", filter=filter_expression)
+        records = []
+        # Bound both the filter expression complexity and the encoded URL size.
+        for offset in range(0, len(escaped), 20):
+            filter_expression = " || ".join(f'reservation_id="{rid}"' for rid in escaped[offset:offset + 20])
+            records.extend(self._client.list_records(self._collection, sort="-check_in_at", filter=filter_expression))
         return [self._to_response(record) for record in records]
 
     def list_active_sessions(self, laboratory_id: str | None = None) -> list[LabAccessSessionResponse]:

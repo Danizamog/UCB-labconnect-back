@@ -29,12 +29,16 @@ def list_tickets(
 
 
 @router.get("/user-flags", response_model=list[AssetResponsibilityFlagResponse])
-def list_user_flags(current_user: dict = Depends(get_current_user)) -> list[AssetResponsibilityFlagResponse]:
+def list_user_flags(current_user: dict = Depends(get_current_user), borrower_email: str | None = Query(default=None)) -> list[AssetResponsibilityFlagResponse]:
     ensure_any_permission(
         current_user,
-        {"consultar_directorio_operativo", *_MANAGE_MAINTENANCE},
+        {"consultar_directorio_operativo", "gestionar_penalizaciones", "desbloquear_usuarios", *_MANAGE_MAINTENANCE},
         "No tienes permisos para consultar banderas de responsabilidad",
     )
+    permissions = set(current_user.get("permissions") or [])
+    if isinstance(borrower_email, str) and borrower_email.strip() and permissions.intersection({"gestionar_penalizaciones", "desbloquear_usuarios"}):
+        email = borrower_email.strip().lower()
+        return [flag for flag in asset_maintenance_repo.list_user_responsibility_flags(lab_ids=None) if flag.borrower_email.strip().lower() == email]
     accessible = resolve_accessible_lab_ids(current_user)
     return asset_maintenance_repo.list_user_responsibility_flags(lab_ids=accessible)
 

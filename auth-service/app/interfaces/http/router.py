@@ -304,7 +304,7 @@ _OPERATIONAL_DIRECTORY_PERMISSIONS = {
     "schedules": {"gestionar_horarios_laboratorio"},
     "loans": {"gestionar_prestamos"},
     "reservations": {"gestionar_reservas", "gestionar_accesos_laboratorio"},
-    "penalties": {"gestionar_penalizaciones"},
+    "penalties": {"gestionar_penalizaciones", "desbloquear_usuarios"},
     "materials": {"gestionar_stock", "gestionar_reactivos_quimicos", "gestionar_reservas_materiales"},
 }
 

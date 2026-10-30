@@ -138,6 +138,8 @@ def _build_maintenance_repo(*, asset_repo: _FakeAssetRepo, admin_client: _FakeAd
     repo._admin_client = admin_client or _FakeAdminClient()
     repo._collection_ready = True
     repo._collection_lock = Lock()
+    repo._laboratory_backfill_done = False
+    repo._laboratory_backfill_lock = Lock()
     repo._records_cache = TTLCache[list[dict]](ttl_seconds=3.0)
     return repo
 

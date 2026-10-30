@@ -138,10 +138,14 @@ class PocketBaseClient:
         existing = self.get_collection(collection_name)
         if existing:
             collection_id = existing.get("id") or collection_name
+            # Preserve extra fields and stable ids during lazy schema updates.
+            merged = {field['name']: dict(field) for field in existing.get('fields', []) if field.get('name')}
+            for field in fields:
+                merged[field['name']] = {**merged.get(field['name'], {}), **field}
             self._request(
                 "PATCH",
                 f"{self._base_url}/api/collections/{collection_id}",
-                json={"fields": fields},
+                json={"fields": list(merged.values())},
             )
             return
 
